@@ -1,13 +1,10 @@
 import os
 import sys
 
-sys.path.extend(['/home/jeff/repo/simulib', '/home/jeff/repo/data_converter'])
 import numpy as np
-from simulation_functions import genPulse, findPowerOf2, db, GetAdvMatchedFilter
+from simulib.simulation_functions import genPulse, findPowerOf2, db, GetAdvMatchedFilter
 from tensorflow import keras
-import keras.backend as K
-from tensorflow.keras.optimizers import Adam, Adadelta
-from tensorflow.keras.constraints import NonNeg
+from keras.optimizers import Adam, Adadelta
 import tensorflow as tf
 # from tensorflow.profiler import profile, ProfileOptionBuilder
 from keras.layers import Input, Flatten, Dense, BatchNormalization, \
@@ -19,7 +16,7 @@ from keras.regularizers import l1_l2
 # import tensorflow_probability as tfp
 import matplotlib.pyplot as plt
 from scipy.signal import welch
-from SDRParsing import SDRParse, load
+from data_converter.SDRParsing import SDRParse, load
 from tqdm import tqdm
 import plotly.express as px
 import plotly.graph_objects as go
@@ -39,8 +36,9 @@ m_to_ft = 3.2808
 
 latent_dim = 128
 cpi_len = 32
-epochs = 200
-iterations = 30
+epochs = 400
+iterations = 10
+batch_sz = 64
 
 sdr_file = ['/data6/SAR_DATA/2023/08092023/SAR_08092023_143927.sar',
             '/data6/SAR_DATA/2023/08092023/SAR_08092023_112016.sar',
@@ -48,7 +46,7 @@ sdr_file = ['/data6/SAR_DATA/2023/08092023/SAR_08092023_143927.sar',
             '/data6/SAR_DATA/2023/08232023/SAR_08232023_114640.sar',
             '/data6/SAR_DATA/2023/08232023/SAR_08232023_144235.sar',
             '/data6/SAR_DATA/2023/08232023/SAR_08232023_091003.sar']
-# sdr_file = ['/data6/SAR_DATA/2023/08092023/SAR_08092023_112016.sar']
+# sdr_file = ['/data6/SAR_DATA/2023/08092023/SAR_08092023_143927.sar']
 
 
 def linear_annealing(init, fin, step, annealing_steps):
@@ -137,7 +135,7 @@ def reconstruct(tri_cov, cov_shape):
     # The imaginary part of the matrix has the upper part negated
     # since it's Hermitian symmetric
     ret[:, ui[0], ui[1], 1] = tri_cov[:, :, 1]
-    ret[:, li[0], li[1], 1] = -np.transpose(ret, (0, 2, 1, 3))[:, li[0], li[1], 1]
+    ret[:, li[0], li[1], 1] += -np.transpose(ret, (0, 2, 1, 3))[:, li[0], li[1], 1]
     return ret
 
 
@@ -180,7 +178,7 @@ def genVAE(inp_sz, latent_dim):
 if __name__ == '__main__':
 
     vae = genVAE((cpi_len, cpi_len, 2), latent_dim)
-    vae.compile(optimizer=Adadelta(learning_rate=.1))
+    vae.compile(optimizer=Adadelta(learning_rate=.1, clipnorm=10))
     total_history = []
 
     print('Loading SAR file...')
@@ -194,10 +192,11 @@ if __name__ == '__main__':
         mfilt = GetAdvMatchedFilter(sdr_f[0], fft_len=fft_len)
         print(f'File is {fn}')
         ver_data = []
-        for n in range(0, cpi_len // 2 * cpi_len, cpi_len):
-            pulses = np.fft.ifft(np.fft.fft(sdr_f.getPulses(sdr_f[0].frame_num[n:n + cpi_len], 0),
-                                            fft_len, axis=0) * mfilt[:, None], axis=0)[:, :sdr_f[0].nsam]
-            pulses = np.fft.fft(pulses, axis=1)
+        for n in range(0, cpi_len // 2 * batch_sz, cpi_len // 2):
+            # pulses = np.fft.ifft(np.fft.fft(sdr_f.getPulses(sdr_f[0].frame_num[n:n + cpi_len], 0),
+            #                                 fft_len, axis=0) * mfilt[:, None], axis=0)[:, :sdr_f[0].nsam]
+            # pulses = np.fft.fft(pulses, axis=1)
+            pulses = sdr_f.getPulses(sdr_f[0].frame_num[n:n + cpi_len], 0)
             cov_dt = np.cov(pulses.T)
             ver_data.append(np.stack((cov_dt.real, cov_dt.imag), axis=2))
         ver_data = np.array(ver_data)
@@ -207,12 +206,16 @@ if __name__ == '__main__':
         ver_data[:, :, :, 1] = (ver_data[:, :, :, 1] - cd_mu[1]) / cd_std[1]
         ver_data_out = ver_data[:, np.triu_indices(cpi_len)[0], np.triu_indices(cpi_len)[1], :]
 
-        for m in tqdm(range(cpi_len // 2 * cpi_len, iterations * cpi_len // 2 * cpi_len, cpi_len // 2 * cpi_len)):
+        for m in tqdm(range(iterations)):
             inp_data = []
-            for n in range(m, m + cpi_len // 2 * cpi_len, cpi_len):
-                pulses = np.fft.ifft(np.fft.fft(sdr_f.getPulses(sdr_f[0].frame_num[n:n + cpi_len], 0),
-                                                fft_len, axis=0) * mfilt[:, None], axis=0)[:, :sdr_f[0].nsam]
-                pulses = np.fft.fft(pulses, axis=1)
+            for n in range(m * cpi_len // 2 * batch_sz, m * cpi_len // 2 * batch_sz + cpi_len // 2 * batch_sz,
+                           cpi_len // 2):
+                # pulses = np.fft.ifft(np.fft.fft(sdr_f.getPulses(sdr_f[0].frame_num[n:n + cpi_len], 0),
+                #                                 fft_len, axis=0) * mfilt[:, None], axis=0)[:, :sdr_f[0].nsam]
+                # pulses = np.fft.fft(pulses, axis=1)
+                pulses = sdr_f.getPulses(sdr_f[0].frame_num[n:n + cpi_len], 0)
+                if pulses.shape[1] < cpi_len:
+                    break
                 cov_dt = np.cov(pulses.T)
                 inp_data.append(np.stack((cov_dt.real, cov_dt.imag), axis=2))
             inp_data = np.array(inp_data)
@@ -221,7 +224,7 @@ if __name__ == '__main__':
             inp_data_out = inp_data[:, np.triu_indices(cpi_len)[0], np.triu_indices(cpi_len)[1], :]
 
             train_history = vae.fit(inp_data, inp_data_out, epochs=epochs,
-                    callbacks=[EarlyStopping(patience=10, monitor='loss', restore_best_weights=True),
+                    callbacks=[EarlyStopping(patience=40, monitor='loss', restore_best_weights=True),
                                TerminateOnNaN()])
 
             vae.n_train_steps += 1
@@ -263,9 +266,10 @@ if __name__ == '__main__':
     plt.plot(np.concatenate([h['kl_loss'] for h in total_history]))
 
     checkfig.show()
+    plt.show()
 
 
-from celluloid import Camera
+'''from celluloid import Camera
 
 camfig, axes = plt.subplots(1, 2)
 cam = Camera(camfig)
@@ -281,5 +285,5 @@ for n in tqdm(range(0, 5012, cpi_len)):
     plt.tight_layout()
 
     cam.snap()
-anim = cam.animate()
+anim = cam.animate()'''
 
