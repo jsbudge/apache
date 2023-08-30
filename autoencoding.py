@@ -34,11 +34,11 @@ DTR = np.pi / 180
 inch_to_m = .0254
 m_to_ft = 3.2808
 
-latent_dim = 64
+latent_dim = 16
 cpi_len = 32
-epochs = 4000
+epochs = 10000
 iterations = 10
-batch_sz = 128
+batch_sz = 64
 
 sdr_file = ['/data6/SAR_DATA/2023/08092023/SAR_08092023_143927.sar',
             '/data6/SAR_DATA/2023/08092023/SAR_08092023_112016.sar',
@@ -46,7 +46,7 @@ sdr_file = ['/data6/SAR_DATA/2023/08092023/SAR_08092023_143927.sar',
             '/data6/SAR_DATA/2023/08232023/SAR_08232023_114640.sar',
             '/data6/SAR_DATA/2023/08232023/SAR_08232023_144235.sar',
             '/data6/SAR_DATA/2023/08232023/SAR_08232023_091003.sar']
-sdr_file = ['/data6/SAR_DATA/2023/08092023/SAR_08092023_143927.sar']
+# sdr_file = ['/data6/SAR_DATA/2023/08092023/SAR_08092023_143927.sar']
 
 
 def linear_annealing(init, fin, step, annealing_steps):
@@ -184,7 +184,8 @@ if __name__ == '__main__':
     print('Loading SAR file...')
     cd_mu = None
     cd_std = None
-    checkfig = None
+    checkfig = plt.figure()
+    ax = checkfig.add_subplot(projection='3d')
     # Training phase
     for fn in sdr_file:
         sdr_f = load(fn)
@@ -232,11 +233,7 @@ if __name__ == '__main__':
 
             z_mean, z_log_var, encoded_ver = vae.encoder.predict(ver_data)
 
-            '''if checkfig is None:
-                checkfig = px.scatter_3d(x=encoded_ver[:, 0], y=encoded_ver[:, 1], z=encoded_ver[:, 2])
-            else:
-                checkfig = checkfig.add_scatter3d(x=encoded_ver[:, 0], y=encoded_ver[:, 1], z=encoded_ver[:, 2],
-                                                  mode='markers')'''
+            ax.scatter(encoded_ver[:, 0], encoded_ver[:, 1], encoded_ver[:, 2])
 
     print('Plotting reconstruction...')
     plt.figure('Reconstruction')
@@ -268,7 +265,6 @@ if __name__ == '__main__':
     plt.plot(np.concatenate([h['kl_loss'] for h in total_history]))
 
     print('Showing plots...')
-    # checkfig.show()
     plt.show()
 
 
