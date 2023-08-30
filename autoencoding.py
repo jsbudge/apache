@@ -34,11 +34,11 @@ DTR = np.pi / 180
 inch_to_m = .0254
 m_to_ft = 3.2808
 
-latent_dim = 128
+latent_dim = 64
 cpi_len = 32
-epochs = 400
+epochs = 4000
 iterations = 10
-batch_sz = 64
+batch_sz = 128
 
 sdr_file = ['/data6/SAR_DATA/2023/08092023/SAR_08092023_143927.sar',
             '/data6/SAR_DATA/2023/08092023/SAR_08092023_112016.sar',
@@ -46,7 +46,7 @@ sdr_file = ['/data6/SAR_DATA/2023/08092023/SAR_08092023_143927.sar',
             '/data6/SAR_DATA/2023/08232023/SAR_08232023_114640.sar',
             '/data6/SAR_DATA/2023/08232023/SAR_08232023_144235.sar',
             '/data6/SAR_DATA/2023/08232023/SAR_08232023_091003.sar']
-# sdr_file = ['/data6/SAR_DATA/2023/08092023/SAR_08092023_143927.sar']
+sdr_file = ['/data6/SAR_DATA/2023/08092023/SAR_08092023_143927.sar']
 
 
 def linear_annealing(init, fin, step, annealing_steps):
@@ -144,7 +144,7 @@ def genVAE(inp_sz, latent_dim):
 
     # Encoder
     encoder_inputs = keras.Input(shape=inp_sz)
-    x = Conv2D(10, (15, 15), kernel_regularizer=l1_l2(), bias_regularizer=l1_l2(),
+    x = Conv2D(30, (15, 15), kernel_regularizer=l1_l2(), bias_regularizer=l1_l2(),
                activity_regularizer=l1_l2())(encoder_inputs)
     x = LeakyReLU()(x)
     x = Conv2D(30, (5, 5), kernel_regularizer=l1_l2(), bias_regularizer=l1_l2(),
@@ -165,7 +165,7 @@ def genVAE(inp_sz, latent_dim):
     x = Conv2DTranspose(30, (5, 5), kernel_regularizer=l1_l2(), bias_regularizer=l1_l2(),
                activity_regularizer=l1_l2())(x)
     x = LeakyReLU()(x)
-    x = Conv2DTranspose(10, (15, 15), kernel_regularizer=l1_l2(), bias_regularizer=l1_l2(),
+    x = Conv2DTranspose(30, (15, 15), kernel_regularizer=l1_l2(), bias_regularizer=l1_l2(),
                activity_regularizer=l1_l2())(x)
     x = Flatten()(x)
     x = Dense(osz * 2, kernel_regularizer=l1_l2(), bias_regularizer=l1_l2(),
@@ -232,12 +232,13 @@ if __name__ == '__main__':
 
             z_mean, z_log_var, encoded_ver = vae.encoder.predict(ver_data)
 
-            if checkfig is None:
+            '''if checkfig is None:
                 checkfig = px.scatter_3d(x=encoded_ver[:, 0], y=encoded_ver[:, 1], z=encoded_ver[:, 2])
             else:
                 checkfig = checkfig.add_scatter3d(x=encoded_ver[:, 0], y=encoded_ver[:, 1], z=encoded_ver[:, 2],
-                                                  mode='markers')
+                                                  mode='markers')'''
 
+    print('Plotting reconstruction...')
     plt.figure('Reconstruction')
     mdl_outp = reconstruct(vae.decoder.predict(vae.encoder.predict(ver_data)[2]), cpi_len)
     ver_outp = ver_data
@@ -254,6 +255,7 @@ if __name__ == '__main__':
     plt.title('Imag Rec.')
     plt.imshow(db(mdl_outp[0, :, :, 1]))
 
+    print('Plotting loss history...')
     plt.figure('Loss History')
     plt.subplot(3, 1, 1)
     plt.title('Total loss')
@@ -265,7 +267,8 @@ if __name__ == '__main__':
     plt.title('KL loss')
     plt.plot(np.concatenate([h['kl_loss'] for h in total_history]))
 
-    checkfig.show()
+    print('Showing plots...')
+    # checkfig.show()
     plt.show()
 
 
