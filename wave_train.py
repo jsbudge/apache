@@ -1,27 +1,28 @@
 import numpy as np
-from simulation_functions import genPulse, findPowerOf2, db
+from simulib.simulation_functions import genPulse, findPowerOf2, db
 from tensorflow import keras
 import keras.backend as K
-from tensorflow.keras.optimizers import Adam, Adadelta
-from tensorflow.keras.constraints import NonNeg
+from keras.optimizers import Adam, Adadelta
+from keras.constraints import NonNeg
 import tensorflow as tf
 # from tensorflow.profiler import profile, ProfileOptionBuilder
 from keras.layers import Input, Flatten, Dense, BatchNormalization, \
     Dropout, GaussianNoise, Concatenate, Conv1D, Lambda, MaxPooling1D, ActivityRegularization, \
     LocallyConnected2D, Reshape, LeakyReLU, ZeroPadding1D, Permute, Conv2D
 from keras.models import Model, save_model
-from sklearn.model_selection import train_test_split
 from keras.callbacks import TerminateOnNaN, EarlyStopping, ReduceLROnPlateau, LearningRateScheduler
 from keras.regularizers import l1_l2
 # import tensorflow_probability as tfp
 import matplotlib.pyplot as plt
 from scipy.signal import welch
-from SDRParsing import SDRParse, load
+from data_converter.SDRParsing import SDRParse, load
 from tqdm import tqdm
 import plotly.express as px
 import plotly.graph_objects as go
 import plotly.io as pio
 import pickle
+
+from autoencoding import VAE
 
 # pio.renderers.default = 'svg'
 pio.renderers.default = 'browser'
@@ -34,8 +35,8 @@ inch_to_m = .0254
 m_to_ft = 3.2808
 
 
-def compileWaveformData(sdr, fft_length, lsz, bw, wf_fc, slant_min, slant_max, sample_f, binbw, tdmu=None,
-                        tdstd=None, cdmu=None, cdstd=None, target_signal=None, use_sdr=True):
+def compileWaveformData(sdr, fft_length, lsz, bw, wf_fc, slant_min, slant_max, sample_f, binbw, vae, tdmu=None,
+                        tdstd=None, cd_mu=None, cd_std=None, cdmu=None, cdstd=None, target_signal=None, use_sdr=True):
     cwd_td = np.zeros((lsz, binbw, 2), dtype=np.float64)
     for n in range(lsz):
         if target_signal is None:
@@ -44,31 +45,31 @@ def compileWaveformData(sdr, fft_length, lsz, bw, wf_fc, slant_min, slant_max, s
             tpsd /= np.linalg.norm(tpsd)
         else:
             tpsd = target_signal.reshape((fft_length, 1))
-        cwd_td[n, :binbw // 2, 0] = tpsd.real[:binbw // 2, 0]
-        cwd_td[n, -binbw // 2:, 0] = tpsd.real[-binbw // 2:, 0]
-        cwd_td[n, :binbw // 2, 1] = tpsd.imag[:binbw // 2, 0]
-        cwd_td[n, -binbw // 2:, 1] = tpsd.imag[-binbw // 2:, 0]
-    tdmu = np.mean(cwd_td) if tdmu is None else tdmu
-    tdstd = np.std(cwd_td) if tdstd is None else tdstd
+        cwd_td[n, :binbw // 2, 0] = abs(tpsd[:binbw // 2, 0])
+        cwd_td[n, -binbw // 2:, 0] = abs(tpsd[-binbw // 2:, 0])
+    tdmu = np.mean(cwd_td[:, :, 0]) if tdmu is None else tdmu
+    tdstd = np.std(cwd_td[:, :, 0]) if tdstd is None else tdstd
 
     cwd_td = np.fft.fftshift((cwd_td - tdmu) / tdstd, axes=1)
 
     # Generate the Clutter PSDs from the SDR file
     if use_sdr:
-        cd_fftdata = np.fft.fft(sdr.getPulses(sdr[0].frame_num[np.arange(0, lsz)], 0), fft_length, axis=0).T
+        cov_dt = np.cov(sdr.getPulses(sdr[0].frame_num[np.arange(0, 32)], 0).T)
+        cov_split = np.stack(((cov_dt.real - cd_mu[0]) / cd_std[0],
+                              (cov_dt.imag - cd_mu[1]) / cd_std[1]), axis=2).reshape((1, 32, 32, 2))
+        cd_vaedata = np.tile(vae.encoder.predict(cov_split)[0],
+                             (lsz, 1))
     else:
-        cd_fftdata = np.fft.fft(np.ones((sdr[0].nsam, lsz), dtype=np.complex128), fft_length, axis=0).T
+        cd_vaedata = np.fft.fft(np.ones((sdr[0].nsam, lsz), dtype=np.complex128), fft_length, axis=0).T
 
-    cdmu = np.mean(cd_fftdata) if cdmu is None else cdmu
-    cdstd = np.std(cd_fftdata) if cdstd is None else cdstd
+    cd_fftdata = abs(np.fft.fft(sdr.getPulses(sdr[0].frame_num[np.arange(lsz)], 0), fft_length, axis=0))
+    cwd_td[:, :binbw // 2, 1] = cd_fftdata[-binbw // 2:, :].T
+    cwd_td[:, -binbw // 2:, 1] = cd_fftdata[:binbw // 2, :].T
 
-    clutterdata = np.zeros_like(cwd_td)
-    clutterdata[:, :binbw // 2, 0] = cd_fftdata.real[:, :binbw // 2]
-    clutterdata[:, -binbw // 2:, 0] = cd_fftdata.real[:, -binbw // 2:]
-    clutterdata[:, :binbw // 2, 1] = cd_fftdata.imag[:, :binbw // 2]
-    clutterdata[:, -binbw // 2:, 1] = cd_fftdata.imag[:, -binbw // 2:]
+    cdmu = np.mean(cwd_td[:, :, 1]) if cdmu is None else cdmu
+    cdstd = np.std(cwd_td[:, :, 1]) if cdstd is None else cdstd
 
-    return cwd_td, np.fft.fftshift(clutterdata, axes=1), cdmu, cdstd, tdmu, tdstd
+    return cwd_td, cd_vaedata, cdmu, cdstd, tdmu, tdstd
 
 
 def getWaveFromData(wfd_mdl, targetdata, clutterdata, cdmu, cdstd, lsz, nants, fft_length,
@@ -102,16 +103,13 @@ el_min_bw = 2 * DTR
 
 # The antenna can run Ka and Ku
 # on individual pulses
-sdr_file = ['/data5/SAR_DATA/2022/03222022/SAR_03222022_101607.sar',
-            '/data5/SAR_DATA/2022/04012022/SAR_04012022_104945.sar',
-            '/data5/SAR_DATA/2022/04202022/SAR_04202022_140046.sar',
-            '/data5/SAR_DATA/2022/03082022/SAR_03082022_102601.sar',
-            '/data5/SAR_DATA/2022/03282022/SAR_03282022_122651.sar',
-            '/data5/SAR_DATA/2022/03292022/SAR_03292022_091449.sar',
-            '/data5/SAR_DATA/2022/06222022/SAR_06222022_110905.sar',
-            '/data5/SAR_DATA/2022/03112022/SAR_03112022_135416.sar',
-            '/data5/SAR_DATA/2022/09262022/SAR_09262022_142739.sar']
-sdr_file = ['/data5/SAR_DATA/2022/03112022/SAR_03112022_135955.sar']
+sdr_file = ['/data6/SAR_DATA/2023/08092023/SAR_08092023_143927.sar',
+            '/data6/SAR_DATA/2023/08092023/SAR_08092023_112016.sar',
+            '/data6/SAR_DATA/2023/08092023/SAR_08092023_144437.sar',
+            '/data6/SAR_DATA/2023/08232023/SAR_08232023_114640.sar',
+            '/data6/SAR_DATA/2023/08232023/SAR_08232023_144235.sar',
+            '/data6/SAR_DATA/2023/08232023/SAR_08232023_091003.sar']
+# sdr_file = ['/data6/SAR_DATA/2023/08092023/SAR_08092023_143927.sar']
 # sdr_file = ['/home/jeff/repo/SAR_DATA/03112022/SAR_03112022_135854.sar']
 
 fc = 10e9
@@ -122,13 +120,13 @@ nrange = franges[0]
 pulse_length = (nrange - 1 / TAC) * plp
 duty_cycle_time_s = pulse_length + franges
 nr = int(pulse_length * fs)
-fft_sz = 512
+fft_sz = 2048
 n_ants = 2
 l_sz = 64
 n_conv_filters = 8
 kernel_sz = 36
-n_epochs = 300
-n_runs = 50
+n_epochs = 30000
+n_runs = 500
 save_model_bool = True
 use_generated_tpsd = True
 
@@ -139,14 +137,14 @@ bin_bw += 1 if bin_bw % 2 != 0 else 0
 def opt_loss(y_true, y_pred):
     ret = 0
     for n in range(n_ants):
-        # Get the complex conjugate of the spectrum
+        # Get the complex conjugate of the waveform spectrum
         yp2 = tf.signal.fftshift(tf.complex(y_pred[:, n, :fft_sz], -y_pred[:, n, fft_sz:]), axes=1)
         ypconj = tf.signal.fftshift(tf.complex(y_pred[:, n, :fft_sz], y_pred[:, n, fft_sz:]), axes=1)
-        clutter_corr = tf.math.log(K.abs(tf.signal.ifft(y_true[:, :, 0] * yp2)))
-        target_corr = tf.math.log(K.abs(tf.signal.ifft(y_true[:, :, 1] * yp2)))
+        clutter_diff = K.abs(y_true[:, :, 0] - K.abs(yp2))
+        target_diff = K.abs(y_true[:, :, 1] - K.abs(yp2))
         autocorr = tf.math.log(K.abs(tf.signal.ifft(ypconj * yp2)))
 
-        ret += K.mean(-K.mean(clutter_corr, axis=1) / clutter_corr[:, 0] + 4 * K.mean(target_corr, axis=1) / target_corr[:, 0] +
+        ret += K.mean(-K.mean(clutter_diff, axis=1) + 4 * K.mean(target_diff, axis=1) +
                 K.mean(autocorr, axis=1) / autocorr[:, 0]) / n_ants
 
         # Account for cross-correlations
@@ -192,19 +190,16 @@ def getRange(alt, theta_el):
     return alt * np.sin(theta_el) * 2 / c0
 
 
-def genModel(binbw, ncvfilt, kernelsz, fftsz):
+def genModel(binbw, ncvfilt, kernelsz, vae_shape, fftsz):
     # Let's define the network for function approximation
     # Clutter branch
-    clutter_input = Input(shape=(binbw, 2), dtype=tf.float64)
-    cx = Conv1D(filters=ncvfilt, kernel_size=kernelsz)(clutter_input)
-    # cx = MaxPooling1D(pool_size=ncvfilt)(cx)
-    cx = Conv1D(filters=ncvfilt, kernel_size=kernelsz // ncvfilt)(cx)
-    cx = Conv1D(filters=ncvfilt, kernel_size=kernelsz // ncvfilt)(cx)
-    cx = Flatten()(cx)
+    clutter_input = Input(shape=vae_shape, dtype=tf.float64)
+    cx = Dense(fftsz)(clutter_input)
+    cx = LeakyReLU()(cx)
     cx = Dense(fftsz)(cx)
 
     # Expected target branch
-    target_input = Input(shape=(binbw, 2), dtype=tf.float64)
+    target_input = Input(shape=(bin_bw, 2), dtype=tf.float64)
     tx = Conv1D(filters=ncvfilt, kernel_size=kernelsz)(target_input)
     # tx = MaxPooling1D(pool_size=ncvfilt)(tx)
     tx = Conv1D(filters=ncvfilt, kernel_size=kernelsz // ncvfilt)(tx)
@@ -222,17 +217,21 @@ def genModel(binbw, ncvfilt, kernelsz, fftsz):
     xx = LeakyReLU()(xx)
 
     # Magnitude and phase of wave 1
-    x_mag = Dense(fftsz, activation='tanh')(xx)
+    x_mag = Dense(fftsz)(xx)
+    x_mag = LeakyReLU()(x_mag)
     x_phase = Dense(fftsz)(xx)
+    x_phase = LeakyReLU()(x_phase)
 
     # Magnitude and phase of wave 2
-    x_mag0 = Dense(fftsz, activation='tanh')(xx)
+    x_mag0 = Dense(fftsz)(xx)
+    x_mag0 = LeakyReLU()(x_mag0)
     x_phase0 = Dense(fftsz)(xx)
+    x_phase0 = LeakyReLU()(x_phase0)
 
     # Merge and zero-pad
-    x_mw0 = Dense(binbw, activation='relu')(x_mag)
+    x_mw0 = Dense(binbw)(x_mag)
     x_pw0 = Dense(binbw)(x_phase)
-    x_mw1 = Dense(binbw, activation='relu')(x_mag0)
+    x_mw1 = Dense(binbw)(x_mag0)
     x_pw1 = Dense(binbw)(x_phase0)
 
     xw0 = Concatenate()([x_mw0, x_mw1])
@@ -251,11 +250,24 @@ def genModel(binbw, ncvfilt, kernelsz, fftsz):
 
 
 if __name__ == '__main__':
-    mdl = genModel(bin_bw, n_conv_filters, kernel_sz, fft_sz)
-    mdl.compile(optimizer=Adadelta(), loss=opt_loss)
 
-    with open('./test_target.pic', 'rb') as f:
-        tpsd_f = pickle.load(f)
+    # First, load the VAE for clutter and target
+    with open('./model/vae/vae_params.pic', 'rb') as f:
+        vae_params = pickle.load(f)
+    encoder_new = keras.models.load_model('./model/vae/encoder_arch')  # Loading the encoder model
+    decoder_new = keras.models.load_model('./model/vae/decoder_arch')  # Loading the decoder model
+
+    vae = VAE(encoder_new, decoder_new)
+    vae.get_layer('encoder').load_weights(
+        './model/vae/encoder_weights.h5')  # On a given encoder model defined by vae_new we want to load the weights
+    vae.get_layer('decoder').load_weights('./model/vae/decoder_weights.h5')  # for encoder and decoder
+    vae.compile(optimizer=keras.optimizers.Adadelta())
+
+    mdl = genModel(bin_bw, n_conv_filters, kernel_sz, 16, fft_sz)
+    mdl.compile(optimizer=Adadelta(learning_rate=1.), loss=opt_loss)
+
+    # with open('./test_target.pic', 'rb') as f:
+    #     tpsd_f = pickle.load(f)
 
     print('Loading SAR file...')
     total_hist = []
@@ -273,25 +285,16 @@ if __name__ == '__main__':
         valid_pulses = sdr_f[0].frame_num
         for run in range(min(n_runs, sdr_f[0].nframes // l_sz)):
             print(f'Generating PSDs for pulses {l_sz * run}-{l_sz * run + l_sz} - run {run}')
-            '''target_data, clutter_data, cd_mu, cd_std, td_mu, td_std = \
+            target_data, vae_output, cd_mu, cd_std, td_mu, td_std = \
                 compileWaveformData(sdr_f, fft_sz, l_sz, bandwidth, fc, vehicle_slant_range_min,
-                                    vehicle_slant_range_max, fs, bin_bw,
-                                    cd_mu, cd_std, td_mu, td_std,
-                                    target_signal=None if use_generated_tpsd else tpsd_f['psd'][:,
-                                                                                  run % tpsd_f['psd'].shape[1]])'''
-            target_data, clutter_data, cd_mu, cd_std, td_mu, td_std = \
-                compileWaveformData(sdr_f, fft_sz, l_sz, bandwidth, fc, vehicle_slant_range_min,
-                                    vehicle_slant_range_max, fs, bin_bw,
-                                    cd_mu, cd_std, td_mu, td_std,
-                                    target_signal=np.random.randn(fft_sz), use_sdr=False)
+                                    vehicle_slant_range_max, fs, bin_bw, vae, td_mu, td_std,
+                                    vae_params['mu'], vae_params['std'], cd_mu, cd_std,
+                                    target_signal=np.random.randn(fft_sz), use_sdr=True)
 
-            targets = np.zeros((l_sz, fft_sz, 2), dtype=np.complex128)
-            tstack = np.stack([clutter_data[:, :, 0] + 1j * clutter_data[:, :, 1],
-                                target_data[:, :, 0] + 1j * target_data[:, :, 1]], axis=2)
-            targets[:, -bin_bw // 2:, :] = tstack[:, :bin_bw // 2, :]
-            targets[:, :bin_bw // 2, :] = tstack[:, -bin_bw // 2:, :]
+            targets = np.zeros((l_sz, fft_sz, 2), dtype=np.float64)
+            targets[:, fft_sz // 2 - bin_bw // 2:fft_sz // 2 + bin_bw // 2, :] = target_data
 
-            hist_dict = mdl.fit((clutter_data, target_data), targets, epochs=n_epochs,
+            hist_dict = mdl.fit((vae_output, target_data), targets, epochs=n_epochs,
                                 callbacks=[EarlyStopping(patience=20, monitor='loss', restore_best_weights=True),
                                            TerminateOnNaN()])
             hist_lines.append(len(hist_dict.history['loss']))
@@ -303,18 +306,13 @@ if __name__ == '__main__':
         valid_pulses = sdr_f[0].frame_num
         print('Generating PSDs for testing...')
         run = np.random.randint(0, n_runs)
-        '''target_data, clutter_data, cd_mu, cd_std, td_mu, td_std = \
+        target_data, vae_output, cd_mu, cd_std, td_mu, td_std = \
             compileWaveformData(sdr_f, fft_sz, l_sz, bandwidth, fc, vehicle_slant_range_min,
-                                vehicle_slant_range_max, fs, bin_bw,
-                                cd_mu, cd_std, td_mu, td_std,
-                                target_signal=None if use_generated_tpsd else tpsd_f['psd'][:, 0])'''
-        target_data, clutter_data, cd_mu, cd_std, td_mu, td_std = \
-            compileWaveformData(sdr_f, fft_sz, l_sz, bandwidth, fc, vehicle_slant_range_min,
-                                vehicle_slant_range_max, fs, bin_bw,
-                                cd_mu, cd_std, td_mu, td_std,
-                                target_signal=np.random.randn(fft_sz), use_sdr=False)
+                                vehicle_slant_range_max, fs, bin_bw, vae, td_mu, td_std,
+                                vae_params['mu'], vae_params['std'], cd_mu, cd_std,
+                                target_signal=np.random.randn(fft_sz), use_sdr=True)
 
-        waveforms = getWaveFromData(mdl, target_data, clutter_data, cd_mu, cd_std,
+        waveforms = getWaveFromData(mdl, target_data, vae_output, cd_mu, cd_std,
                                                       l_sz, n_ants, fft_sz, bin_bw)
         waveform_plot = db(waveforms)
 
@@ -330,7 +328,7 @@ if __name__ == '__main__':
         targ_up[-bin_bw // 2:] = targ[:bin_bw // 2]
         targ_up[:bin_bw // 2] = targ[-bin_bw // 2:]
         plt.plot(freqs, np.fft.fftshift(db(targ_up) - db(targ_up).max()), linestyle='--')
-        clut = (clutter_data[0, :, 0] * cd_std) + cd_mu
+        clut = (target_data[0, :, 1] * cd_std) + cd_mu
         clut_up = np.zeros(fft_sz, dtype=np.complex128)
         clut_up[-bin_bw // 2:] = clut[:bin_bw // 2]
         clut_up[:bin_bw // 2] = clut[-bin_bw // 2:]
@@ -344,7 +342,8 @@ if __name__ == '__main__':
         # waveforms = np.fft.fftshift(waveforms, axes=2)
         plt.figure(f'Autocorrelation - {fn.split("/")[-1]}')
         linear = np.fft.fft(
-            genPulse(np.linspace(0, 1, 10), np.linspace(0, 1, 10), nr, fs, fc, bandwidth), fft_sz)
+            genPulse(np.linspace(0, 1, 10),
+                     np.linspace(0, 1, 10), nr, fs, fc, bandwidth), fft_sz)
         inp_wave = waveforms[0, 0, :] * waveforms[0, 0, :].conj()
         autocorr1 = np.fft.fftshift(db(np.fft.ifft(upsample(inp_wave))))
         inp_wave = waveforms[0, 1, :] * waveforms[0, 1, :].conj()

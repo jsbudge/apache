@@ -39,13 +39,16 @@ cpi_len = 32
 epochs = 10000
 iterations = 10
 batch_sz = 64
+save_to_file = True
 
 sdr_file = ['/data6/SAR_DATA/2023/08092023/SAR_08092023_143927.sar',
             '/data6/SAR_DATA/2023/08092023/SAR_08092023_112016.sar',
             '/data6/SAR_DATA/2023/08092023/SAR_08092023_144437.sar',
             '/data6/SAR_DATA/2023/08232023/SAR_08232023_114640.sar',
             '/data6/SAR_DATA/2023/08232023/SAR_08232023_144235.sar',
-            '/data6/SAR_DATA/2023/08232023/SAR_08232023_091003.sar']
+            '/data6/SAR_DATA/2023/08232023/SAR_08232023_091003.sar',
+            '/data6/SAR_DATA/2023/08232023/SAR_08232023_090943.sar',
+            '/data6/SAR_DATA/2023/08102023/SAR_08102023_110807.sar']
 # sdr_file = ['/data6/SAR_DATA/2023/08092023/SAR_08092023_143927.sar']
 
 
@@ -144,12 +147,16 @@ def genVAE(inp_sz, latent_dim):
 
     # Encoder
     encoder_inputs = keras.Input(shape=inp_sz)
-    x = Conv2D(30, (15, 15), kernel_regularizer=l1_l2(), bias_regularizer=l1_l2(),
+    x = Conv2D(30, (10, 10), kernel_regularizer=l1_l2(), bias_regularizer=l1_l2(),
                activity_regularizer=l1_l2())(encoder_inputs)
     x = LeakyReLU()(x)
-    x = Conv2D(30, (5, 5), kernel_regularizer=l1_l2(), bias_regularizer=l1_l2(),
+    x = Conv2D(30, (10, 10), kernel_regularizer=l1_l2(), bias_regularizer=l1_l2(),
+               activity_regularizer=l1_l2())(x)
+    x = LeakyReLU()(x)
+    x = Conv2D(30, (10, 10), kernel_regularizer=l1_l2(), bias_regularizer=l1_l2(),
                activity_regularizer=l1_l2())(x)
     x = Flatten()(x)
+    x = BatchNormalization()(x)
     z_mean = Dense(latent_dim, name="z_mean")(x)
     z_log_var = Dense(latent_dim, name="z_log_var")(x)
     z = Sampling()([z_mean, z_log_var])
@@ -162,10 +169,13 @@ def genVAE(inp_sz, latent_dim):
     x = LeakyReLU()(x)
     x = Dense(inp_sz[0] * inp_sz[1] * inp_sz[2])(x)
     x = Reshape(inp_sz)(x)
-    x = Conv2DTranspose(30, (5, 5), kernel_regularizer=l1_l2(), bias_regularizer=l1_l2(),
+    x = Conv2DTranspose(30, (10, 10), kernel_regularizer=l1_l2(), bias_regularizer=l1_l2(),
                activity_regularizer=l1_l2())(x)
     x = LeakyReLU()(x)
-    x = Conv2DTranspose(30, (15, 15), kernel_regularizer=l1_l2(), bias_regularizer=l1_l2(),
+    x = Conv2DTranspose(30, (10, 10), kernel_regularizer=l1_l2(), bias_regularizer=l1_l2(),
+                        activity_regularizer=l1_l2())(x)
+    x = LeakyReLU()(x)
+    x = Conv2DTranspose(30, (10, 10), kernel_regularizer=l1_l2(), bias_regularizer=l1_l2(),
                activity_regularizer=l1_l2())(x)
     x = Flatten()(x)
     x = Dense(osz * 2, kernel_regularizer=l1_l2(), bias_regularizer=l1_l2(),
@@ -178,7 +188,7 @@ def genVAE(inp_sz, latent_dim):
 if __name__ == '__main__':
 
     vae = genVAE((cpi_len, cpi_len, 2), latent_dim)
-    vae.compile(optimizer=Adadelta(learning_rate=.1, clipnorm=10))
+    vae.compile(optimizer=Adadelta(learning_rate=.25, clipnorm=5))
     total_history = []
 
     print('Loading SAR file...')
@@ -264,25 +274,18 @@ if __name__ == '__main__':
     plt.title('KL loss')
     plt.plot(np.concatenate([h['kl_loss'] for h in total_history]))
 
+    if save_to_file:
+        # First you access the learnt weights of the encoder and decoder from the VAE model and save them
+        vae.get_layer('encoder').save_weights('./model/vae/encoder_weights.h5')
+        vae.get_layer('decoder').save_weights('./model/vae/decoder_weights.h5')
+
+        # Since both encoder and decoder are treated as models, you also need to save
+        # their architecture defined via instantiated VAE model
+        vae.get_layer('encoder').save(
+            './model/vae/encoder_arch')
+        vae.get_layer('decoder').save('./model/vae/decoder_arch')
+        with open('./model/vae/vae_params.pic', 'wb') as f:
+            pickle.dump({'cpi_len': cpi_len, 'latent_dim': latent_dim, 'mu': cd_mu, 'std': cd_std}, f)
     print('Showing plots...')
     plt.show()
-
-
-'''from celluloid import Camera
-
-camfig, axes = plt.subplots(1, 2)
-cam = Camera(camfig)
-for n in tqdm(range(0, 5012, cpi_len)):
-    pulses = np.fft.ifft(np.fft.fft(sdr_f.getPulses(sdr_f[0].frame_num[n:n + cpi_len], 0),
-                                    fft_len, axis=0) * mfilt[:, None], axis=0)[:, :sdr_f[0].nsam]
-    pulses = np.fft.fft(pulses, axis=1)
-    cov_dt = np.cov(pulses.T)
-
-    axes[0].imshow(db(pulses), aspect='auto')
-
-    axes[1].imshow(db(cov_dt))
-    plt.tight_layout()
-
-    cam.snap()
-anim = cam.animate()'''
 
