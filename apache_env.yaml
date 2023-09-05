@@ -1,0 +1,20 @@
+name: apache_env
+channels:
+- conda-forge
+- nvidia
+- defaults
+dependencies:
+- pip
+- cudatoolkit==11.8
+- cudnn
+- pandas
+- matplotlib
+- python==3.11.4
+- pip:
+- bitarray
+- dted
+- plotly
+- tensorflow>=2.12
+- scipy
+- tqdm
+- matplotlib

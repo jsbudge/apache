@@ -34,10 +34,10 @@ DTR = np.pi / 180
 inch_to_m = .0254
 m_to_ft = 3.2808
 
-latent_dim = 16
+latent_dim = 32
 cpi_len = 32
 epochs = 10000
-iterations = 10
+iterations = 50
 batch_sz = 64
 save_to_file = True
 
@@ -147,14 +147,14 @@ def genVAE(inp_sz, latent_dim):
 
     # Encoder
     encoder_inputs = keras.Input(shape=inp_sz)
-    x = Conv2D(30, (10, 10), kernel_regularizer=l1_l2(), bias_regularizer=l1_l2(),
-               activity_regularizer=l1_l2())(encoder_inputs)
+    x = Conv2D(30, (10, 10))(encoder_inputs)
     x = LeakyReLU()(x)
-    x = Conv2D(30, (10, 10), kernel_regularizer=l1_l2(), bias_regularizer=l1_l2(),
-               activity_regularizer=l1_l2())(x)
+    x = Conv2D(30, (10, 10))(x)
     x = LeakyReLU()(x)
-    x = Conv2D(30, (10, 10), kernel_regularizer=l1_l2(), bias_regularizer=l1_l2(),
-               activity_regularizer=l1_l2())(x)
+    x = Conv2D(30, (5, 5))(x)
+    x = LeakyReLU()(x)
+    x = Conv2D(30, (5, 5))(x)
+    x = LeakyReLU()(x)
     x = Flatten()(x)
     x = BatchNormalization()(x)
     z_mean = Dense(latent_dim, name="z_mean")(x)
@@ -169,26 +169,25 @@ def genVAE(inp_sz, latent_dim):
     x = LeakyReLU()(x)
     x = Dense(inp_sz[0] * inp_sz[1] * inp_sz[2])(x)
     x = Reshape(inp_sz)(x)
-    x = Conv2DTranspose(30, (10, 10), kernel_regularizer=l1_l2(), bias_regularizer=l1_l2(),
-               activity_regularizer=l1_l2())(x)
+    x = Conv2DTranspose(30, (5, 5))(x)
     x = LeakyReLU()(x)
-    x = Conv2DTranspose(30, (10, 10), kernel_regularizer=l1_l2(), bias_regularizer=l1_l2(),
-                        activity_regularizer=l1_l2())(x)
+    x = Conv2DTranspose(30, (5, 5))(x)
     x = LeakyReLU()(x)
-    x = Conv2DTranspose(30, (10, 10), kernel_regularizer=l1_l2(), bias_regularizer=l1_l2(),
-               activity_regularizer=l1_l2())(x)
+    x = Conv2DTranspose(30, (10, 10))(x)
+    x = LeakyReLU()(x)
+    x = Conv2DTranspose(30, (10, 10))(x)
     x = Flatten()(x)
     x = Dense(osz * 2, kernel_regularizer=l1_l2(), bias_regularizer=l1_l2(),
               activity_regularizer=l1_l2())(x)
     decoder_outputs = Reshape((osz, 2))(x)
     decoder = keras.Model(latent_inputs, decoder_outputs, name="decoder")
-    return VAE(encoder, decoder, beta=250)
+    return VAE(encoder, decoder, beta=50)
 
 
 if __name__ == '__main__':
 
     vae = genVAE((cpi_len, cpi_len, 2), latent_dim)
-    vae.compile(optimizer=Adadelta(learning_rate=.25, clipnorm=5))
+    vae.compile(optimizer=Adadelta(learning_rate=.2, clipnorm=5))
     total_history = []
 
     print('Loading SAR file...')
@@ -224,11 +223,13 @@ if __name__ == '__main__':
                 # pulses = np.fft.ifft(np.fft.fft(sdr_f.getPulses(sdr_f[0].frame_num[n:n + cpi_len], 0),
                 #                                 fft_len, axis=0) * mfilt[:, None], axis=0)[:, :sdr_f[0].nsam]
                 # pulses = np.fft.fft(pulses, axis=1)
-                pulses = sdr_f.getPulses(sdr_f[0].frame_num[n:n + cpi_len], 0)
-                if pulses.shape[1] < cpi_len:
+                if n + cpi_len > sdr_f[0].frame_num[-1]:
                     break
+                pulses = sdr_f.getPulses(sdr_f[0].frame_num[n:n + cpi_len], 0)
                 cov_dt = np.cov(pulses.T)
                 inp_data.append(np.stack((cov_dt.real, cov_dt.imag), axis=2))
+            if len(inp_data) == 0:
+                break
             inp_data = np.array(inp_data)
             inp_data[:, :, :, 0] = (inp_data[:, :, :, 0] - cd_mu[0]) / cd_std[0]
             inp_data[:, :, :, 1] = (inp_data[:, :, :, 1] - cd_mu[1]) / cd_std[1]
@@ -275,6 +276,7 @@ if __name__ == '__main__':
     plt.plot(np.concatenate([h['kl_loss'] for h in total_history]))
 
     if save_to_file:
+        print('Saving model files...')
         # First you access the learnt weights of the encoder and decoder from the VAE model and save them
         vae.get_layer('encoder').save_weights('./model/vae/encoder_weights.h5')
         vae.get_layer('decoder').save_weights('./model/vae/decoder_weights.h5')
