@@ -1,0 +1,41 @@
+apache_params:
+  blade_chord_m: .533
+  rotor_diameter_m: 14.63
+  wheel_height_m: 2.4384
+  rotor_velocity_rad_s: 29.7404
+
+perf_params:
+  dismount_slant_range_min: 500
+  dismount_slant_range_max: 15000
+  vehicle_slant_range_min: 500
+  vehicle_slant_range_max: 25000
+  alt_min: 30.48
+  alt_max: 1524.
+  az_min_bw: .0130899
+  el_min_bw: .034906
+
+settings:
+  cpi_len: 32
+  batch_sz: 128
+  fc: 10000000000.
+  bandwidth: 400000000.
+  plp: .5
+
+generate_data_settings:
+  iterations: 20
+  fft_sz: 4096
+  run_clutter: True
+  run_targets: True
+
+autoencoder_settings:
+  latent_dim: 29
+  epochs: 3000
+  step_per_epoch: 4
+  batch_sz: 128
+  save_to_file: True
+  tensorboard_run: True
+  tuner_search: False
+  activation_type: lrelu
+  num_filters: 192
+  learn_rate: .001
+  model_beta: 250
