@@ -22,20 +22,35 @@ settings:
   plp: .5
 
 generate_data_settings:
-  iterations: 20
+  iterations: 1
   fft_sz: 4096
   run_clutter: True
-  run_targets: True
+  run_targets: False
 
-autoencoder_settings:
-  latent_dim: 29
-  epochs: 3000
-  step_per_epoch: 4
-  batch_sz: 128
-  save_to_file: True
-  tensorboard_run: True
-  tuner_search: False
-  activation_type: lrelu
-  num_filters: 192
-  learn_rate: .001
-  model_beta: 250
+dataset_params:
+  data_path: ./data
+  train_batch_size: 64
+  val_batch_size: 64
+  patch_size: 256
+  num_workers: 0
+  pin_memory: False
+
+exp_params:
+  LR: 0.005
+  weight_decay: 0.0
+  scheduler_gamma: 0.95
+  kld_weight: 0.00025
+  manual_seed: 1265
+  log_epoch: 10
+
+model_params:
+  in_channels: 2
+  latent_dim: 32
+  loss_type: 'B'
+  gamma: 10.0
+  max_capacity: 25
+  capacity_max_iter: 10000
+
+train_params:
+  log_dir: ./logs
+  max_epochs: 100

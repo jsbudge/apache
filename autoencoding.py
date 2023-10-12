@@ -9,7 +9,6 @@ from generate_trainingdata import parse_wrapper, parse_dataset_function
 from tensorflow import keras
 from keras.optimizers import Adam, Adadelta, Adamax
 import tensorflow as tf
-import tensorflow_probability as tfp
 # from tensorflow.profiler import profile, ProfileOptionBuilder
 from keras.callbacks import TensorBoard
 from keras.layers import Input, Flatten, Dense, BatchNormalization, \
@@ -23,7 +22,7 @@ from complexnn.conv import ComplexConv2D, ComplexConv1D
 from complexnn.dense import ComplexDense
 # import tensorflow_probability as tfp
 import matplotlib.pyplot as plt
-from jax import jit
+# from jax import jit
 from tqdm import tqdm
 import plotly.express as px
 import plotly.graph_objects as go
@@ -124,15 +123,6 @@ class Triangle(Layer):
     def call(self, inputs):
         x, y = tf.meshgrid(tf.range(0, 32), tf.range(0, 32))
         return tf.boolean_mask(inputs, tf.greater_equal(x, y), axis=1)
-
-
-class OuterProduct(Layer):
-
-    def call(self, inputs):
-        complex_inputs = tf.complex(inputs[:, :, :, 0], inputs[:, :, :, 1])
-        sample_cov = tfp.stats.covariance(complex_inputs, complex_inputs, sample_axis=1, event_axis=2)
-        return tf.stack([tf.math.real(sample_cov), tf.math.imag(sample_cov)], axis=3)
-        # return tfp.stats.covariance(inputs, inputs, sample_axis=1, event_axis=2)
 
 
 def reconstruct(tri_cov, cov_shape):

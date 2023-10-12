@@ -8,13 +8,9 @@ import matplotlib.pyplot as plt
 from scipy.signal import welch
 from data_converter.SDRParsing import SDRParse, load
 from tqdm import tqdm
-import plotly.express as px
-import plotly.graph_objects as go
-import plotly.io as pio
 import pickle
 from jax import jit
 from jax.numpy import fft as jaxfft
-import tensorflow as tf
 import yaml
 
 
@@ -24,18 +20,6 @@ TAC = 125e6
 DTR = np.pi / 180
 inch_to_m = .0254
 m_to_ft = 3.2808
-
-
-# example proto decode
-def parse_dataset_function(example_proto, cpi_len, bin_bw):
-    keys_to_features = {'cov': tf.io.FixedLenFeature(shape=(cpi_len, cpi_len, 2), dtype=tf.float32),
-                        'spectrum': tf.io.FixedLenFeature(shape=(bin_bw,), dtype=tf.float32)}
-    parsed_features = tf.io.parse_single_example(example_proto, keys_to_features)
-    return parsed_features['cov'], parsed_features['spectrum']
-
-
-def parse_wrapper(cpi_len, bin_bw):
-    return lambda x: parse_dataset_function(x, cpi_len, bin_bw)
 
 
 def genTargetPSD(bw, fc, rng_min, rng_max, spec_sz, fs, sz_m=15, alpha=None):
@@ -134,7 +118,6 @@ if __name__ == '__main__':
 
     if config['generate_data_settings']['run_clutter']:
         print('Running clutter data...')
-        writer = None
         # Standardize the FFT length for training purposes (this may cause data loss)
         fft_len = 32768
 
@@ -149,41 +132,37 @@ if __name__ == '__main__':
             print('Matched filter loaded.')
 
             print(f'File is {fn}')
-            with tf.io.TFRecordWriter(
-                    f'./data/clutter_{fn.split("/")[-1].split(".")[0]}.tfrecords') as writer:
-                for m in range(config['generate_data_settings']['iterations']):
-                    inp_data = []
-                    clutter_abs = []
-                    for n in tqdm(range(m * config['settings']['cpi_len'] // 2 * config['settings']['batch_sz'], m * config['settings']['cpi_len'] // 2 * config['settings']['batch_sz'] + config['settings']['cpi_len'] // 2 * config['settings']['batch_sz'],
-                                   config['settings']['cpi_len'] // 2)):
-                        pulse_fft = jaxfft.fft(sdr_f.getPulses(sdr_f[0].frame_num[n:n + config['settings']['cpi_len']], 0),
-                                                        fft_len, axis=0) * mfilt[:, None]
-                        # If the pulses are offset video, shift to be centered around zero
-                        pulse_fft = np.roll(pulse_fft, rollback, axis=0)
-                        pulses = jaxfft.ifft(pulse_fft, axis=0)[:sdr_f[0].nsam, :]
-                        if n + config['settings']['cpi_len'] > sdr_f[0].frame_num[-1]:
-                            break
-                        pulses /= np.mean(abs(pulses))  # Make the pulses smaller
-                        clutter_abs.append(pulse_fft.mean(axis=1) / np.sum(abs(pulse_fft.mean(axis=1))))
-                        cov_dt = np.cov(pulses.T)
-                        inp_data.append(np.stack((cov_dt.real, cov_dt.imag), axis=2))
-                    if len(inp_data) == 0:
+            for m in range(config['generate_data_settings']['iterations']):
+                inp_data = []
+                clutter_abs = []
+                for n in tqdm(range(m * config['settings']['cpi_len'] // 2 * config['settings']['batch_sz'], m * config['settings']['cpi_len'] // 2 * config['settings']['batch_sz'] + config['settings']['cpi_len'] // 2 * config['settings']['batch_sz'],
+                               config['settings']['cpi_len'] // 2)):
+                    pulse_fft = jaxfft.fft(sdr_f.getPulses(sdr_f[0].frame_num[n:n + config['settings']['cpi_len']], 0),
+                                                    fft_len, axis=0) * mfilt[:, None]
+                    # If the pulses are offset video, shift to be centered around zero
+                    pulse_fft = np.roll(pulse_fft, rollback, axis=0)
+                    pulses = jaxfft.ifft(pulse_fft, axis=0)[:sdr_f[0].nsam, :]
+                    if n + config['settings']['cpi_len'] > sdr_f[0].frame_num[-1]:
                         break
-                    inp_data = np.array(inp_data)
-                    clutter_abs = formatTargetClutterData(np.array(clutter_abs), bin_bw)
-
-                    # Get protobuf for the tfrecords, and write to file
-                    for c, s in zip(inp_data, clutter_abs):
-                        feature = {'cov': tf.train.Feature(float_list=tf.train.FloatList(value=c.flatten())),
-                                   'spectrum': tf.train.Feature(float_list=tf.train.FloatList(value=s))}
-                        example = tf.train.Example(features=tf.train.Features(feature=feature))
-                        writer.write(example.SerializeToString())
+                    pulses /= np.mean(abs(pulses))  # Make the pulses smaller
+                    clutter_abs.append(pulse_fft.mean(axis=1) / np.sum(abs(pulse_fft.mean(axis=1))))
+                    cov_dt = np.cov(pulses.T)
+                    inp_data.append(np.stack((cov_dt.real, cov_dt.imag), axis=2))
+                if len(inp_data) == 0:
+                    break
+                inp_data = np.array(inp_data, dtype=np.float32)
+                clutter_abs = formatTargetClutterData(np.array(clutter_abs), bin_bw).astype(np.float32)
+                with open(
+                        f'./data/clutter_{fn.split("/")[-1].split(".")[0]}.cov', 'ab') as writer:
+                    inp_data.tofile(writer)
+                with open(
+                        f'./data/clutter_{fn.split("/")[-1].split(".")[0]}.spec', 'ab') as writer:
+                    clutter_abs.tofile(writer)
 
     if config['generate_data_settings']['run_targets']:
         bin_bw = int(config['settings']['bandwidth'] // (fs / config['generate_data_settings']['fft_sz']))
         bin_bw += 1 if bin_bw % 2 != 0 else 0
         print('Running targets...')
-        writer = None
         # Insert metadata so we know what parameters were used to generate these targets
         chirp = np.fft.fft(genPulse(np.linspace(0, 1, 10), np.linspace(0, 1, 10), nr,
                                     fs, config['settings']['fc'], config['settings']['bandwidth']), config['generate_data_settings']['fft_sz'])
@@ -197,24 +176,16 @@ if __name__ == '__main__':
             targ_abs.append(tpsd.mean(axis=0))
             cov_dt = np.cov(tpsd)
             targs.append(np.stack((cov_dt.real, cov_dt.imag), axis=2))
-        targs = np.array(targs)
-        targ_abs = formatTargetClutterData(np.array(targ_abs), bin_bw)
-        with tf.io.TFRecordWriter(
-                f'./data/targets.tfrecords') as writer:
-            for c, s in zip(targs, targ_abs):
-                feature = {'cov': tf.train.Feature(float_list=tf.train.FloatList(value=c.flatten())),
-                           'spectrum': tf.train.Feature(float_list=tf.train.FloatList(value=s))}
-                example = tf.train.Example(features=tf.train.Features(feature=feature))
-                writer.write(example.SerializeToString())
+        targs = np.array(targs).astype(np.float32)
+        targ_abs = formatTargetClutterData(np.array(targ_abs), bin_bw).astype(np.float32)
+        with open(
+                f'./data/targets.cov', 'ab') as writer:
+            targs.tofile(writer)
+        with open(
+                f'./data/targets.spec', 'ab') as writer:
+            targ_abs.tofile(writer)
 
-    # Quick check of dataset
-    dataset = tf.data.TFRecordDataset('./data/targets.tfrecords')
-
-    # Parse the record into tensors.
-    dataset = dataset.map(tf.autograph.experimental.do_not_convert(parse_dataset_function))
-
-    # Generate batches
-    dataset = dataset.batch(5)
-
-    for data in dataset:
-        print(data[0].numpy())
+    # Some checks
+    with open(
+            f'./data/clutter_{fn.split("/")[-1].split(".")[0]}.cov', 'rb') as writer:
+        data = np.fromfile(writer, dtype=np.float32).reshape((-1, 32, 32, 2))
