@@ -1,18 +1,13 @@
 import os
-import math
 import torch
 from torch import optim
 from models import BaseVAE
-from typing import List, Callable, Union, Any, TypeVar, Tuple
+from typing import TypeVar
+import pytorch_lightning as pl
+import torchvision.utils as vutils
 
 # from torch import tensor as Tensor
 Tensor = TypeVar('torch.tensor')
-from dataloaders import DataModule
-import pytorch_lightning as pl
-from torchvision import transforms
-import torchvision.utils as vutils
-from torchvision.datasets import CelebA
-from torch.utils.data import DataLoader
 
 
 class VAExperiment(pl.LightningModule):
@@ -61,7 +56,8 @@ class VAExperiment(pl.LightningModule):
         self.log_dict({f"val_{key}": val.item() for key, val in val_loss.items()}, sync_dist=True)
 
     def on_validation_end(self) -> None:
-        self.sample_images()
+        if self.params['output_images']:
+            self.sample_images()
 
     def sample_images(self):
         # Get sample reconstruction image
@@ -72,7 +68,9 @@ class VAExperiment(pl.LightningModule):
         #         test_input, test_label = batch
         if self.current_epoch % self.params['log_epoch'] == 0:
             recons = self.model.generate(test_input, labels=test_label)
-            recons = torch.log10(torch.abs(torch.complex(recons[:, 0, :, :], recons[:, 1, :, :]))).unsqueeze(1).repeat(1, 3, 1, 1)
+            # A little finagling to get our 2-channel data into a 3-channel image format
+            recons = torch.log10(torch.abs(torch.complex(recons[:, 0, :, :], recons[:, 1, :, :]))).unsqueeze(1).repeat(
+                1, 3, 1, 1)
             vutils.save_image(recons.data,
                               os.path.join(self.logger.log_dir,
                                            "Reconstructions",
@@ -84,7 +82,9 @@ class VAExperiment(pl.LightningModule):
                 samples = self.model.sample(144,
                                             self.curr_device,
                                             labels=test_label)
-                samples = torch.log10(torch.abs(torch.complex(samples[:, 0, :, :], samples[:, 1, :, :]))).unsqueeze(1).repeat(1, 3, 1, 1)
+                # A little finagling to get our 2-channel data into a 3-channel image format
+                samples = torch.log10(torch.abs(torch.complex(samples[:, 0, :, :], samples[:, 1, :, :]))).unsqueeze(
+                    1).repeat(1, 3, 1, 1)
                 vutils.save_image(samples.cpu().data,
                                   os.path.join(self.logger.log_dir,
                                                "Samples",

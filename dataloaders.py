@@ -1,25 +1,25 @@
-import os
 from glob import glob
-
-import torch
-from torch import Tensor
-from pathlib import Path
-from typing import List, Optional, Sequence, Union, Any, Callable
+from typing import List, Optional, Sequence, Union
 from pytorch_lightning import LightningDataModule
 from torch.utils.data import DataLoader, Dataset
 from torchdata.datapipes.iter import FileLister, FileOpener
-from torchdata.datapipes.map import MapDataPipe
 from torchvision import transforms
-import zipfile
+from pathlib import Path
 import numpy as np
-from PIL import Image
 
 
 class CovarianceDataset(Dataset):
 
-    def __init__(self, root_dir, transform=None):
-        clutter_files = glob(f'{root_dir}/clutter_*.cov')
-        self.data = np.concatenate([np.fromfile(c, dtype=np.float32).reshape((-1, 32, 32, 2)) for c in clutter_files])
+    def __init__(self, root_dir, transform=None, split=1.):
+        if Path(root_dir).is_dir():
+            clutter_files = glob(f'{root_dir}/clutter_*.cov')
+            self.data = np.concatenate([np.fromfile(c,
+                                                    dtype=np.float32).reshape((-1, 32, 32, 2)) for c in clutter_files])
+        else:
+            self.data = np.fromfile(root_dir, dtype=np.float32).reshape((-1, 32, 32, 2))
+        # Do split
+        if split < 1:
+            self.data = self.data[np.random.choice(np.arange(self.data.shape[0]), int(self.data.shape[0] * split)), ...]
         self.transform = transform
 
     def __getitem__(self, idx):
@@ -41,6 +41,8 @@ class DataModule(LightningDataModule):
             patch_size: Union[int, Sequence[int]] = (256, 256),
             num_workers: int = 0,
             pin_memory: bool = False,
+            train_split: float = .7,
+            val_split: float = .3,
             **kwargs,
     ):
         super().__init__()
@@ -53,6 +55,8 @@ class DataModule(LightningDataModule):
         self.patch_size = patch_size
         self.num_workers = num_workers
         self.pin_memory = pin_memory
+        self.train_split = train_split
+        self.val_split = val_split
 
     def setup(self, stage: Optional[str] = None) -> None:
 
@@ -70,9 +74,9 @@ class DataModule(LightningDataModule):
             ]
         )
 
-        self.train_dataset = CovarianceDataset(self.data_dir, transform=train_transforms)
+        self.train_dataset = CovarianceDataset(self.data_dir, transform=train_transforms, split=self.train_split)
 
-        self.val_dataset = CovarianceDataset(self.data_dir, transform=val_transforms)
+        self.val_dataset = CovarianceDataset(self.data_dir, transform=val_transforms, split=self.val_split)
 
     #       ===============================================================
 

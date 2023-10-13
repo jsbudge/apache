@@ -22,7 +22,7 @@ settings:
   plp: .5
 
 generate_data_settings:
-  iterations: 1
+  iterations: 20
   fft_sz: 4096
   run_clutter: True
   run_targets: False
@@ -31,26 +31,31 @@ dataset_params:
   data_path: ./data
   train_batch_size: 64
   val_batch_size: 64
-  patch_size: 256
   num_workers: 0
-  pin_memory: False
+  pin_memory: True
+  train_split: .2
+  val_split: .1
 
 exp_params:
   LR: 0.005
   weight_decay: 0.0
   scheduler_gamma: 0.95
   kld_weight: 0.00025
-  manual_seed: 1265
   log_epoch: 10
+  output_images: False
 
 model_params:
   in_channels: 2
-  latent_dim: 32
+  latent_dim: 64
   loss_type: 'B'
   gamma: 10.0
   max_capacity: 25
   capacity_max_iter: 10000
+  reg_weight: 5000  # MMD weight
+  kernel_type: 'rbf'
+  alpha: -9.0     # KLD weight
+  beta: 10.5      # Reconstruction weight
 
 train_params:
   log_dir: ./logs
-  max_epochs: 100
+  max_epochs: 10
