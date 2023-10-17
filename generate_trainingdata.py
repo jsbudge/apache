@@ -135,7 +135,9 @@ if __name__ == '__main__':
             for m in range(config['generate_data_settings']['iterations']):
                 inp_data = []
                 clutter_abs = []
-                for n in tqdm(range(m * config['settings']['cpi_len'] // 2 * config['settings']['batch_sz'], m * config['settings']['cpi_len'] // 2 * config['settings']['batch_sz'] + config['settings']['cpi_len'] // 2 * config['settings']['batch_sz'],
+                for n in tqdm(range(m * config['settings']['cpi_len'] // 2 * config['settings']['batch_sz'],
+                                    m * config['settings']['cpi_len'] // 2 * config['settings']['batch_sz'] +
+                                    config['settings']['cpi_len'] // 2 * config['settings']['batch_sz'],
                                config['settings']['cpi_len'] // 2)):
                     pulse_fft = jaxfft.fft(sdr_f.getPulses(sdr_f[0].frame_num[n:n + config['settings']['cpi_len']], 0),
                                                     fft_len, axis=0) * mfilt[:, None]
@@ -163,10 +165,6 @@ if __name__ == '__main__':
         bin_bw = int(config['settings']['bandwidth'] // (fs / config['generate_data_settings']['fft_sz']))
         bin_bw += 1 if bin_bw % 2 != 0 else 0
         print('Running targets...')
-        # Insert metadata so we know what parameters were used to generate these targets
-        chirp = np.fft.fft(genPulse(np.linspace(0, 1, 10), np.linspace(0, 1, 10), nr,
-                                    fs, config['settings']['fc'], config['settings']['bandwidth']), config['generate_data_settings']['fft_sz'])
-        mfilt = chirp.conj()
         targs = []
         targ_abs = []
         for ntarg in tqdm(range(100)):

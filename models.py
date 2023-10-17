@@ -89,7 +89,9 @@ class BetaVAE(BaseVAE):
         # Kernel size, stride, padding
         layer_params = [16, 8, 4, 2]
         if hidden_dims is None:
-            hidden_dims = [128, 128, 128, 32]
+            hidden_dims = [128, 128, 128, 128]
+        else:
+            hidden_dims = [hidden_dims for _ in layer_params]
         self.final_sz = hidden_dims[-1]
         initial_channels = in_channels + 0
 
@@ -253,7 +255,9 @@ class InfoVAE(BaseVAE):
         # Kernel size, stride, padding
         layer_params = [16, 8, 4, 2]
         if hidden_dims is None:
-            hidden_dims = [128, 128, 128, 32]
+            hidden_dims = [128, 128, 128, 128]
+        else:
+            hidden_dims = [hidden_dims for _ in layer_params]
         self.final_sz = hidden_dims[-1]
         initial_channels = in_channels + 0
 
@@ -493,7 +497,9 @@ class WAE_MMD(BaseVAE):
         # Kernel size, stride, padding
         layer_params = [16, 8, 4, 2]
         if hidden_dims is None:
-            hidden_dims = [128, 128, 128, 32]
+            hidden_dims = [128, 128, 128, 128]
+        else:
+            hidden_dims = [hidden_dims for _ in layer_params]
         self.final_sz = hidden_dims[-1]
         initial_channels = in_channels + 0
 
@@ -684,3 +690,89 @@ class WAE_MMD(BaseVAE):
         """
 
         return self.forward(x)[0]
+
+
+class ConvAE(LightningModule):
+    num_iter = 0  # Global static variable to keep track of iterations
+
+    def __init__(self,
+                 in_channels: int,
+                 latent_dim: int,
+                 hidden_dims: List = None,
+                 **kwargs) -> None:
+        super(ConvAE, self).__init__()
+
+        self.latent_dim = latent_dim
+
+        modules = []
+        # Kernel size, stride, padding
+        layer_params = [16, 8, 4]
+        if hidden_dims is None:
+            hidden_dims = [128, 128, 128]
+        else:
+            hidden_dims = [hidden_dims for _ in layer_params]
+        initial_channels = in_channels + 0
+
+        # Build Encoder
+        for h_dim, l_params in zip(hidden_dims, layer_params):
+            modules.append(
+                RichConv2D(in_channels, h_dim, l_params)
+            )
+            in_channels = h_dim
+        modules.append(nn.Conv2d(in_channels, 1, 1))
+
+        self.encoder = nn.Sequential(*modules)
+
+        # Build Decoder
+        modules = [nn.Conv2d(1, hidden_dims[0], 1)]
+
+        hidden_dims.reverse()
+        layer_params.reverse()
+
+        for i in range(len(hidden_dims) - 1):
+            modules.append(
+                RichConv2DTranspose(hidden_dims[i], hidden_dims[i + 1], layer_params[i])
+            )
+
+        self.decoder = nn.Sequential(*modules)
+
+        self.final_layer = nn.Sequential(
+            nn.ConvTranspose2d(hidden_dims[-1],
+                               hidden_dims[-1],
+                               kernel_size=4,
+                               stride=2,
+                               padding=1,
+                               output_padding=1),
+            nn.BatchNorm2d(hidden_dims[-1]),
+            nn.LeakyReLU(),
+            nn.Conv2d(hidden_dims[-1], out_channels=initial_channels,
+                      kernel_size=4, padding=1))
+
+    def encode(self, input: Tensor) -> List[Tensor]:
+        """
+        Encodes the input by passing through the encoder network
+        and returns the latent codes.
+        :param input: (Tensor) Input tensor to encoder [N x C x H x W]
+        :return: (Tensor) List of latent codes
+        """
+        result = self.encoder(input)
+
+        return result
+
+    def decode(self, z: Tensor) -> Tensor:
+        result = self.decoder(z)
+        result = self.final_layer(result)
+        return result
+
+    def forward(self, input: Tensor, **kwargs) -> Tensor:
+        z = self.decode(self.encode(input))
+        return [input, z]
+
+    def loss_function(self, *args, **kwargs) -> dict:
+        self.num_iter += 1
+        recons = args[0]
+        input = args[1]
+
+        loss = F.mse_loss(recons, input)
+
+        return {'loss': loss}

@@ -10,13 +10,38 @@ import numpy as np
 
 class CovarianceDataset(Dataset):
 
-    def __init__(self, root_dir, transform=None, split=1.):
+    def __init__(self, root_dir, transform=None, split=1., single_example=False):
         if Path(root_dir).is_dir():
             clutter_files = glob(f'{root_dir}/clutter_*.cov')
             self.data = np.concatenate([np.fromfile(c,
                                                     dtype=np.float32).reshape((-1, 32, 32, 2)) for c in clutter_files])
         else:
             self.data = np.fromfile(root_dir, dtype=np.float32).reshape((-1, 32, 32, 2))
+        # Do split
+        if split < 1:
+            self.data = self.data[np.random.choice(np.arange(self.data.shape[0]), int(self.data.shape[0] * split)), ...]
+        if single_example:
+            self.data[1:, ...] = self.data[0, ...]
+        self.transform = transform
+
+    def __getitem__(self, idx):
+        img = self.data[idx, ...]
+        if self.transform is not None:
+            img = self.transform(img)
+        return img, img
+
+    def __len__(self):
+        return self.data.shape[0]
+
+
+class PulseDataset(Dataset):
+    def __init__(self, root_dir, transform=None, split=1.):
+        if Path(root_dir).is_dir():
+            clutter_files = glob(f'{root_dir}/clutter_*.spec')
+            self.data = np.concatenate([np.fromfile(c,
+                                                    dtype=np.float32).reshape((-1, 6554, 1)) for c in clutter_files])
+        else:
+            self.data = np.fromfile(root_dir, dtype=np.float32).reshape((-1, 6554, 1))
         # Do split
         if split < 1:
             self.data = self.data[np.random.choice(np.arange(self.data.shape[0]), int(self.data.shape[0] * split)), ...]
@@ -43,6 +68,7 @@ class DataModule(LightningDataModule):
             pin_memory: bool = False,
             train_split: float = .7,
             val_split: float = .3,
+            single_example: bool = False,
             **kwargs,
     ):
         super().__init__()
@@ -57,6 +83,7 @@ class DataModule(LightningDataModule):
         self.pin_memory = pin_memory
         self.train_split = train_split
         self.val_split = val_split
+        self.single_example = single_example
 
     def setup(self, stage: Optional[str] = None) -> None:
 
@@ -74,9 +101,11 @@ class DataModule(LightningDataModule):
             ]
         )
 
-        self.train_dataset = CovarianceDataset(self.data_dir, transform=train_transforms, split=self.train_split)
+        self.train_dataset = CovarianceDataset(self.data_dir, transform=train_transforms, split=self.train_split,
+                                               single_example=self.single_example)
 
-        self.val_dataset = CovarianceDataset(self.data_dir, transform=val_transforms, split=self.val_split)
+        self.val_dataset = CovarianceDataset(self.data_dir, transform=val_transforms, split=self.val_split,
+                                             single_example=self.single_example)
 
     #       ===============================================================
 

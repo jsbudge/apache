@@ -17,11 +17,12 @@ with open('./vae_config.yaml') as y:
 
 def objective(trial: optuna.Trial):
 
-    lr = trial.suggest_uniform('learning_rate', 1e-5, 5e-3)
-    batch_sz = trial.suggest_categorical('batch_size', [32, 64])
+    batch_sz = trial.suggest_categorical('batch_size', [32, 64, 128])
     latent_dim = trial.suggest_int('latent_dim', 3, 128)
-    reg_weight = trial.suggest_int('reg_weight', 110, 5000, step=200)
+    reg_weight = trial.suggest_int('reg_weight', 30, 5000, step=200)
     kernel_type = trial.suggest_categorical('kernel', ['rbf', 'imq'])
+    alpha = trial.suggest_uniform('alpha', -12.0, -1.0)
+    beta = trial.suggest_uniform('beta', 1.0, 20.0)
 
     param_dict['dataset_params']['train_batch_size'] = batch_sz
     param_dict['dataset_params']['val_batch_size'] = batch_sz
@@ -32,11 +33,17 @@ def objective(trial: optuna.Trial):
     param_dict['model_params']['kernel_type'] = kernel_type
     param_dict['model_params']['reg_weight'] = reg_weight
     param_dict['model_params']['latent_dim'] = latent_dim
+    param_dict['model_params']['alpha'] = alpha
+    param_dict['model_params']['beta'] = beta
 
     # Get the model, experiment, logger set up
-    model = WAE_MMD(**param_dict['model_params'])
+    if param_dict['exp_params']['model_type'] == 'InfoVAE':
+        model = InfoVAE(**param_dict['model_params'])
+    elif param_dict['exp_params']['model_type'] == 'WAE_MMD':
+        model = WAE_MMD(**param_dict['model_params'])
+    else:
+        model = BetaVAE(**param_dict['model_params'])
 
-    param_dict['exp_params']['LR'] = lr
     experiment = VAExperiment(model, param_dict['exp_params'])
     trainer = Trainer(logger=False, max_epochs=param_dict['train_params']['max_epochs'], enable_checkpointing=False)
     trainer.fit(experiment, datamodule=data)
@@ -45,7 +52,7 @@ def objective(trial: optuna.Trial):
 
 
 study = optuna.create_study()
-study.optimize(objective, n_trials=5000)
+study.optimize(objective, n_trials=500)
 
 optuna.visualization.plot_optimization_history(study).show()
 optuna.visualization.plot_contour(study).show()
