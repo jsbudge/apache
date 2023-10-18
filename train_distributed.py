@@ -10,7 +10,6 @@ from experiment import VAExperiment
 from models import BetaVAE, InfoVAE, WAE_MMD
 import argparse
 
-
 '''parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 parser.add_argument("--local_rank", type=int,
                     help="Local rank. Necessary for using the torch.distributed.launch utility.")
@@ -18,7 +17,7 @@ argv = parser.parse_args()
 
 local_rank = argv.local_rank'''
 
-strat = DDPStrategy(process_group_backend='gloo')
+strat = DDPStrategy(process_group_backend='nccl')
 print(f'Cuda is available? {torch.cuda.is_available()}')
 
 with open('./vae_config.yaml') as y:
