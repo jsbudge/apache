@@ -44,24 +44,24 @@ exp_params:
   kld_weight: 1.0
   log_epoch: 1
   output_images: False
-  model_type: BetaVAE
+  model_type: InfoVAE
 
 model_params:
   in_channels: 2
-  latent_dim: 8
-  loss_type: 'B'
-  gamma: 10.0
+  latent_dim: 12
+  loss_type: 'H'
+  gamma: 4430.
   max_capacity: 25
   capacity_max_iter: 10000
   reg_weight: 4230  # MMD weight
   kernel_type: 'imq'
   alpha: -9.1855     # KLD weight
-  beta: 2.5516      # Reconstruction weight
+  beta: 3.4842634      # Reconstruction weight
   hidden_dims: 128
 
 train_params:
   log_dir: ./logs
-  max_epochs: 5
+  max_epochs: 25
 
 compression_params:
   in_channels: 2

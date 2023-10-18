@@ -1,5 +1,6 @@
 import torch
 from pytorch_lightning import Trainer, loggers
+from pytorch_lightning.strategies import DDPStrategy
 import yaml
 import matplotlib.pyplot as plt
 from pathlib import Path
@@ -7,8 +8,17 @@ from simulib.simulation_functions import db
 from dataloaders import DataModule
 from experiment import VAExperiment
 from models import BetaVAE, InfoVAE, WAE_MMD
+import argparse
 
 
+'''parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+parser.add_argument("--local_rank", type=int,
+                    help="Local rank. Necessary for using the torch.distributed.launch utility.")
+argv = parser.parse_args()
+
+local_rank = argv.local_rank'''
+
+strat = DDPStrategy(process_group_backend='gloo')
 print(f'Cuda is available? {torch.cuda.is_available()}')
 
 with open('./vae_config.yaml') as y:
@@ -25,11 +35,11 @@ elif param_dict['exp_params']['model_type'] == 'WAE_MMD':
     model = WAE_MMD(**param_dict['model_params'])
 else:
     model = BetaVAE(**param_dict['model_params'])
-# ddp_model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[local_rank], output_device=local_rank)
 experiment = VAExperiment(model, param_dict['exp_params'])
 logger = loggers.TensorBoardLogger(param_dict['train_params']['log_dir'],
                                    name=f"{param_dict['exp_params']['model_type']}")
-trainer = Trainer(logger=logger, max_epochs=param_dict['train_params']['max_epochs'], log_every_n_steps=1)
+trainer = Trainer(logger=logger, max_epochs=param_dict['train_params']['max_epochs'], log_every_n_steps=1,
+                  strategy=strat, devices=2)
 
 # Generate filepaths for sample and reconstruction images
 Path(f"{logger.log_dir}/Samples").mkdir(exist_ok=True, parents=True)

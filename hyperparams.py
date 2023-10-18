@@ -19,9 +19,9 @@ def objective(trial: optuna.Trial):
 
     batch_sz = trial.suggest_categorical('batch_size', [32, 64, 128])
     latent_dim = trial.suggest_int('latent_dim', 3, 128)
-    reg_weight = trial.suggest_int('reg_weight', 30, 5000, step=200)
-    kernel_type = trial.suggest_categorical('kernel', ['rbf', 'imq'])
-    alpha = trial.suggest_uniform('alpha', -12.0, -1.0)
+    gamma = trial.suggest_int('gamma', 30, 5000, step=200)
+    kernel_type = trial.suggest_categorical('loss', ['H', 'B'])
+    # alpha = trial.suggest_uniform('alpha', -12.0, -1.0)
     beta = trial.suggest_uniform('beta', 1.0, 20.0)
 
     param_dict['dataset_params']['train_batch_size'] = batch_sz
@@ -30,10 +30,10 @@ def objective(trial: optuna.Trial):
     data = DataModule(**param_dict['dataset_params'])
     data.setup()
 
-    param_dict['model_params']['kernel_type'] = kernel_type
-    param_dict['model_params']['reg_weight'] = reg_weight
+    param_dict['model_params']['loss_type'] = kernel_type
+    param_dict['model_params']['gamma'] = gamma
     param_dict['model_params']['latent_dim'] = latent_dim
-    param_dict['model_params']['alpha'] = alpha
+    # param_dict['model_params']['alpha'] = alpha
     param_dict['model_params']['beta'] = beta
 
     # Get the model, experiment, logger set up
