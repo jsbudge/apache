@@ -4,7 +4,6 @@ from pytorch_lightning.strategies import DDPStrategy
 import yaml
 import matplotlib.pyplot as plt
 from pathlib import Path
-from simulib.simulation_functions import db
 from dataloaders import DataModule
 from experiment import VAExperiment
 from models import BetaVAE, InfoVAE, WAE_MMD
@@ -57,11 +56,4 @@ try:
     print('Model saved to disk.')
 except:
     print('Model not saved.')
-
-plt.figure()
-plt.subplot(1, 2, 1)
-plt.imshow(db(sample[0, ...] + 1j * sample[1, ...]))
-plt.subplot(1, 2, 2)
-plt.imshow(db(recon[0, ...] + 1j * recon[1, ...]))
-plt.show()
 
