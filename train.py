@@ -1,5 +1,6 @@
 import torch
 from pytorch_lightning import Trainer, loggers
+from pytorch_lightning.callbacks import ModelCheckpoint
 import yaml
 import matplotlib.pyplot as plt
 from pathlib import Path
@@ -25,6 +26,8 @@ elif param_dict['exp_params']['model_type'] == 'WAE_MMD':
     model = WAE_MMD(**param_dict['model_params'])
 else:
     model = BetaVAE(**param_dict['model_params'])
+
+
 # ddp_model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[local_rank], output_device=local_rank)
 experiment = VAExperiment(model, param_dict['exp_params'])
 logger = loggers.TensorBoardLogger(param_dict['train_params']['log_dir'],

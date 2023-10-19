@@ -44,7 +44,7 @@ exp_params:
   kld_weight: 1.0
   log_epoch: 1
   output_images: False
-  model_type: InfoVAE
+  model_type: BetaVAE
 
 model_params:
   in_channels: 2
@@ -61,7 +61,7 @@ model_params:
 
 train_params:
   log_dir: ./logs
-  max_epochs: 25
+  max_epochs: 500
 
 compression_params:
   in_channels: 2
