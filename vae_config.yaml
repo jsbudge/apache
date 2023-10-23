@@ -29,11 +29,11 @@ generate_data_settings:
 
 dataset_params:
   data_path: ./data
-  train_batch_size: 32
-  val_batch_size: 32
-  num_workers: 0
-  pin_memory: True
-  train_split: .9
+  train_batch_size: 128
+  val_batch_size: 128
+  num_workers: 8
+  pin_memory: False
+  train_split: .8
   val_split: .1
   single_example: False
 
@@ -42,7 +42,7 @@ exp_params:
   weight_decay: 0.0
   scheduler_gamma: 0.95
   kld_weight: 1.0
-  log_epoch: 1
+  log_epoch: 10
   output_images: False
   model_type: BetaVAE
 
@@ -61,7 +61,7 @@ model_params:
 
 train_params:
   log_dir: ./logs
-  max_epochs: 500
+  max_epochs: 5000
 
 compression_params:
   in_channels: 2

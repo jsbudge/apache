@@ -119,10 +119,13 @@ for s in sdr_file_bgtype:
 
 fig, axes = plt.subplots(3, 5)
 cam = Camera(fig)
+dist_lim = 0
 for didx, d in tqdm(enumerate(range(0, min([f.shape[0] for f in latent_reps]), 64))):
     lat_rep = np.array([f[d, ...] for f in latent_reps])
     dist_mat = squareform(pdist(lat_rep))
-    axes[1, 2].imshow(dist_mat, clim=[0, 6])
+    if dist_lim == 0:
+        dist_lim = dist_mat.max()
+    axes[1, 2].imshow(dist_mat, clim=[0, dist_lim])
     axes[1, 2].set_xticks(np.arange(dist_mat.shape[0]), [s[1] for s in sdr_file_bgtype], rotation=45)
     axes[1, 2].set_yticks(np.arange(dist_mat.shape[0]), [s[1] for s in sdr_file_bgtype], rotation=45)
     idxes = np.arange(len(images))

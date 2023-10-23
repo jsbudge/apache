@@ -1,5 +1,5 @@
 import torch
-from pytorch_lightning import Trainer, loggers
+from pytorch_lightning import Trainer, loggers, seed_everything
 from pytorch_lightning.strategies import DDPStrategy
 from pytorch_lightning.callbacks import ModelCheckpoint
 import yaml
@@ -38,7 +38,7 @@ experiment = VAExperiment(model, param_dict['exp_params'])
 logger = loggers.TensorBoardLogger(param_dict['train_params']['log_dir'],
                                    name=f"{param_dict['exp_params']['model_type']}")
 trainer = Trainer(logger=logger, max_epochs=param_dict['train_params']['max_epochs'], log_every_n_steps=50,
-                  strategy=strat, devices=2)
+                  strategy=strat, devices=2, num_nodes=4)
 
 # Generate filepaths for sample and reconstruction images
 Path(f"{logger.log_dir}/Samples").mkdir(exist_ok=True, parents=True)

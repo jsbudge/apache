@@ -23,6 +23,12 @@ class RichConv2D(LightningModule):
         return self.batch_norm(x)
 
 
+def init_weights(m):
+    if isinstance(m, nn.Conv2d) or isinstance(m, nn.ConvTranspose2d):
+        torch.nn.init.xavier_normal_(m.weight)
+        m.bias.data.fill_(0.01)
+
+
 class RichConv2DTranspose(LightningModule):
     def __init__(self, in_channels, out_channels, layer_sz):
         super(RichConv2DTranspose, self).__init__()
@@ -98,11 +104,15 @@ class BetaVAE(BaseVAE):
         # Build Encoder
         for h_dim, l_params in zip(hidden_dims, layer_params):
             modules.append(
-                RichConv2D(in_channels, h_dim, l_params)
+                nn.Sequential(
+                    RichConv2D(in_channels, h_dim, l_params),
+                    nn.Conv2d(h_dim, h_dim, 3, 1, 1),
+                )
             )
             in_channels = h_dim
 
         self.encoder = nn.Sequential(*modules)
+        self.encoder.apply(init_weights)
         self.fc_mu = nn.Linear(hidden_dims[-1] * 4, latent_dim)
         self.fc_var = nn.Linear(hidden_dims[-1] * 4, latent_dim)
 
@@ -116,10 +126,14 @@ class BetaVAE(BaseVAE):
 
         for i in range(len(hidden_dims) - 1):
             modules.append(
-                RichConv2DTranspose(hidden_dims[i], hidden_dims[i + 1], layer_params[i])
+                nn.Sequential(
+                    RichConv2DTranspose(hidden_dims[i], hidden_dims[i + 1], layer_params[i]),
+                    nn.ConvTranspose2d(hidden_dims[i + 1], hidden_dims[i + 1], 3, 1, 1),
+                )
             )
 
         self.decoder = nn.Sequential(*modules)
+        self.decoder.apply(init_weights)
 
         self.final_layer = nn.Sequential(
             nn.ConvTranspose2d(hidden_dims[-1],
@@ -129,7 +143,6 @@ class BetaVAE(BaseVAE):
                                padding=1,
                                output_padding=1),
             nn.BatchNorm2d(hidden_dims[-1]),
-            nn.LeakyReLU(),
             nn.Conv2d(hidden_dims[-1], out_channels=initial_channels,
                       kernel_size=4, padding=1))
 
