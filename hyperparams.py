@@ -18,8 +18,8 @@ def objective(trial: optuna.Trial):
     # Get the model, experiment, logger set up
     if param_dict['exp_params']['model_type'] == 'InfoVAE':
         model = InfoVAE(**param_dict['model_params'])
-        beta = trial.suggest_uniform('beta', 1.0, 20.0)
-        alpha = trial.suggest_uniform('alpha', -12.0, -1.0)
+        beta = trial.suggest_float('beta', 1.0, 20.0)
+        alpha = trial.suggest_float('alpha', -12.0, -1.0)
         param_dict['model_params']['alpha'] = alpha
         param_dict['model_params']['beta'] = beta
     elif param_dict['exp_params']['model_type'] == 'WAE_MMD':
@@ -48,9 +48,11 @@ def objective(trial: optuna.Trial):
     data = DataModule(**param_dict['dataset_params'])
     data.setup()
     param_dict['model_params']['latent_dim'] = latent_dim
+    param_dict['exp_params']['is_tuning'] = True
 
     experiment = VAExperiment(model, param_dict['exp_params'])
-    trainer = Trainer(logger=False, max_epochs=param_dict['train_params']['max_epochs'], enable_checkpointing=False)
+    trainer = Trainer(logger=False, max_epochs=param_dict['train_params']['max_epochs'], enable_checkpointing=False,
+                      devices=1)
     trainer.fit(experiment, datamodule=data)
 
     return trainer.callback_metrics['loss'].item()
