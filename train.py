@@ -4,15 +4,14 @@ from pytorch_lightning.callbacks import ModelCheckpoint
 import yaml
 import matplotlib.pyplot as plt
 from pathlib import Path
-from simulib.simulation_functions import db
 from dataloaders import DataModule
 from experiment import VAExperiment
 from models import BetaVAE, InfoVAE, WAE_MMD
-
+import numpy as np
 
 print(f'Cuda is available? {torch.cuda.is_available()}')
 
-seed_everything(42, workers=True)
+seed_everything(np.random.randint(1, 77), workers=True)
 
 with open('./vae_config.yaml') as y:
     param_dict = yaml.safe_load(y.read())
@@ -50,16 +49,10 @@ model.eval()
 sample = data.val_dataset[0][0].data.numpy()
 recon = model(data.val_dataset[0][0].unsqueeze(0))[0].squeeze(0).data.numpy()
 
-try:
-    torch.save(model.state_dict(), './model/inference_model.state')
-    print('Model saved to disk.')
-except:
-    print('Model not saved.')
-
-plt.figure()
-plt.subplot(1, 2, 1)
-plt.imshow(db(sample[0, ...] + 1j * sample[1, ...]))
-plt.subplot(1, 2, 2)
-plt.imshow(db(recon[0, ...] + 1j * recon[1, ...]))
-plt.show()
+if trainer.is_global_zero:
+    try:
+        torch.save(model.state_dict(), './model/inference_model.state')
+        print('Model saved to disk.')
+    except:
+        print('Model not saved.')
 

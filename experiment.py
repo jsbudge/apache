@@ -58,6 +58,9 @@ class VAExperiment(pl.LightningModule):
     def on_validation_end(self) -> None:
         if self.params['output_images']:
             self.sample_images()
+        if self.trainer.is_global_zero:
+            torch.save(self.model.state_dict(), './model/inference_model.state')
+            print('Model saved to disk.')
 
     def sample_images(self):
         # Get sample reconstruction image

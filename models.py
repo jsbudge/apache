@@ -91,6 +91,9 @@ class BetaVAE(BaseVAE):
         self.C_max = torch.Tensor([max_capacity])
         self.C_stop_iter = capacity_max_iter
 
+        self.save_hyperparameters('in_channels', 'latent_dim', 'hidden_dims', 'beta', 'gamma', 'max_capacity',
+                                  'capacity_max_iter', 'loss_type', *[k for k in kwargs.keys()])
+
         modules = []
         # Kernel size, stride, padding
         layer_params = [16, 8, 4, 2]
@@ -505,6 +508,8 @@ class WAE_MMD(BaseVAE):
         self.reg_weight = reg_weight
         self.kernel_type = kernel_type
         self.z_var = latent_var
+
+
 
         modules = []
         # Kernel size, stride, padding
