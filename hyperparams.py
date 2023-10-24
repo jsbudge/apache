@@ -3,7 +3,6 @@ from pytorch_lightning import Trainer, loggers
 import yaml
 import matplotlib.pyplot as plt
 from pathlib import Path
-from simulib.simulation_functions import db
 from dataloaders import DataModule
 from experiment import VAExperiment
 from models import BetaVAE, InfoVAE, WAE_MMD
