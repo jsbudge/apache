@@ -19,7 +19,8 @@ class CovarianceDataset(Dataset):
             self.data = np.fromfile(root_dir, dtype=np.float32).reshape((-1, 32, 32, 2))
         # Do split
         if split < 1:
-            self.data = self.data[np.random.choice(np.arange(self.data.shape[0]), int(self.data.shape[0] * split)), ...]
+            self.data = self.data[np.random.choice(np.arange(self.data.shape[0]),
+                                                   int(self.data.shape[0] * split)), ...]
         if single_example:
             self.data[1:, ...] = self.data[0, ...]
         self.transform = transform

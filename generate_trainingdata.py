@@ -122,7 +122,7 @@ if __name__ == '__main__':
         fft_len = 32768
 
         for fn in sdr_file:
-            sdr_f = load(fn)
+            sdr_f = load(fn, import_pickle=False)
             if sdr_f[0].fs != fs:
                 continue  # I'll work on this later
             bin_bw = int(config['settings']['bandwidth'] // (sdr_f[0].fs / fft_len))

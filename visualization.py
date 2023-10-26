@@ -82,7 +82,7 @@ for s in sdr_file_bgtype:
     ims = []
     latent_z = []
     samples = []
-    for i, batch in tqdm(enumerate(DataLoader(dataset, shuffle=False, batch_size=64)), total=len(dataset) // 64):
+    for i, batch in tqdm(enumerate(DataLoader(dataset, shuffle=False, batch_size=128)), total=len(dataset) // 64):
         latent_z.append(model.forward(batch[0])[2].data.numpy())
         samples.append(batch[0].data.numpy())
         pulse_fft = jaxfft.fft(sdr_f.getPulses(sdr_f[0].frame_num[i:i + param_dict['settings']['cpi_len'] * 2], 0),

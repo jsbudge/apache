@@ -29,8 +29,8 @@ generate_data_settings:
 
 dataset_params:
   data_path: ./data
-  train_batch_size: 128
-  val_batch_size: 128
+  train_batch_size: 32
+  val_batch_size: 32
   num_workers: 8
   pin_memory: False
   train_split: .8
@@ -39,30 +39,30 @@ dataset_params:
 
 exp_params:
   LR: 0.005
-  weight_decay: 0.0
+  weight_decay: 0.92
   scheduler_gamma: 0.95
-  kld_weight: 1.0
+  kld_weight: .7362
   log_epoch: 10
   output_images: False
-  model_type: WAE_MMD
+  model_type: BetaVAE
   is_tuning: False
 
 model_params:
   in_channels: 2
-  latent_dim: 12
+  latent_dim: 71
   loss_type: 'H'
   gamma: 4430.
   max_capacity: 25
   capacity_max_iter: 10000
-  reg_weight: 4230  # MMD weight
+  reg_weight: 4640  # MMD weight
   kernel_type: 'imq'
-  alpha: -9.1855     # KLD weight
-  beta: 3.4842634      # Reconstruction weight
+  alpha: -5.4139     # KLD weight
+  beta: 1.86106      # Reconstruction weight
   hidden_dims: 128
 
 train_params:
   log_dir: ./logs
-  max_epochs: 2
+  max_epochs: 5
 
 compression_params:
   in_channels: 2
