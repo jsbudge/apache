@@ -122,12 +122,12 @@ if __name__ == '__main__':
         fft_len = 32768
 
         for fn in sdr_file:
-            sdr_f = load(fn, import_pickle=False)
+            sdr_f = load(fn, import_pickle=False, progress_tracker=True)
             if sdr_f[0].fs != fs:
                 continue  # I'll work on this later
             bin_bw = int(config['settings']['bandwidth'] // (sdr_f[0].fs / fft_len))
             bin_bw += 1 if bin_bw % 2 != 0 else 0
-            mfilt = GetAdvMatchedFilter(sdr_f[0], fft_len=fft_len)
+            mfilt = sdr_f.genMatchedFilter(0, fft_len=fft_len)
             rollback = -int(np.round(sdr_f[0].baseband_fc / (sdr_f[0].fs / fft_len)))
             print('Matched filter loaded.')
 
@@ -139,7 +139,7 @@ if __name__ == '__main__':
                                     m * config['settings']['cpi_len'] // 2 * config['settings']['batch_sz'] +
                                     config['settings']['cpi_len'] // 2 * config['settings']['batch_sz'],
                                config['settings']['cpi_len'] // 2)):
-                    pulse_fft = jaxfft.fft(sdr_f.getPulses(sdr_f[0].frame_num[n:n + config['settings']['cpi_len']], 0),
+                    pulse_fft = jaxfft.fft(sdr_f.getPulses(sdr_f[0].frame_num[n:n + config['settings']['cpi_len']], 0)[1],
                                                     fft_len, axis=0) * mfilt[:, None]
                     # If the pulses are offset video, shift to be centered around zero
                     pulse_fft = np.roll(pulse_fft, rollback, axis=0)
