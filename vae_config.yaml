@@ -39,9 +39,9 @@ dataset_params:
 
 exp_params:
   LR: 0.005
-  weight_decay: 0.92
+  weight_decay: 0.12
   scheduler_gamma: 0.95
-  kld_weight: .7362
+  kld_weight: .6049
   log_epoch: 10
   output_images: False
   model_type: BetaVAE
@@ -49,7 +49,7 @@ exp_params:
 
 model_params:
   in_channels: 2
-  latent_dim: 71
+  latent_dim: 103
   loss_type: 'H'
   gamma: 4430.
   max_capacity: 25
