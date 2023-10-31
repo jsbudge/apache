@@ -1,7 +1,6 @@
 import numpy as np
 import pandas as pd
-from simulation_functions import db, findPowerOf2, genPulse
-import cupy
+from simulib.simulation_functions import db, findPowerOf2, genPulse
 from scipy.signal.windows import taylor
 import matplotlib.pyplot as plt
 

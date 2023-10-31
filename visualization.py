@@ -1,3 +1,6 @@
+import time
+import timeit
+
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
@@ -16,9 +19,11 @@ from data_converter.SDRParsing import SDRParse, load
 from tqdm import tqdm
 from jax.numpy import fft as jaxfft
 
-
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
 with open('./vae_config.yaml') as y:
     param_dict = yaml.safe_load(y.read())
+
+batch_sz = param_dict['settings']['batch_sz']
 
 # Get the model, experiment, logger set up
 if param_dict['exp_params']['model_type'] == 'InfoVAE':
@@ -29,6 +34,7 @@ else:
     model = BetaVAE(**param_dict['model_params'])
 model.load_state_dict(torch.load('./model/inference_model.state'))
 model.eval()  # Set to inference mode
+model.to(device)
 
 sdr_file_bgtype = [('SAR_06072023_154802', 'river'),
                    ('SAR_06062023_125944', 'suburb'),
@@ -82,8 +88,8 @@ for s in sdr_file_bgtype:
     ims = []
     latent_z = []
     samples = []
-    for i, batch in tqdm(enumerate(DataLoader(dataset, shuffle=False, batch_size=128)), total=len(dataset) // 64):
-        latent_z.append(model.forward(batch[0])[2].data.numpy())
+    for i, batch in tqdm(enumerate(DataLoader(dataset, shuffle=False, batch_size=batch_sz)), total=len(dataset) // batch_sz):
+        latent_z.append(model.forward(batch[0].to(device))[2].cpu().data.numpy())
         samples.append(batch[0].data.numpy())
         pulse_fft = jaxfft.fft(sdr_f.getPulses(sdr_f[0].frame_num[i:i + param_dict['settings']['cpi_len'] * 2], 0)[1],
                                fft_len, axis=0) * mfilt[:, None]
@@ -120,7 +126,7 @@ for s in sdr_file_bgtype:
 fig, axes = plt.subplots(3, 5)
 cam = Camera(fig)
 dist_lim = 0
-for didx, d in tqdm(enumerate(range(0, min([f.shape[0] for f in latent_reps]), 64))):
+for didx, d in tqdm(enumerate(range(0, min([f.shape[0] for f in latent_reps]), batch_sz))):
     lat_rep = np.array([f[d, ...] for f in latent_reps])
     dist_mat = squareform(pdist(lat_rep))
     if dist_lim == 0:
@@ -145,7 +151,4 @@ plt.show()
 for l in latent_reps:
     ax.scatter(l[:, 0], l[:, 1], l[:, 2])
 plt.show()'''
-
-
-
 

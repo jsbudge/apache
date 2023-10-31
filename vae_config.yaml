@@ -16,7 +16,7 @@ perf_params:
 
 settings:
   cpi_len: 32
-  batch_sz: 64
+  batch_sz: 128
   fc: 10000000000.
   bandwidth: 400000000.
   plp: .5
@@ -29,8 +29,8 @@ generate_data_settings:
 
 dataset_params:
   data_path: ./data
-  train_batch_size: 32
-  val_batch_size: 32
+  train_batch_size: 128
+  val_batch_size: 128
   num_workers: 8
   pin_memory: False
   train_split: .8
@@ -39,17 +39,17 @@ dataset_params:
 
 exp_params:
   LR: 0.005
-  weight_decay: 0.12
+  weight_decay: 0.59
   scheduler_gamma: 0.95
-  kld_weight: .6049
+  kld_weight: .977
   log_epoch: 10
   output_images: False
-  model_type: BetaVAE
+  model_type: WAE_MMD
   is_tuning: False
 
 model_params:
   in_channels: 2
-  latent_dim: 103
+  latent_dim: 48
   loss_type: 'H'
   gamma: 4430.
   max_capacity: 25
@@ -58,11 +58,11 @@ model_params:
   kernel_type: 'imq'
   alpha: -5.4139     # KLD weight
   beta: 1.86106      # Reconstruction weight
-  hidden_dims: 128
+  hidden_dims: 156
 
 train_params:
   log_dir: ./logs
-  max_epochs: 5
+  max_epochs: 50
 
 compression_params:
   in_channels: 2

@@ -36,7 +36,7 @@ logger = loggers.TensorBoardLogger(param_dict['train_params']['log_dir'],
 trainer = Trainer(logger=logger, max_epochs=param_dict['train_params']['max_epochs'],
                   log_every_n_steps=param_dict['exp_params']['log_epoch'],
                   strategy='ddp', deterministic=True,
-                  callbacks=[EarlyStopping(monitor='Reconstruction_Loss', patience=5, check_finite=True)])
+                  callbacks=[EarlyStopping(monitor='Reconstruction_Loss', patience=50, check_finite=True)])
 
 # Generate filepaths for sample and reconstruction images
 Path(f"{logger.log_dir}/Samples").mkdir(exist_ok=True, parents=True)
