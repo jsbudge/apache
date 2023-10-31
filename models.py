@@ -43,6 +43,23 @@ class RichConv2DTranspose(LightningModule):
         return self.batch_norm(x)
 
 
+class Linear2D(LightningModule):
+    def __init__(self, width, height, nchan):
+        super(Linear2D, self).__init__()
+        self.width = width
+        self.height = height
+        self.nchan = nchan
+        self.total_weights = width * height * nchan
+        self.linear = nn.Linear(self.total_weights, self.total_weights)
+
+    def forward(self, x):
+        x = x.view(-1, self.total_weights)
+        x = self.linear(x)
+        x = F.leaky_relu(x)
+        x = x.view(-1, self.nchan, self.width, self.height)
+        return x
+
+
 class BaseVAE(LightningModule):
 
     def __init__(self) -> None:
@@ -509,14 +526,12 @@ class WAE_MMD(BaseVAE):
         self.kernel_type = kernel_type
         self.z_var = latent_var
 
-
-
         modules = []
         # Kernel size, stride, padding
         layer_params = [16, 8, 4, 2]
         if hidden_dims is None:
-            hidden_dims = [128, 128, 128, 128]
-        else:
+            hidden_dims = [32, 64, 128, 256]
+        elif isinstance(hidden_dims, int):
             hidden_dims = [hidden_dims for _ in layer_params]
         self.final_sz = hidden_dims[-1]
         initial_channels = in_channels + 0
@@ -524,7 +539,10 @@ class WAE_MMD(BaseVAE):
         # Build Encoder
         for h_dim, l_params in zip(hidden_dims, layer_params):
             modules.append(
-                RichConv2D(in_channels, h_dim, l_params)
+                nn.Sequential(
+                RichConv2D(in_channels, h_dim, l_params),
+                Linear2D(l_params, l_params, h_dim),
+                )
             )
             in_channels = h_dim
 
@@ -541,7 +559,10 @@ class WAE_MMD(BaseVAE):
 
         for i in range(len(hidden_dims) - 1):
             modules.append(
-                RichConv2DTranspose(hidden_dims[i], hidden_dims[i + 1], layer_params[i])
+                nn.Sequential(
+                RichConv2DTranspose(hidden_dims[i], hidden_dims[i + 1], layer_params[i]),
+                Linear2D(layer_params[i] * 2, layer_params[i] * 2, hidden_dims[i + 1]),
+                )
             )
 
         self.decoder = nn.Sequential(*modules)
@@ -556,7 +577,8 @@ class WAE_MMD(BaseVAE):
             nn.BatchNorm2d(hidden_dims[-1]),
             nn.LeakyReLU(),
             nn.Conv2d(hidden_dims[-1], out_channels=initial_channels,
-                      kernel_size=4, padding=1))
+                      kernel_size=4, padding=1),
+        )
 
     def encode(self, input: Tensor) -> Tensor:
         """

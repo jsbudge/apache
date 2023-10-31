@@ -6,12 +6,12 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 from dataloaders import DataModule
 from experiment import VAExperiment
-from models import BetaVAE, InfoVAE, WAE_MMD
+from models import BetaVAE, InfoVAE, WAE_MMD, init_weights
 import numpy as np
 
 print(f'Cuda is available? {torch.cuda.is_available()}')
 
-seed_everything(42, workers=True)
+seed_everything(43, workers=True)
 
 with open('./vae_config.yaml') as y:
     param_dict = yaml.safe_load(y.read())
@@ -27,6 +27,8 @@ elif param_dict['exp_params']['model_type'] == 'WAE_MMD':
     model = WAE_MMD(**param_dict['model_params'])
 else:
     model = BetaVAE(**param_dict['model_params'])
+
+model.apply(init_weights)
 
 
 # ddp_model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[local_rank], output_device=local_rank)

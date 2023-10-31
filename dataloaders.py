@@ -91,14 +91,15 @@ class DataModule(LightningDataModule):
         train_transforms = transforms.Compose(
             [
                 transforms.ToTensor(),
-                transforms.Normalize((0.034028642, 0.04619637), 0.4151423),
+                transforms.Normalize((0., 0.), 0.4151423),
             ]
         )
+        # transforms.Normalize((0.034028642, 0.04619637), 0.4151423)
 
         val_transforms = transforms.Compose(
             [
                 transforms.ToTensor(),
-                transforms.Normalize((0.034028642, 0.04619637), 0.4151423),
+                transforms.Normalize((0., 0.), 0.4151423),
             ]
         )
 

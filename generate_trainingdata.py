@@ -6,10 +6,11 @@ import numpy as np
 from simulib.simulation_functions import genPulse, findPowerOf2, db, GetAdvMatchedFilter
 import matplotlib.pyplot as plt
 from scipy.signal import welch
-from data_converter.SDRParsing import SDRParse, load
+from data_converter.SDRParsing import SDRParse, load, loadXMLFile
 from tqdm import tqdm
 import pickle
 from jax import jit
+from glob import glob
 from jax.numpy import fft as jaxfft
 import yaml
 
@@ -78,10 +79,10 @@ def genTargetPSDSwerling1(bw, fc, rng_min, rng_max, spec_sz, fs, cpi_len, fft_sz
     return psd
 
 
-def formatTargetClutterData(data, bin_bandwidth):
-    split = np.zeros((data.shape[0], bin_bandwidth), dtype=np.float64)
-    split[:, :bin_bandwidth // 2] = abs(data[:, -bin_bandwidth // 2:])
-    split[:, -bin_bandwidth // 2:] = abs(data[:, :bin_bandwidth // 2])
+def formatTargetClutterData(data: np.float32, bin_bandwidth: int):
+    split = np.zeros((data.shape[0], bin_bandwidth, 2), dtype=np.float64)
+    split[:, :bin_bandwidth // 2, :] = data[:, -bin_bandwidth // 2:, :]
+    split[:, -bin_bandwidth // 2:, :] = data[:, :bin_bandwidth // 2, :]
     return split
 
 
@@ -108,6 +109,19 @@ if __name__ == '__main__':
             config = yaml.safe_load(file)
         except yaml.YAMLError as exc:
             print(exc)
+
+    sdr_fnmes = glob('/data6/SAR_DATA/2023/**/*.sar')
+    sdr_file = []
+    for s in sdr_fnmes:
+        try:
+            xml_data = loadXMLFile(f'{s[:-4]}.xml', True)['SlimSDR_Configuration']
+            if xml_data['SlimSDR_Info']['System_Mode'] == 'SAR':
+                if 9e9 < xml_data['SlimSDR_Info']['Channel_0']['Center_Frequency_Hz'] < 32e9:
+                    sdr_file.append(s)
+        except FileNotFoundError:
+            print(f'{s} not found.')
+        except:
+            print(f'{s} has broken XML.')
 
     franges = np.linspace(config['perf_params']['vehicle_slant_range_min'],
                           config['perf_params']['vehicle_slant_range_max'], 1000) * 2 / c0
@@ -147,7 +161,8 @@ if __name__ == '__main__':
                     if n + config['settings']['cpi_len'] > sdr_f[0].frame_num[-1]:
                         break
                     pulses /= np.mean(abs(pulses))  # Make the pulses smaller
-                    clutter_abs.append(pulse_fft.mean(axis=1) / np.sum(abs(pulse_fft.mean(axis=1))))
+                    pmean = pulses.mean(axis=1)
+                    clutter_abs.append(np.stack((pmean.real, pmean.imag), axis=1))
                     cov_dt = np.cov(pulses.T)
                     inp_data.append(np.stack((cov_dt.real, cov_dt.imag), axis=2))
                 if len(inp_data) == 0:
@@ -171,7 +186,8 @@ if __name__ == '__main__':
             tpsd = genTargetPSDSwerling1(config['settings']['bandwidth'], config['settings']['fc'], config['perf_params']['vehicle_slant_range_min'],
                           config['perf_params']['vehicle_slant_range_max'],
                                          config['generate_data_settings']['fft_sz'], fs, 32, config['generate_data_settings']['fft_sz'])
-            targ_abs.append(tpsd.mean(axis=0))
+            tp_mean = tpsd.mean(axis=0)
+            targ_abs.append(np.stack((tp_mean.real, tp_mean.imag), axis=2))
             cov_dt = np.cov(tpsd)
             targs.append(np.stack((cov_dt.real, cov_dt.imag), axis=2))
         targs = np.array(targs).astype(np.float32)

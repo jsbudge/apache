@@ -14,7 +14,6 @@ from scipy.spatial.distance import pdist, squareform
 from torch.utils.data import DataLoader, Dataset
 from data_converter.SDRParsing import loadASIFile
 from celluloid import Camera
-import cv2
 from data_converter.SDRParsing import SDRParse, load
 from tqdm import tqdm
 from jax.numpy import fft as jaxfft
@@ -60,7 +59,7 @@ images = []
 train_transforms = transforms.Compose(
             [
                 transforms.ToTensor(),
-                transforms.Normalize((0.034028642, 0.04619637), 0.4151423),
+                transforms.Normalize((0., 0.), 0.4151423),
             ]
         )
 
@@ -101,12 +100,17 @@ for s in sdr_file_bgtype:
     latent_reps.append(latent_z)
     images.append(ims)
 
+    dec = model.decode(torch.tensor(latent_z[0, :]).to(device)).cpu().data.numpy()
+    dec = (dec[0, 0, ...] + 1j * dec[0, 1, ...]) * 0.4151423
+
     plt.figure(f'{s[0]} Information')
-    plt.subplot(1, 3, 1)
+    plt.subplot(2, 3, 1)
     plt.imshow(db(samples[0, 0, ...] + 1j * samples[0, 1, ...]))
-    plt.subplot(1, 3, 2)
+    plt.subplot(2, 3, 4)
+    plt.imshow(db(dec))
+    plt.subplot(2, 3, (2, 5))
     plt.scatter(np.arange(latent_z.shape[1]), latent_z[0, ...], c='blue')
-    plt.subplot(1, 3, 3)
+    plt.subplot(2, 3, (3, 6))
     plt.imshow(ims[0, ...])
     plt.axis('tight')
 
@@ -144,7 +148,7 @@ for didx, d in tqdm(enumerate(range(0, min([f.shape[0] for f in latent_reps]), b
 
 print('Saving visualization...')
 anim = cam.animate()
-anim.save('./visualization.mp4', fps=10)
+# anim.save('./visualization.mp4', fps=10)
 plt.show()
 
 '''ax = plt.figure().add_subplot(projection='3d')
