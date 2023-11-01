@@ -4,7 +4,7 @@ import yaml
 import matplotlib.pyplot as plt
 from pathlib import Path
 from simulib.simulation_functions import db
-from dataloaders import DataModule
+from dataloaders import CovDataModule
 from experiment import AExperiment
 from models import ConvAE
 print(f'Cuda is available? {torch.cuda.is_available()}')
@@ -13,7 +13,7 @@ with open('./vae_config.yaml') as y:
     param_dict = yaml.safe_load(y.read())
 # hparams = make_dataclass('hparams', param_dict.items())(**param_dict)
 
-data = DataModule(**param_dict["dataset_params"])
+data = CovDataModule(**param_dict["dataset_params"])
 data.setup()
 
 model = ConvAE(**param_dict['compression_params'])

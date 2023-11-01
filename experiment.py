@@ -212,3 +212,78 @@ class AExperiment(pl.LightningModule):
                 return optims, scheds
         except:
             return optims
+
+
+class GeneratorExperiment(pl.LightningModule):
+
+    def __init__(self,
+                 wave_model: pl.LightningModule,
+                 params: dict) -> None:
+        super(GeneratorExperiment, self).__init__()
+
+        self.model = wave_model
+        self.params = params
+        self.curr_device = None
+        self.hold_graph = False
+        try:
+            self.hold_graph = self.params['retain_first_backpass']
+        except:
+            pass
+
+    def forward(self, clutter: Tensor, target: Tensor) -> Tensor:
+        return self.model(clutter, target)
+
+    def training_step(self, batch, batch_idx):
+        clutter_cov, target_cov, clutter_spec, target_spec = batch
+        self.curr_device = clutter_cov.device
+        self.automatic_optimization = True
+
+        results = self.forward(clutter_cov, target_cov)
+        train_loss = self.model.loss_function(results, clutter_spec, target_spec)
+
+        self.log_dict({key: val.item() for key, val in train_loss.items()}, sync_dist=True, prog_bar=True)
+
+        return train_loss['loss']
+
+    def validation_step(self, batch, batch_idx, optimizer_idx=0):
+        clutter_cov, target_cov, clutter_spec, target_spec = batch
+        self.curr_device = clutter_cov.device
+        self.automatic_optimization = True
+
+        results = self.forward(clutter_cov, target_cov)
+        train_loss = self.model.loss_function(results, clutter_spec, target_spec)
+
+        self.log_dict({key: val.item() for key, val in train_loss.items()}, sync_dist=True, prog_bar=True)
+
+    def on_validation_end(self) -> None:
+        if self.trainer.is_global_zero and not self.params['is_tuning']:
+            torch.save(self.model.state_dict(), './model/waveform_model.state')
+            print('Model saved to disk.')
+
+    def configure_optimizers(self):
+
+        optims = []
+        scheds = []
+
+        optimizer = optim.Adam(self.model.parameters(),
+                               lr=self.params['LR'],
+                               weight_decay=self.params['weight_decay'])
+        optims.append(optimizer)
+
+        try:
+            if self.params['scheduler_gamma'] is not None:
+                scheduler = optim.lr_scheduler.ExponentialLR(optims[0],
+                                                             gamma=self.params['scheduler_gamma'])
+                scheds.append(scheduler)
+
+                # Check if another scheduler is required for the second optimizer
+                try:
+                    if self.params['scheduler_gamma_2'] is not None:
+                        scheduler2 = optim.lr_scheduler.ExponentialLR(optims[1],
+                                                                      gamma=self.params['scheduler_gamma_2'])
+                        scheds.append(scheduler2)
+                except:
+                    pass
+                return optims, scheds
+        except:
+            return optims

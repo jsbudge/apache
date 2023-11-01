@@ -3,7 +3,7 @@ from pytorch_lightning import Trainer, loggers
 import yaml
 import matplotlib.pyplot as plt
 from pathlib import Path
-from dataloaders import DataModule
+from dataloaders import CovDataModule
 from experiment import VAExperiment
 from models import BetaVAE, InfoVAE, WAE_MMD
 import optuna
@@ -45,7 +45,7 @@ def objective(trial: optuna.Trial):
     param_dict['dataset_params']['train_batch_size'] = batch_sz
     param_dict['dataset_params']['val_batch_size'] = batch_sz
 
-    data = DataModule(**param_dict['dataset_params'])
+    data = CovDataModule(**param_dict['dataset_params'])
     data.setup()
     param_dict['model_params']['latent_dim'] = latent_dim
     param_dict['exp_params']['is_tuning'] = True

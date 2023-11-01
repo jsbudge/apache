@@ -7,10 +7,12 @@ from torchvision import transforms
 from pathlib import Path
 import numpy as np
 
+from models import BaseVAE
+
 
 class CovarianceDataset(Dataset):
 
-    def __init__(self, root_dir, transform=None, split=1., single_example=False):
+    def __init__(self, root_dir, transform=None, split=1., single_example=False, mu=0., var=1.):
         if Path(root_dir).is_dir():
             clutter_files = glob(f'{root_dir}/clutter_*.cov')
             self.data = np.concatenate([np.fromfile(c,
@@ -23,7 +25,15 @@ class CovarianceDataset(Dataset):
                                                    int(self.data.shape[0] * split)), ...]
         if single_example:
             self.data[1:, ...] = self.data[0, ...]
-        self.transform = transform
+        if transform is not None:
+            self.transform = transform
+        else:
+            self.transform = transforms.Compose(
+                [
+                    transforms.ToTensor(),
+                    transforms.Normalize(mu, var),
+                ]
+            )
 
     def __getitem__(self, idx):
         img = self.data[idx, ...]
@@ -58,7 +68,71 @@ class PulseDataset(Dataset):
         return self.data.shape[0]
 
 
-class DataModule(LightningDataModule):
+class WaveDataset(Dataset):
+    def __init__(self, root_dir, vae_model, transform=None, spec_transform=None, split=.1, single_example=False,
+                 device='cpu', mu=0., var=1.):
+        assert Path(root_dir).is_dir()
+
+        clutter_cov_files = glob(f'{root_dir}/clutter_*.cov')
+        clutter_spec_files = glob(f'{root_dir}/clutter_*.spec')
+        target_cov_files = glob(f'{root_dir}/target_*.cov')
+        target_spec_files = glob(f'{root_dir}/target_*.spec')
+        self.ccdata = np.concatenate([np.fromfile(c, dtype=np.float32).reshape(
+            (-1, 32, 32, 2)) for c in clutter_cov_files])
+        self.tcdata = np.concatenate([np.fromfile(c, dtype=np.float32).reshape(
+            (-1, 32, 32, 2)) for c in target_cov_files])
+        self.csdata = np.concatenate([np.fromfile(c, dtype=np.float32).reshape(
+            (-1, 6554, 2)) for c in clutter_spec_files])
+        self.tsdata = np.concatenate([np.fromfile(c, dtype=np.float32).reshape(
+            (-1, 6554, 2)) for c in target_spec_files])
+        # Do split
+        if split < 1:
+            rch = np.random.choice(np.arange(self.ccdata.shape[0]), int(self.ccdata.shape[0] * split))
+            self.ccdata = self.ccdata[rch, ...]
+            self.tcdata = self.tcdata[rch, ...]
+            self.csdata = self.csdata[rch, ...]
+            self.tsdata = self.tsdata[rch, ...]
+        if single_example:
+            self.ccdata[1:, ...] = self.ccdata[0, ...]
+            self.tcdata[1:, ...] = self.tcdata[0, ...]
+            self.csdata[1:, ...] = self.csdata[0, ...]
+            self.tsdata[1:, ...] = self.tsdata[0, ...]
+
+        # Run through the VAE model
+        self.vae = vae_model
+        self.vae.to(device)
+
+        if transform is not None:
+            self.transform = transform
+        else:
+            self.transform = transforms.Compose(
+                [
+                    transforms.ToTensor(),
+                    transforms.Normalize(mu, var),
+                ]
+            )
+
+        if spec_transform is not None:
+            self.spec_transform = spec_transform
+        else:
+            self.spec_transform = transforms.Compose(
+                [
+                    transforms.ToTensor(),
+                ]
+            )
+
+    def __getitem__(self, idx):
+        ccd = self.vae(self.transform(self.ccdata[idx, ...]))
+        tcd = self.vae(self.transform(self.tcdata[idx, ...]))
+        csd = self.spec_transform(self.csdata[idx, ...])
+        tsd = self.spec_transform(self.tsdata[idx, ...])
+        return ccd, tcd, csd, tsd
+
+    def __len__(self):
+        return self.ccdata.shape[0]
+
+
+class CovDataModule(LightningDataModule):
     def __init__(
             self,
             data_path: str,
@@ -70,6 +144,8 @@ class DataModule(LightningDataModule):
             train_split: float = .7,
             val_split: float = .3,
             single_example: bool = False,
+            mu: float = 0.,
+            var: float = 1.,
             **kwargs,
     ):
         super().__init__()
@@ -85,31 +161,82 @@ class DataModule(LightningDataModule):
         self.train_split = train_split
         self.val_split = val_split
         self.single_example = single_example
+        self.mu = mu
+        self.var = var
 
     def setup(self, stage: Optional[str] = None) -> None:
+        self.train_dataset = CovarianceDataset(self.data_dir, split=self.train_split,
+                                               single_example=self.single_example, mu=self.mu, var=self.var)
 
-        train_transforms = transforms.Compose(
-            [
-                transforms.ToTensor(),
-                transforms.Normalize((0., 0.), 0.4151423),
-            ]
+        self.val_dataset = CovarianceDataset(self.data_dir, split=self.val_split,
+                                             single_example=self.single_example, mu=self.mu, var=self.var)
+
+    def train_dataloader(self) -> DataLoader:
+        return DataLoader(
+            self.train_dataset,
+            batch_size=self.train_batch_size,
+            num_workers=self.num_workers,
+            shuffle=True,
+            pin_memory=self.pin_memory,
         )
-        # transforms.Normalize((0.034028642, 0.04619637), 0.4151423)
 
-        val_transforms = transforms.Compose(
-            [
-                transforms.ToTensor(),
-                transforms.Normalize((0., 0.), 0.4151423),
-            ]
+    def val_dataloader(self) -> Union[DataLoader, List[DataLoader]]:
+        return DataLoader(
+            self.val_dataset,
+            batch_size=self.val_batch_size,
+            num_workers=self.num_workers,
+            shuffle=False,
+            pin_memory=self.pin_memory,
         )
 
-        self.train_dataset = CovarianceDataset(self.data_dir, transform=train_transforms, split=self.train_split,
-                                               single_example=self.single_example)
+    def test_dataloader(self) -> Union[DataLoader, List[DataLoader]]:
+        return DataLoader(
+            self.val_dataset,
+            batch_size=144,
+            num_workers=self.num_workers,
+            shuffle=True,
+            pin_memory=self.pin_memory,
+        )
 
-        self.val_dataset = CovarianceDataset(self.data_dir, transform=val_transforms, split=self.val_split,
-                                             single_example=self.single_example)
 
-    #       ===============================================================
+class WaveDataModule(LightningDataModule):
+    def __init__(
+            self,
+            data_path: str,
+            vae_model: BaseVAE,
+            train_batch_size: int = 8,
+            val_batch_size: int = 8,
+            num_workers: int = 0,
+            pin_memory: bool = False,
+            train_split: float = .7,
+            val_split: float = .3,
+            single_example: bool = False,
+            mu: float = 0.,
+            var: float = 1.,
+            **kwargs,
+    ):
+        super().__init__()
+
+        self.val_dataset = None
+        self.vae_model = vae_model
+        self.train_dataset = None
+        self.data_dir = data_path
+        self.train_batch_size = train_batch_size
+        self.val_batch_size = val_batch_size
+        self.num_workers = num_workers
+        self.pin_memory = pin_memory
+        self.train_split = train_split
+        self.val_split = val_split
+        self.single_example = single_example
+        self.mu = mu
+        self.var = var
+
+    def setup(self, stage: Optional[str] = None) -> None:
+        self.train_dataset = WaveDataset(self.data_dir, self.vae_model, split=self.train_split,
+                                         single_example=self.single_example, mu=self.mu, var=self.var)
+
+        self.val_dataset = WaveDataset(self.data_dir, self.vae_model, split=self.val_split,
+                                       single_example=self.single_example, mu=self.mu, var=self.var)
 
     def train_dataloader(self) -> DataLoader:
         return DataLoader(

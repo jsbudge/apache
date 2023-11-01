@@ -17,10 +17,10 @@ import yaml
 from glob import glob
 from torchvision import transforms
 from pathlib import Path
-from dataloaders import DataModule
-from experiment import VAExperiment
+from dataloaders import CovDataModule, WaveDataModule
+from experiment import VAExperiment, GeneratorExperiment
 from models import BetaVAE, InfoVAE, WAE_MMD, init_weights
-
+from waveform_model import GeneratorModel
 
 # pio.renderers.default = 'svg'
 pio.renderers.default = 'browser'
@@ -71,25 +71,15 @@ if __name__ == '__main__':
         except yaml.YAMLError as exc:
             print(exc)
 
+    bin_bw = int(config['settings']['bandwidth'] // (fs / 32768))
+    bin_bw += 1 if bin_bw % 2 != 0 else 0
+
     franges = np.linspace(config['perf_params']['vehicle_slant_range_min'],
                           config['perf_params']['vehicle_slant_range_max'], 1000) * 2 / c0
     nrange = franges[0]
     pulse_length = (nrange - 1 / TAC) * config['settings']['plp']
     duty_cycle_time_s = pulse_length + franges
     nr = int(pulse_length * fs)
-
-    clutter_files = glob(f'./data/clutter_*.cov')
-    spec_files = glob(f'./data/clutter_*.spec')
-    image_files = glob('/data6/SAR_DATA/2023/**/*.jpeg')
-    latent_reps = []
-    images = []
-
-    train_transforms = transforms.Compose(
-        [
-            transforms.ToTensor(),
-            transforms.Normalize((0., 0.), 0.4151423),
-        ]
-    )
 
     # Get the VAE set up
     if config['exp_params']['model_type'] == 'InfoVAE':
@@ -102,74 +92,26 @@ if __name__ == '__main__':
     vae_mdl.eval()  # Set to inference mode
     vae_mdl.to(device)  # Move to GPU
 
-    cov_data = DataModule(**config["dataset_params"])
-    cov_data.setup()
+    wave_mdl = GeneratorModel(bin_bw=bin_bw, clutter_latent_size=config['model_params']['latent_dim'],
+                              target_latent_size=config['model_params']['latent_dim'], n_ants=1)
+
+    data = WaveDataModule(vae_model=vae_mdl, **config["dataset_params"])
+    data.setup()
+
+    experiment = GeneratorExperiment(wave_mdl, config['exp_params'])
+    logger = loggers.TensorBoardLogger(config['train_params']['log_dir'],
+                                       name=f"WaveModel")
+    trainer = Trainer(logger=logger, max_epochs=config['train_params']['max_epochs'],
+                      log_every_n_steps=config['exp_params']['log_epoch'],
+                      strategy='ddp', deterministic=True,
+                      callbacks=[EarlyStopping(monitor='loss', patience=50, check_finite=True)])
+
+    print(f"======= Training =======")
+    trainer.fit(experiment, datamodule=data)
+
+    wave_mdl.eval()
 
 
-    dec_fftsz = fft_sz // dec_factor
-    bin_bw = int(bandwidth // (fs / dec_fftsz))
-    bin_bw += 1 if bin_bw % 2 != 0 else 0
-
-    # with open('./test_target.pic', 'rb') as f:
-    #     tpsd_f = pickle.load(f)
-
-    print('Loading parquet files...')
-    total_hist = []
-    hist_lines = []
-    data_mu = 0  # None
-    data_std = 1  # None
-    # Training phase
-    data_test = pq.read_table('./data/test.parquet')
-    data_targets = pq.read_table('./data/targets.parquet')
-
-    # Generate the Target PSDs. These are stochastic, so they'll be different for each run
-    for run in range(min(n_runs, 10000)):
-        targets, target_vae, clutter_vae, data_mu, data_std = \
-            compileWaveformData(vae, vae_params['mu'], vae_params['std'],
-                                np.random.choice(np.arange(l_sz, data_test.num_rows), l_sz),
-                                data_test, data_targets, fft_sz,
-                                dec_factor, data_mu, data_std)
-
-        input_psd = np.zeros((targets.shape[0], bin_bw, 2), dtype=np.float64)
-        input_psd[:, :bin_bw // 2, :] = targets[:, -bin_bw // 2:, :]
-        input_psd[:, -bin_bw // 2:, :] = targets[:, :bin_bw // 2, :]
-        # Command to monitor via Tensorboard is
-        # tensorboard --logdir ./logs/fit
-        # in terminal
-        if save_histogram:
-            hist_dict = mdl.fit((clutter_vae, target_vae, input_psd), targets, epochs=n_epochs,
-                                callbacks=[EarlyStopping(patience=40, monitor='loss', restore_best_weights=True),
-                                           TerminateOnNaN(),
-                                           TensorBoard(
-                                               log_dir=f'./logs/fit/wavemodel_run{run}', histogram_freq=10)])
-        else:
-            hist_dict = mdl.fit((clutter_vae, target_vae, input_psd), targets, epochs=n_epochs,
-                                callbacks=[EarlyStopping(patience=40, monitor='loss', restore_best_weights=True),
-                                           TerminateOnNaN()])
-        hist_lines.append(len(hist_dict.history['loss']))
-        loss_array = np.array([hist_dict.history['loss'], hist_dict.history['clutter_loss'],
-                               hist_dict.history['target_loss'], hist_dict.history['autocorr_loss'],
-                               hist_dict.history['ortho_loss']])
-        if len(total_hist) > 0:
-            total_hist = np.concatenate((total_hist, loss_array), axis=1)
-        else:
-            total_hist = loss_array
-
-    # Testing phase
-    print('Generating PSDs for testing...')
-    run = np.random.randint(0, n_runs)
-    targets, target_vae, clutter_vae, data_mu, data_std = \
-        compileWaveformData(vae, vae_params['mu'], vae_params['std'],
-                            np.random.choice(np.arange(l_sz, data_test.num_rows), l_sz),
-                            data_test, data_targets, fft_sz,
-                            dec_factor, data_mu, data_std)
-
-    input_psd = np.zeros((targets.shape[0], bin_bw, 2), dtype=np.float64)
-    input_psd[:, :bin_bw // 2, :] = targets[:, -bin_bw // 2:, :]
-    input_psd[:, -bin_bw // 2:, :] = targets[:, :bin_bw // 2, :]
-
-    waveforms = getWaveFromData(mdl, target_vae, clutter_vae, input_psd)
-    waveform_plot = db(waveforms)
 
     # Run some plots for an idea of what's going on
     freqs = np.fft.fftshift(np.fft.fftfreq(dec_fftsz, 1 / fs))

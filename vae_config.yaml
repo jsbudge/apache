@@ -36,13 +36,15 @@ dataset_params:
   train_split: .8
   val_split: .1
   single_example: False
+  mu: 0.
+  var: 0.4151423
 
 exp_params:
   LR: 0.005
   weight_decay: 0.59
   scheduler_gamma: 0.95
   kld_weight: .977
-  log_epoch: 10
+  log_epoch: 100
   output_images: False
   model_type: WAE_MMD
   is_tuning: False

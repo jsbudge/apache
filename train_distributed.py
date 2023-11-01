@@ -5,7 +5,7 @@ from pytorch_lightning.callbacks import ModelCheckpoint
 import yaml
 import matplotlib.pyplot as plt
 from pathlib import Path
-from dataloaders import DataModule
+from dataloaders import CovDataModule
 from experiment import VAExperiment
 from models import BetaVAE, InfoVAE, WAE_MMD
 import argparse
@@ -24,7 +24,7 @@ with open('./vae_config.yaml') as y:
     param_dict = yaml.safe_load(y.read())
 # hparams = make_dataclass('hparams', param_dict.items())(**param_dict)
 
-data = DataModule(**param_dict["dataset_params"])
+data = CovDataModule(**param_dict["dataset_params"])
 data.setup()
 
 # Get the model, experiment, logger set up
