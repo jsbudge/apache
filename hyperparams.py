@@ -1,11 +1,12 @@
 import torch
 from pytorch_lightning import Trainer, loggers
+from pytorch_lightning.callbacks import EarlyStopping
 import yaml
 import matplotlib.pyplot as plt
 from pathlib import Path
 from dataloaders import CovDataModule
 from experiment import VAExperiment
-from models import BetaVAE, InfoVAE, WAE_MMD
+from models import BetaVAE, InfoVAE, WAE_MMD, init_weights
 import optuna
 
 print(f'Cuda is available? {torch.cuda.is_available()}')
@@ -34,13 +35,18 @@ def objective(trial: optuna.Trial):
         kernel_type = trial.suggest_categorical('loss', ['H', 'B'])
         param_dict['model_params']['gamma'] = gamma
         param_dict['model_params']['loss_type'] = kernel_type
+    model.apply(init_weights)
+
     batch_sz = trial.suggest_categorical('batch_size', [32, 64, 128])
     latent_dim = trial.suggest_int('latent_dim', 3, 128)
     weight_decay = trial.suggest_float('weight_decay', 0.0, .99, step=.01)
-    kld_weight = trial.suggest_float('kld_weight', 0.0, 1.0, step=.0001)
+    kld_weight = trial.suggest_float('kld_weight', 0.0, 1.0, step=.001)
+    hidden_dims = trial.suggest_categorical('hidden_dims', [[64, 128, 256, 512], [32, 64, 128, 256], 128, 64, 32, 256])
+    lr = trial.suggest_categorical('lr', [.0005, .005, .0001, .01])
 
     param_dict['exp_params']['weight_decay'] = weight_decay
     param_dict['exp_params']['kld_weight'] = kld_weight
+    param_dict['exp_params']['LR'] = lr
 
     param_dict['dataset_params']['train_batch_size'] = batch_sz
     param_dict['dataset_params']['val_batch_size'] = batch_sz
@@ -48,18 +54,20 @@ def objective(trial: optuna.Trial):
     data = CovDataModule(**param_dict['dataset_params'])
     data.setup()
     param_dict['model_params']['latent_dim'] = latent_dim
+    param_dict['model_params']['hidden_dims'] = hidden_dims
     param_dict['exp_params']['is_tuning'] = True
 
     experiment = VAExperiment(model, param_dict['exp_params'])
     trainer = Trainer(logger=False, max_epochs=param_dict['train_params']['max_epochs'], enable_checkpointing=False,
-                      devices=1)
+                      devices=1, callbacks=[EarlyStopping(patience=5, monitor='Reconstruction_Loss',
+                                                          check_finite=True)])
     trainer.fit(experiment, datamodule=data)
 
-    return trainer.callback_metrics['loss'].item()
+    return trainer.callback_metrics['Reconstruction_Loss'].item()
 
 
 study = optuna.create_study()
-study.optimize(objective, n_trials=500)
+study.optimize(objective, n_trials=5000)
 
 print(study.best_params)
 
