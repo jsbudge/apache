@@ -1,19 +1,11 @@
-import os
-import sys
-from datetime import datetime
 from scipy.stats import rayleigh
 import numpy as np
-from simulib.simulation_functions import genPulse, findPowerOf2, db, GetAdvMatchedFilter
-import matplotlib.pyplot as plt
-from scipy.signal import welch
 from data_converter.SDRParsing import SDRParse, load, loadXMLFile
 from tqdm import tqdm
-import pickle
-from jax import jit
 from glob import glob
 from jax.numpy import fft as jaxfft
+from pathlib import Path
 import yaml
-
 
 fs = 2e9
 c0 = 299792458.0
@@ -71,7 +63,7 @@ def genTargetPSDSwerling1(bw, fc, rng_min, rng_max, spec_sz, fs, cpi_len, fft_sz
         t_fc = fc + bw / 2 * np.random.uniform(-1, 1)
         # Overall spectrum of target response given the above parameters
         psd[n, :] = np.sum([Am[n] / rng[n] ** 4 * (1j * freqs / t_fc) ** alpha[n] *
-                      np.exp(-1j * 4 * np.pi * freqs / c0 * rng[n]) for n in range(M)], axis=0)
+                            np.exp(-1j * 4 * np.pi * freqs / c0 * rng[n]) for n in range(M)], axis=0)
         if chirp is not None:
             psd[n, :] *= chirp
         # Make the spectrum unit energy
@@ -79,29 +71,12 @@ def genTargetPSDSwerling1(bw, fc, rng_min, rng_max, spec_sz, fs, cpi_len, fft_sz
     return psd
 
 
-def formatTargetClutterData(data: np.float32, bin_bandwidth: int):
+def formatTargetClutterData(data: np.ndarray, bin_bandwidth: int):
     split = np.zeros((data.shape[0], bin_bandwidth, 2), dtype=np.float64)
     split[:, :bin_bandwidth // 2, :] = data[:, -bin_bandwidth // 2:, :]
     split[:, -bin_bandwidth // 2:, :] = data[:, :bin_bandwidth // 2, :]
     return split
 
-
-sdr_file = ['/data6/SAR_DATA/2023/06072023/SAR_06072023_154802.sar',
-            '/data6/SAR_DATA/2023/06062023/SAR_06062023_125944.sar',
-            '/data6/SAR_DATA/2023/08092023/SAR_08092023_143927.sar',
-            '/data6/SAR_DATA/2023/08092023/SAR_08092023_112016.sar',
-            '/data6/SAR_DATA/2023/08092023/SAR_08092023_144437.sar',
-            '/data6/SAR_DATA/2023/08232023/SAR_08232023_114640.sar',
-            '/data6/SAR_DATA/2023/08232023/SAR_08232023_144235.sar',
-            '/data6/SAR_DATA/2023/08232023/SAR_08232023_091003.sar',
-            '/data6/SAR_DATA/2023/08232023/SAR_08232023_090943.sar',
-            '/data6/SAR_DATA/2023/08102023/SAR_08102023_110807.sar',
-            '/data6/SAR_DATA/2023/09132023/SAR_09132023_114021.sar',
-            '/data6/SAR_DATA/2023/09122023/SAR_09122023_115704.sar',
-            '/data6/SAR_DATA/2023/09122023/SAR_09122023_151902.sar',
-            '/data6/SAR_DATA/2023/09122023/SAR_09122023_152050.sar',
-            '/data6/SAR_DATA/2023/09122023/SAR_09122023_152903.sar',
-            '/data6/SAR_DATA/2023/09122023/SAR_09122023_153015.sar']
 
 if __name__ == '__main__':
     with open('./vae_config.yaml', 'r') as file:
@@ -113,15 +88,20 @@ if __name__ == '__main__':
     sdr_fnmes = glob('/data6/SAR_DATA/2023/**/*.sar')
     sdr_file = []
     for s in sdr_fnmes:
-        try:
-            xml_data = loadXMLFile(f'{s[:-4]}.xml', True)['SlimSDR_Configuration']
-            if xml_data['SlimSDR_Info']['System_Mode'] == 'SAR':
-                if 9e9 < xml_data['SlimSDR_Info']['Channel_0']['Center_Frequency_Hz'] < 32e9:
-                    sdr_file.append(s)
-        except FileNotFoundError:
-            print(f'{s} not found.')
-        except:
-            print(f'{s} has broken XML.')
+        if Path(f'./data/clutter_{s.split("/")[-1].split(".")[0]}.cov').exists():
+            print(f'{s} already has a .cov file.')
+            continue
+        if int(s.split('/')[4][:2]) >= 6:
+            try:
+                xml_data = loadXMLFile(f'{s[:-4]}.xml', True)['SlimSDR_Configuration']
+                if xml_data['SlimSDR_Info']['System_Mode'] == 'SAR':
+                    if 9e9 < xml_data['SlimSDR_Info']['Channel_0']['Center_Frequency_Hz'] < 32e9:
+                        if xml_data['SlimSDR_Info']['Gimbal_Settings']['Gimbal_Depression_Angle_D'] > 20.0:
+                            sdr_file.append(s)
+            except FileNotFoundError:
+                print(f'{s} not found.')
+            except:
+                print(f'{s} has broken XML.')
 
     franges = np.linspace(config['perf_params']['vehicle_slant_range_min'],
                           config['perf_params']['vehicle_slant_range_max'], 1000) * 2 / c0
@@ -133,10 +113,14 @@ if __name__ == '__main__':
     if config['generate_data_settings']['run_clutter']:
         print('Running clutter data...')
         # Standardize the FFT length for training purposes (this may cause data loss)
-        fft_len = 32768
+        fft_len = config['generate_data_settings']['fft_sz']
 
         for fn in sdr_file:
-            sdr_f = load(fn, import_pickle=False, progress_tracker=True)
+            try:
+                sdr_f = load(fn, progress_tracker=True)
+            except ModuleNotFoundError:
+                print(f'Out of date pickle for {fn}')
+                sdr_f = load(fn, import_pickle=False, progress_tracker=True)
             if sdr_f[0].fs != fs:
                 continue  # I'll work on this later
             bin_bw = int(config['settings']['bandwidth'] // (sdr_f[0].fs / fft_len))
@@ -152,9 +136,10 @@ if __name__ == '__main__':
                 for n in tqdm(range(m * config['settings']['cpi_len'] // 2 * config['settings']['batch_sz'],
                                     m * config['settings']['cpi_len'] // 2 * config['settings']['batch_sz'] +
                                     config['settings']['cpi_len'] // 2 * config['settings']['batch_sz'],
-                               config['settings']['cpi_len'] // 2)):
-                    pulse_fft = jaxfft.fft(sdr_f.getPulses(sdr_f[0].frame_num[n:n + config['settings']['cpi_len']], 0)[1],
-                                                    fft_len, axis=0) * mfilt[:, None]
+                                    config['settings']['cpi_len'] // 2)):
+                    pulse_fft = jaxfft.fft(
+                        sdr_f.getPulses(sdr_f[0].frame_num[n:n + config['settings']['cpi_len']], 0)[1],
+                        fft_len, axis=0) * mfilt[:, None]
                     # If the pulses are offset video, shift to be centered around zero
                     pulse_fft = np.roll(pulse_fft, rollback, axis=0)
                     pulses = jaxfft.ifft(pulse_fft, axis=0)[:sdr_f[0].nsam, :]
@@ -182,12 +167,14 @@ if __name__ == '__main__':
         print('Running targets...')
         targs = []
         targ_abs = []
-        for ntarg in tqdm(range(100)):
-            tpsd = genTargetPSDSwerling1(config['settings']['bandwidth'], config['settings']['fc'], config['perf_params']['vehicle_slant_range_min'],
-                          config['perf_params']['vehicle_slant_range_max'],
-                                         config['generate_data_settings']['fft_sz'], fs, 32, config['generate_data_settings']['fft_sz'])
+        for ntarg in tqdm(range(10)):
+            tpsd = genTargetPSDSwerling1(config['settings']['bandwidth'], config['settings']['fc'],
+                                         config['perf_params']['vehicle_slant_range_min'],
+                                         config['perf_params']['vehicle_slant_range_max'],
+                                         config['generate_data_settings']['fft_sz'], fs, 32,
+                                         config['generate_data_settings']['fft_sz'])
             tp_mean = tpsd.mean(axis=0)
-            targ_abs.append(np.stack((tp_mean.real, tp_mean.imag), axis=2))
+            targ_abs.append(np.stack((tp_mean.real, tp_mean.imag), axis=1))
             cov_dt = np.cov(tpsd)
             targs.append(np.stack((cov_dt.real, cov_dt.imag), axis=2))
         targs = np.array(targs).astype(np.float32)
@@ -201,5 +188,5 @@ if __name__ == '__main__':
 
     # Some checks
     with open(
-            f'./data/clutter_{fn.split("/")[-1].split(".")[0]}.cov', 'rb') as writer:
-        data = np.fromfile(writer, dtype=np.float32).reshape((-1, 32, 32, 2))
+            f'./data/targets.spec', 'rb') as writer:
+        data = np.fromfile(writer, dtype=np.float32).reshape((-1, 6554, 2))

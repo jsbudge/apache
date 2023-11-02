@@ -32,17 +32,6 @@ DTR = np.pi / 180
 inch_to_m = .0254
 m_to_ft = 3.2808
 
-fft_sz = 32768
-dec_factor = 8
-n_ants = 2
-l_sz = 512
-num_filters = 32
-n_sublayers = 3
-n_epochs = 1000
-n_runs = 3
-save_model_bool = False
-save_histogram = True
-
 
 def upsample(val, fac=8):
     upval = np.zeros(len(val) * fac, dtype=np.complex128)
@@ -51,9 +40,9 @@ def upsample(val, fac=8):
     return upval
 
 
-def outBeamTime(theta_az, theta_el):
+'''def outBeamTime(theta_az, theta_el):
     return (np.pi ** 2 * wheel_height_m - 8 * np.pi * blade_chord_m * np.tan(theta_el) -
-            4 * wheel_height_m * theta_az) / (8 * np.pi * wheel_height_m * rotor_velocity_rad_s)
+            4 * wheel_height_m * theta_az) / (8 * np.pi * wheel_height_m * rotor_velocity_rad_s)'''
 
 
 def getRange(alt, theta_el):
@@ -90,12 +79,12 @@ if __name__ == '__main__':
         vae_mdl = BetaVAE(**config['model_params'])
     vae_mdl.load_state_dict(torch.load('./model/inference_model.state'))
     vae_mdl.eval()  # Set to inference mode
-    vae_mdl.to(device)  # Move to GPU
+    # vae_mdl.to(device)  # Move to GPU
 
     wave_mdl = GeneratorModel(bin_bw=bin_bw, clutter_latent_size=config['model_params']['latent_dim'],
                               target_latent_size=config['model_params']['latent_dim'], n_ants=1)
 
-    data = WaveDataModule(vae_model=vae_mdl, **config["dataset_params"])
+    data = WaveDataModule(vae_model=vae_mdl, device=device, **config["dataset_params"])
     data.setup()
 
     experiment = GeneratorExperiment(wave_mdl, config['exp_params'])
@@ -114,7 +103,7 @@ if __name__ == '__main__':
 
 
     # Run some plots for an idea of what's going on
-    freqs = np.fft.fftshift(np.fft.fftfreq(dec_fftsz, 1 / fs))
+    '''freqs = np.fft.fftshift(np.fft.fftfreq(dec_fftsz, 1 / fs))
     plt.figure(f'Waveform PSD - run {run}')
     w0 = np.fft.fftshift(waveform_plot[0, :, 0])
     plt.plot(freqs, w0)
@@ -176,59 +165,4 @@ if __name__ == '__main__':
                linewidth=.5)
     plt.ylabel('Loss')
     plt.xlabel('Training Epoch')
-    plt.show()
-
-    if save_model_bool:
-        print('Saving model...')
-        mdl.save_weights('./model/model', save_format='h5')
-        with open('./model/model_params.pic', 'wb') as f:
-            pickle.dump({'bandwidth': bandwidth, 'num_filters': num_filters,
-                         'mdl_fft': fft_sz, 'data_mu': data_mu, 'data_std': data_std,
-                         'bin_bw': bin_bw}, f)
-
-    '''print('Evaluating layers...')
-    inp = mdl.input  # input placeholder
-    outputs = [layer.output for layer in mdl.layers]  # all layer outputs
-    functors = [K.function([inp], [out]) for out in outputs]  # evaluation functions
-    layer_outs = [func([(clutter_data, target_data)]) for func in functors]
-    weights = [layer.weights for layer in mdl.layers]'''
-
-    # Loss function testing
-    '''yp = np.fft.fftshift(np.fft.fft(genPulse(np.linspace(0, 1, 10),
-                               np.linspace(0, 1, 10), nr, fs, fc, bandwidth),
-                                dec_fftsz)).reshape((-1, 1))
-    y_pred = np.tile(np.stack([yp.real, yp.imag]).T, (1, 1, 2))
-    # y_pred = mdl.predict((clutter_vae, target_vae))
-
-    y_true = np.tile(abs(np.fft.fftshift(yp / sum(abs(yp)))), (1, 1, 2))
-    # y_true = targets
-
-    ret = 0
-    n = 0
-    # Get the complex conjugate of the waveform spectrum
-    energy = K.sum(K.sqrt(K.square(y_pred[:, :, n * 2]) + K.square(y_pred[:, :, n * 2 + 1])), axis=1)
-    yp2 = tf.signal.fftshift(tf.complex(y_pred[:, :, n * 2] / energy[:, None],
-                                        -y_pred[:, :, n * 2 + 1] / energy[:, None]), axes=1)
-    ypconj = tf.signal.fftshift(
-        tf.complex(y_pred[:, :, n * 2] / energy[:, None], y_pred[:, :, n * 2 + 1] / energy[:, None]), axes=1)
-    autocorr = tf.math.log(K.abs(tf.signal.ifft(ypconj * yp2)))
-    autocorr += K.abs(K.min(autocorr))
-    autocorr /= autocorr[:, 0][:, None]
-    front = autocorr[:, 1:] - autocorr[:, :-1]
-    sidelobe_locs = tf.where(tf.logical_and(front[:, 1:] < 0, front[:, :-1] > 0))
-    ret += K.mean(autocorr, axis=1) / K.max(autocorr, axis=1) / n_ants
-    y, idx, count = tf.unique_with_counts(sidelobe_locs[:, 0])
-    idx = tf.cumsum(count)
-    idx -= idx[0]
-    idxes = tf.gather(sidelobe_locs, idx)
-
-    # Sidelobe height
-    ret += 1 - tf.gather_nd(autocorr, tf.transpose(
-        tf.stack([idxes[:, 0], idxes[:, 1] + 1])))
-
-    slobes = sidelobe_locs.numpy()
-    slobes = slobes[slobes[:, 0] == 0, 1] + 1
-    plt.figure()
-    plt.plot(autocorr[0, :].numpy().flatten())
-    plt.plot(front[0, :].numpy().flatten())
-    plt.vlines(slobes, -1, 1, color='red')'''
+    plt.show()'''

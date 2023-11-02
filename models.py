@@ -540,8 +540,10 @@ class WAE_MMD(BaseVAE):
         for h_dim, l_params in zip(hidden_dims, layer_params):
             modules.append(
                 nn.Sequential(
-                RichConv2D(in_channels, h_dim, l_params),
-                # Linear2D(l_params, l_params, h_dim),
+                    RichConv2D(in_channels, h_dim, l_params),
+                    nn.Conv2d(h_dim, h_dim, 1, 1, 0),
+                    nn.ELU(),
+                    # Linear2D(l_params, l_params, h_dim),
                 )
             )
             in_channels = h_dim
@@ -560,8 +562,10 @@ class WAE_MMD(BaseVAE):
         for i in range(len(hidden_dims) - 1):
             modules.append(
                 nn.Sequential(
-                RichConv2DTranspose(hidden_dims[i], hidden_dims[i + 1], layer_params[i]),
-                # Linear2D(layer_params[i] * 2, layer_params[i] * 2, hidden_dims[i + 1]),
+                    RichConv2DTranspose(hidden_dims[i], hidden_dims[i + 1], layer_params[i]),
+                    nn.ConvTranspose2d(hidden_dims[i + 1], hidden_dims[i + 1], 1, 1, 0),
+                    nn.ELU(),
+                    # Linear2D(layer_params[i] * 2, layer_params[i] * 2, hidden_dims[i + 1]),
                 )
             )
 

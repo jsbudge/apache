@@ -23,9 +23,9 @@ settings:
 
 generate_data_settings:
   iterations: 20
-  fft_sz: 4096
-  run_clutter: True
-  run_targets: False
+  fft_sz: 32768
+  run_clutter: False
+  run_targets: True
 
 dataset_params:
   data_path: ./data
@@ -60,7 +60,7 @@ model_params:
   kernel_type: 'imq'
   alpha: -5.4139     # KLD weight
   beta: 1.86106      # Reconstruction weight
-  hidden_dims: [32, 64, 128, 256]
+  hidden_dims: [64, 128, 256, 512]
 
 train_params:
   log_dir: ./logs

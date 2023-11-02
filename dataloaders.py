@@ -2,6 +2,7 @@ from glob import glob
 from typing import List, Optional, Sequence, Union
 from pytorch_lightning import LightningDataModule
 from torch.utils.data import DataLoader, Dataset
+import torch
 from torchdata.datapipes.iter import FileLister, FileOpener
 from torchvision import transforms
 from pathlib import Path
@@ -75,42 +76,35 @@ class WaveDataset(Dataset):
 
         clutter_cov_files = glob(f'{root_dir}/clutter_*.cov')
         clutter_spec_files = glob(f'{root_dir}/clutter_*.spec')
-        target_cov_files = glob(f'{root_dir}/target_*.cov')
-        target_spec_files = glob(f'{root_dir}/target_*.spec')
+        target_cov_files = glob(f'{root_dir}/targets.cov')
+        target_spec_files = glob(f'{root_dir}/targets.spec')
         self.ccdata = np.concatenate([np.fromfile(c, dtype=np.float32).reshape(
-            (-1, 32, 32, 2)) for c in clutter_cov_files])
+            (-1, 32, 32, 2)) for c in clutter_cov_files]).swapaxes(1, 3) / var
+        self.ccdata = vae_model(torch.tensor(self.ccdata))[2]
         self.tcdata = np.concatenate([np.fromfile(c, dtype=np.float32).reshape(
-            (-1, 32, 32, 2)) for c in target_cov_files])
+            (-1, 32, 32, 2)) for c in target_cov_files]).swapaxes(1, 3) / var
         self.csdata = np.concatenate([np.fromfile(c, dtype=np.float32).reshape(
             (-1, 6554, 2)) for c in clutter_spec_files])
         self.tsdata = np.concatenate([np.fromfile(c, dtype=np.float32).reshape(
             (-1, 6554, 2)) for c in target_spec_files])
+
         # Do split
         if split < 1:
-            rch = np.random.choice(np.arange(self.ccdata.shape[0]), int(self.ccdata.shape[0] * split))
+            rch = np.random.choice(np.arange(self.csdata.shape[0]), int(self.csdata.shape[0] * split))
             self.ccdata = self.ccdata[rch, ...]
-            self.tcdata = self.tcdata[rch, ...]
             self.csdata = self.csdata[rch, ...]
-            self.tsdata = self.tsdata[rch, ...]
         if single_example:
             self.ccdata[1:, ...] = self.ccdata[0, ...]
             self.tcdata[1:, ...] = self.tcdata[0, ...]
             self.csdata[1:, ...] = self.csdata[0, ...]
             self.tsdata[1:, ...] = self.tsdata[0, ...]
 
-        # Run through the VAE model
-        self.vae = vae_model
-        self.vae.to(device)
+        self.spec_sz = self.tcdata.shape[0]
 
-        if transform is not None:
-            self.transform = transform
-        else:
-            self.transform = transforms.Compose(
-                [
-                    transforms.ToTensor(),
-                    transforms.Normalize(mu, var),
-                ]
-            )
+        # Run through the VAE model
+        vae_model.to(device)
+        self.ccdata = vae_model(self.ccdata)
+        self.tcdata = vae_model(self.tcdata)
 
         if spec_transform is not None:
             self.spec_transform = spec_transform
@@ -121,15 +115,22 @@ class WaveDataset(Dataset):
                 ]
             )
 
+        self.transform = transform
+
     def __getitem__(self, idx):
-        ccd = self.vae(self.transform(self.ccdata[idx, ...]))
-        tcd = self.vae(self.transform(self.tcdata[idx, ...]))
-        csd = self.spec_transform(self.csdata[idx, ...])
-        tsd = self.spec_transform(self.tsdata[idx, ...])
+        if self.transform is not None:
+            ccd = self.transform(self.ccdata[idx, ...])
+            tcd = self.transform(self.tcdata[idx, ...])
+        if self.spec_sz < self.csdata.shape[0]:
+            csd = self.spec_transform(self.csdata[idx % self.spec_sz, ...])
+            tsd = self.spec_transform(self.tsdata[idx % self.spec_sz, ...])
+        else:
+            csd = self.spec_transform(self.csdata[idx, ...])
+            tsd = self.spec_transform(self.tsdata[idx, ...])
         return ccd, tcd, csd, tsd
 
     def __len__(self):
-        return self.ccdata.shape[0]
+        return self.csdata.shape[0]
 
 
 class CovDataModule(LightningDataModule):

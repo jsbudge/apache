@@ -1,6 +1,7 @@
 import time
 import timeit
 
+import jax
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
@@ -43,7 +44,7 @@ sdr_file_bgtype = [('SAR_06072023_154802', 'river'),
                    ('SAR_08232023_114640', 'farmcornmaze'),
                    ('SAR_08232023_144235', 'sportsparksuburb'),
                    ('SAR_08102023_110807', 'river'),
-                   ('SAR_09132023_114021', 'airportfield'),
+                   ('SAR_06062023_125550', 'airportfield'),
                    ('SAR_09122023_115704', 'ruralstreet'),
                    ('SAR_09122023_151902', 'sportspark'),
                    ('SAR_09122023_152050', 'orchard'),
@@ -74,16 +75,24 @@ sdr_file = ['/data6/SAR_DATA/2023/06072023/SAR_06072023_154802.sar',
             '/data6/SAR_DATA/2023/08232023/SAR_08232023_091003.sar',
             '/data6/SAR_DATA/2023/08232023/SAR_08232023_090943.sar',
             '/data6/SAR_DATA/2023/08102023/SAR_08102023_110807.sar',
-            '/data6/SAR_DATA/2023/09132023/SAR_09132023_114021.sar',
+            '/data6/SAR_DATA/2023/06062023/SAR_06062023_125550.sar',
             '/data6/SAR_DATA/2023/09122023/SAR_09122023_115704.sar',
             '/data6/SAR_DATA/2023/09122023/SAR_09122023_151902.sar',
             '/data6/SAR_DATA/2023/09122023/SAR_09122023_152050.sar',
             '/data6/SAR_DATA/2023/09122023/SAR_09122023_152903.sar',
             '/data6/SAR_DATA/2023/09122023/SAR_09122023_153015.sar']
 for s in sdr_file_bgtype:
-    sdr_f = load([c for c in sdr_file if s[0] in c][0])
+    try:
+        sdr_f = load([c for c in sdr_file if s[0] in c][0])
+    except IndexError:
+        print(f'{s[0]} not found.')
+        continue
     mfilt = GetAdvMatchedFilter(sdr_f[0], fft_len=fft_len)
-    dataset = CovarianceDataset([c for c in clutter_files if s[0] in c][0], transform=train_transforms)
+    try:
+        dataset = CovarianceDataset([c for c in clutter_files if s[0] in c][0], transform=train_transforms)
+    except IndexError:
+        print(f'{s[0]} covariance file not found.')
+        continue
     ims = []
     latent_z = []
     samples = []
@@ -156,3 +165,24 @@ for l in latent_reps:
     ax.scatter(l[:, 0], l[:, 1], l[:, 2])
 plt.show()'''
 
+import time
+import jax
+from jax.numpy import fft as jaxfft
+data = sdr_f.getPulses(sdr_f[0].frame_num[:param_dict['settings']['cpi_len'] * 2], 0)[1]
+
+st = time.time()
+for _ in range(100):
+    test = np.fft.fft(data, fft_len, axis=0)
+print(f'NUMPY: {time.time() - st}')
+
+with jax.default_device(jax.devices("cpu")[0]):
+    st = time.time()
+    for _ in range(100):
+        test = jaxfft.fft(data, fft_len, axis=0)
+    print(f'JAXCPU: {time.time() - st}')
+
+with jax.default_device(jax.devices("gpu")[0]):
+    st = time.time()
+    for _ in range(100):
+        test = jaxfft.fft(data, fft_len, axis=0)
+    print(f'JAXGPU: {time.time() - st}')

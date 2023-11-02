@@ -25,13 +25,13 @@ def objective(trial: optuna.Trial):
         param_dict['model_params']['beta'] = beta
     elif param_dict['exp_params']['model_type'] == 'WAE_MMD':
         model = WAE_MMD(**param_dict['model_params'])
-        reg_weight = trial.suggest_int('reg_weight', 100, 5000, 10)
+        reg_weight = trial.suggest_float('reg_weight', 10., 10000., 10.)
         kernel_type = trial.suggest_categorical('kernel', ['imq', 'rbf'])
         param_dict['model_params']['reg_weight'] = reg_weight
         param_dict['model_params']['kernel_type'] = kernel_type
     else:
         model = BetaVAE(**param_dict['model_params'])
-        gamma = trial.suggest_int('gamma', 30, 5000, step=200)
+        gamma = trial.suggest_float('gamma', 30., 5000., step=5.)
         kernel_type = trial.suggest_categorical('loss', ['H', 'B'])
         param_dict['model_params']['gamma'] = gamma
         param_dict['model_params']['loss_type'] = kernel_type
@@ -41,7 +41,6 @@ def objective(trial: optuna.Trial):
     latent_dim = trial.suggest_int('latent_dim', 3, 128)
     weight_decay = trial.suggest_float('weight_decay', 0.0, .99, step=.01)
     kld_weight = trial.suggest_float('kld_weight', 0.0, 1.0, step=.001)
-    hidden_dims = trial.suggest_categorical('hidden_dims', [[64, 128, 256, 512], [32, 64, 128, 256], 128, 64, 32, 256])
     lr = trial.suggest_categorical('lr', [.0005, .005, .0001, .01])
 
     param_dict['exp_params']['weight_decay'] = weight_decay
@@ -54,7 +53,6 @@ def objective(trial: optuna.Trial):
     data = CovDataModule(**param_dict['dataset_params'])
     data.setup()
     param_dict['model_params']['latent_dim'] = latent_dim
-    param_dict['model_params']['hidden_dims'] = hidden_dims
     param_dict['exp_params']['is_tuning'] = True
 
     experiment = VAExperiment(model, param_dict['exp_params'])
