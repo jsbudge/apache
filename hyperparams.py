@@ -25,7 +25,7 @@ def objective(trial: optuna.Trial):
         param_dict['model_params']['beta'] = beta
     elif param_dict['exp_params']['model_type'] == 'WAE_MMD':
         model = WAE_MMD(**param_dict['model_params'])
-        reg_weight = trial.suggest_float('reg_weight', 10., 10000., 10.)
+        reg_weight = trial.suggest_float('reg_weight', 10., 10000., step=10.)
         kernel_type = trial.suggest_categorical('kernel', ['imq', 'rbf'])
         param_dict['model_params']['reg_weight'] = reg_weight
         param_dict['model_params']['kernel_type'] = kernel_type

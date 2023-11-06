@@ -78,6 +78,19 @@ def formatTargetClutterData(data: np.ndarray, bin_bandwidth: int):
     return split
 
 
+def getVAECov(data: np.ndarray, mfilt: np.ndarray, rollback: int,
+              nsam: int, fft_len: int = 32768, mu: float = 0., var: float = 1.):
+    pulse_fft = jaxfft.fft(data, fft_len, axis=0) * mfilt[:, None]
+    # If the pulses are offset video, shift to be centered around zero
+    pulse_fft = np.roll(pulse_fft, rollback, axis=0)
+    pulses = jaxfft.ifft(pulse_fft, axis=0)[:nsam, :]
+    pulses /= np.mean(abs(pulses))  # Make the pulses smaller
+    pmean = pulses.mean(axis=1)
+    cov_dt = np.cov(pulses.T)
+    return (np.stack((pmean.real, pmean.imag), axis=1),
+            np.stack(((cov_dt.real - mu) / var, (cov_dt.imag - mu) / var), axis=2))
+
+
 if __name__ == '__main__':
     with open('./vae_config.yaml', 'r') as file:
         try:
@@ -137,18 +150,11 @@ if __name__ == '__main__':
                                     m * config['settings']['cpi_len'] // 2 * config['settings']['batch_sz'] +
                                     config['settings']['cpi_len'] // 2 * config['settings']['batch_sz'],
                                     config['settings']['cpi_len'] // 2)):
-                    pulse_fft = jaxfft.fft(
-                        sdr_f.getPulses(sdr_f[0].frame_num[n:n + config['settings']['cpi_len']], 0)[1],
-                        fft_len, axis=0) * mfilt[:, None]
-                    # If the pulses are offset video, shift to be centered around zero
-                    pulse_fft = np.roll(pulse_fft, rollback, axis=0)
-                    pulses = jaxfft.ifft(pulse_fft, axis=0)[:sdr_f[0].nsam, :]
                     if n + config['settings']['cpi_len'] > sdr_f[0].frame_num[-1]:
                         break
-                    pulses /= np.mean(abs(pulses))  # Make the pulses smaller
-                    pmean = pulses.mean(axis=1)
+                    pulse_data = sdr_f.getPulses(sdr_f[0].frame_num[n:n + config['settings']['cpi_len']], 0)[1]
+                    pmean, cov_dt = getVAECov(pulse_data, mfilt, rollback, sdr_f[0].nsam, fft_len)
                     clutter_abs.append(np.stack((pmean.real, pmean.imag), axis=1))
-                    cov_dt = np.cov(pulses.T)
                     inp_data.append(np.stack((cov_dt.real, cov_dt.imag), axis=2))
                 if len(inp_data) == 0:
                     break

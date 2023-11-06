@@ -45,6 +45,13 @@ def upsample(val, fac=8):
             4 * wheel_height_m * theta_az) / (8 * np.pi * wheel_height_m * rotor_velocity_rad_s)'''
 
 
+def buildWaveform(wd, fft_len, bin_bw):
+    ret = np.zeros((wd.shape[0], fft_len), dtype=np.complex64)
+    ret[:, :bin_bw // 2] = wd[:, 0, -bin_bw // 2:] + 1j * wd[:, 1, -bin_bw // 2:]
+    ret[:, -bin_bw // 2:] = wd[:, 0, :bin_bw // 2] + 1j * wd[:, 1, :bin_bw // 2]
+    return ret
+
+
 def getRange(alt, theta_el):
     return alt * np.sin(theta_el) * 2 / c0
 
@@ -52,7 +59,7 @@ def getRange(alt, theta_el):
 if __name__ == '__main__':
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-    seed_everything(43, workers=True)
+    # seed_everything(43, workers=True)
 
     with open('./vae_config.yaml', 'r') as file:
         try:
@@ -60,7 +67,8 @@ if __name__ == '__main__':
         except yaml.YAMLError as exc:
             print(exc)
 
-    bin_bw = int(config['settings']['bandwidth'] // (fs / 32768))
+    fft_len = config['generate_data_settings']['fft_sz']
+    bin_bw = int(config['settings']['bandwidth'] // (fs / fft_len))
     bin_bw += 1 if bin_bw % 2 != 0 else 0
 
     franges = np.linspace(config['perf_params']['vehicle_slant_range_min'],
@@ -71,6 +79,7 @@ if __name__ == '__main__':
     nr = int(pulse_length * fs)
 
     # Get the VAE set up
+    print('Setting up model...')
     if config['exp_params']['model_type'] == 'InfoVAE':
         vae_mdl = InfoVAE(**config['model_params'])
     elif config['exp_params']['model_type'] == 'WAE_MMD':
@@ -81,18 +90,22 @@ if __name__ == '__main__':
     vae_mdl.eval()  # Set to inference mode
     # vae_mdl.to(device)  # Move to GPU
 
+    print('Setting up data generator...')
     wave_mdl = GeneratorModel(bin_bw=bin_bw, clutter_latent_size=config['model_params']['latent_dim'],
                               target_latent_size=config['model_params']['latent_dim'], n_ants=1)
 
     data = WaveDataModule(vae_model=vae_mdl, device=device, **config["dataset_params"])
     data.setup()
 
-    experiment = GeneratorExperiment(wave_mdl, config['exp_params'])
+    vae_mdl.to('cpu')
+
+    print('Setting up experiment...')
+    experiment = GeneratorExperiment(wave_mdl, config['wave_exp_params'])
     logger = loggers.TensorBoardLogger(config['train_params']['log_dir'],
                                        name=f"WaveModel")
     trainer = Trainer(logger=logger, max_epochs=config['train_params']['max_epochs'],
                       log_every_n_steps=config['exp_params']['log_epoch'],
-                      strategy='ddp', deterministic=True,
+                      devices=1,
                       callbacks=[EarlyStopping(monitor='loss', patience=50, check_finite=True)])
 
     print(f"======= Training =======")
@@ -100,19 +113,23 @@ if __name__ == '__main__':
 
     wave_mdl.eval()
 
+    cc, tc, cs, ts = next(iter(data.train_dataloader()))
 
+    test = wave_mdl(cc.unsqueeze(0), tc.unsqueeze(0)).data.numpy()
+    waves = buildWaveform(test, fft_len, bin_bw)
+
+    clutter = cs.data.numpy()
+    clutter = clutter[:, :, 0] + 1j * clutter[:, :, 1]
+    targets = ts.data.numpy()
+    targets = targets[:, :, 0] + 1j * targets[:, :, 1]
 
     # Run some plots for an idea of what's going on
-    '''freqs = np.fft.fftshift(np.fft.fftfreq(dec_fftsz, 1 / fs))
-    plt.figure(f'Waveform PSD - run {run}')
-    w0 = np.fft.fftshift(waveform_plot[0, :, 0])
-    plt.plot(freqs, w0)
-    w1 = np.fft.fftshift(waveform_plot[0, :, 1])
-    plt.plot(freqs, w1)
-    targ = np.fft.fftshift(targets[0, :, 0])
-    plt.plot(freqs, db(targ), linestyle='--')
-    clut = np.fft.fftshift(targets[0, :, 1])
-    plt.plot(freqs, db(clut), linestyle=':')
+    freqs = np.fft.fftshift(np.fft.fftfreq(bin_bw, 1 / fs))
+    plt.figure(f'Waveform PSD')
+    plt.plot(freqs, db(np.fft.fftshift(waves[0])[fft_len // 2 - bin_bw // 2:fft_len // 2 + bin_bw // 2]))
+    # plt.plot(freqs, np.fft.fftshift(waves[0, :].imag))
+    plt.plot(freqs, np.fft.fftshift(db(targets[0])), linestyle='--')
+    plt.plot(freqs, np.fft.fftshift(db(clutter[0])), linestyle=':')
     plt.legend(['Waveform 1', 'Waveform 2', 'Target', 'Clutter'])
     plt.ylabel('Relative Power (dB)')
     plt.xlabel('Freq (Hz)')
@@ -120,15 +137,15 @@ if __name__ == '__main__':
     # Save the model structure out to a PNG
     # plot_model(mdl, to_file='./mdl_plot.png', show_shapes=True)
     # waveforms = np.fft.fftshift(waveforms, axes=2)
-    plt.figure(f'Autocorrelation - run {run}')
+    plt.figure(f'Autocorrelation')
     linear = np.fft.fft(
         genPulse(np.linspace(0, 1, 10),
-                 np.linspace(0, 1, 10), nr, fs, fc, bandwidth), dec_fftsz)
-    inp_wave = waveforms[0, :, 0] * waveforms[0, :, 0].conj()
+                 np.linspace(0, 1, 10), nr, fs, config['settings']['fc'], config['settings']['bandwidth']), fft_len)
+    inp_wave = waves[0] * waves[0].conj()
     autocorr1 = np.fft.fftshift(db(np.fft.ifft(upsample(inp_wave))))
-    inp_wave = waveforms[0, :, 1] * waveforms[0, :, 1].conj()
+    inp_wave = waves[0] * waves[0].conj()
     autocorr2 = np.fft.fftshift(db(np.fft.ifft(upsample(inp_wave))))
-    inp_wave = waveforms[0, :, 0] * waveforms[0, :, 1].conj()
+    inp_wave = waves[0] * waves[0].conj()
     autocorrcr = np.fft.fftshift(db(np.fft.ifft(upsample(inp_wave))))
     perf_autocorr = np.fft.fftshift(db(np.fft.ifft(upsample(linear * linear.conj()))))
     lags = np.arange(len(autocorr1)) - len(autocorr1) // 2
@@ -144,25 +161,11 @@ if __name__ == '__main__':
     plt.legend(['Waveform 1', 'Waveform 2', 'Cross Correlation', 'Linear Chirp'])
     plt.xlabel('Lag')
 
-    plt.figure(f'Time Series - run {run}')
-    plot_t = np.arange(dec_fftsz) / fs
-    plt.plot(plot_t, np.fft.ifft(np.fft.fftshift(waveforms[0, :, 0])).real)
-    plt.plot(plot_t, np.fft.ifft(np.fft.fftshift(waveforms[0, :, 1])).real)
+    plt.figure(f'Time Series')
+    plot_t = np.arange(fft_len) / fs
+    plt.plot(plot_t, np.fft.ifft(np.fft.fftshift(waves[0])).real)
+    plt.plot(plot_t, np.fft.ifft(np.fft.fftshift(waves[0])).real)
     plt.legend(['Waveform 1', 'Waveform 2'])
     plt.xlabel('Time')
 
-    plt.figure('Training')
-    plt.subplot(2, 1, 1)
-    plt.plot(total_hist[:3, :].T)
-    plt.vlines(np.cumsum(hist_lines) - 1, np.min(total_hist), np.max(total_hist), colors='red', linestyles='--',
-               linewidth=.5)
-    plt.ylabel('Loss')
-    plt.xlabel('Training Epoch')
-    plt.subplot(2, 1, 2)
-    plt.plot(total_hist[3:, :].T)
-    plt.vlines(np.cumsum(hist_lines) - 1,
-               np.min(total_hist[3:, :]), np.max(total_hist[3:, :]), colors='red', linestyles='--',
-               linewidth=.5)
-    plt.ylabel('Loss')
-    plt.xlabel('Training Epoch')
-    plt.show()'''
+    plt.show()

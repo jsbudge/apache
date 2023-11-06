@@ -78,55 +78,58 @@ class WaveDataset(Dataset):
         clutter_spec_files = glob(f'{root_dir}/clutter_*.spec')
         target_cov_files = glob(f'{root_dir}/targets.cov')
         target_spec_files = glob(f'{root_dir}/targets.spec')
-        self.ccdata = np.concatenate([np.fromfile(c, dtype=np.float32).reshape(
+        ccdata = np.concatenate([np.fromfile(c, dtype=np.float32).reshape(
             (-1, 32, 32, 2)) for c in clutter_cov_files]).swapaxes(1, 3) / var
-        self.ccdata = vae_model(torch.tensor(self.ccdata))[2]
-        self.tcdata = np.concatenate([np.fromfile(c, dtype=np.float32).reshape(
+        tcdata = np.concatenate([np.fromfile(c, dtype=np.float32).reshape(
             (-1, 32, 32, 2)) for c in target_cov_files]).swapaxes(1, 3) / var
-        self.csdata = np.concatenate([np.fromfile(c, dtype=np.float32).reshape(
+        csdata = np.concatenate([np.fromfile(c, dtype=np.float32).reshape(
             (-1, 6554, 2)) for c in clutter_spec_files])
-        self.tsdata = np.concatenate([np.fromfile(c, dtype=np.float32).reshape(
+        tsdata = np.concatenate([np.fromfile(c, dtype=np.float32).reshape(
             (-1, 6554, 2)) for c in target_spec_files])
 
         # Do split
         if split < 1:
-            rch = np.random.choice(np.arange(self.csdata.shape[0]), int(self.csdata.shape[0] * split))
-            self.ccdata = self.ccdata[rch, ...]
-            self.csdata = self.csdata[rch, ...]
+            rch = np.random.choice(np.arange(csdata.shape[0]), int(csdata.shape[0] * split))
+            ccdata = ccdata[rch, ...]
+            csdata = csdata[rch, ...]
         if single_example:
-            self.ccdata[1:, ...] = self.ccdata[0, ...]
-            self.tcdata[1:, ...] = self.tcdata[0, ...]
-            self.csdata[1:, ...] = self.csdata[0, ...]
-            self.tsdata[1:, ...] = self.tsdata[0, ...]
+            ccdata[1:, ...] = ccdata[0, ...]
+            tcdata[1:, ...] = tcdata[0, ...]
+            csdata[1:, ...] = csdata[0, ...]
+            tsdata[1:, ...] = tsdata[0, ...]
 
-        self.spec_sz = self.tcdata.shape[0]
+        self.spec_sz = tcdata.shape[0]
 
         # Run through the VAE model
         vae_model.to(device)
-        self.ccdata = vae_model(self.ccdata)
-        self.tcdata = vae_model(self.tcdata)
 
-        if spec_transform is not None:
-            self.spec_transform = spec_transform
-        else:
-            self.spec_transform = transforms.Compose(
-                [
-                    transforms.ToTensor(),
-                ]
-            )
+        self.ccdata = torch.vstack([vae_model.encode(torch.tensor(ccdata[i:i+64]).to(device)).detach().cpu() for i in range(0, ccdata.shape[0], 64)])
+        self.tcdata = torch.vstack([vae_model.encode(torch.tensor(tcdata[i:i+64]).to(device)).detach().cpu() for i in range(0, tcdata.shape[0], 64)])
+        self.csdata = torch.tensor(csdata)
+        self.tsdata = torch.tensor(tsdata)
 
+        del ccdata
+        del tcdata
+
+        self.spec_transform = spec_transform
         self.transform = transform
 
     def __getitem__(self, idx):
-        if self.transform is not None:
-            ccd = self.transform(self.ccdata[idx, ...])
-            tcd = self.transform(self.tcdata[idx, ...])
+        ccd = self.ccdata[idx, ...]
+        csd = self.csdata[idx, ...]
         if self.spec_sz < self.csdata.shape[0]:
-            csd = self.spec_transform(self.csdata[idx % self.spec_sz, ...])
-            tsd = self.spec_transform(self.tsdata[idx % self.spec_sz, ...])
+            tsd = self.tsdata[idx % self.spec_sz, ...]
+            tcd = self.tcdata[idx % self.spec_sz, ...]
         else:
-            csd = self.spec_transform(self.csdata[idx, ...])
-            tsd = self.spec_transform(self.tsdata[idx, ...])
+            tsd = self.tsdata[idx, ...]
+            tcd = self.tcdata[idx, ...]
+        if self.transform is not None:
+            ccd = self.transform(ccd)
+            tcd = self.transform(tcd)
+        if self.spec_transform is not None:
+            csd = self.spec_transform(csd)
+            tsd = self.spec_transform(tsd)
+
         return ccd, tcd, csd, tsd
 
     def __len__(self):
@@ -214,6 +217,7 @@ class WaveDataModule(LightningDataModule):
             single_example: bool = False,
             mu: float = 0.,
             var: float = 1.,
+            device: str = 'cpu',
             **kwargs,
     ):
         super().__init__()
@@ -231,13 +235,15 @@ class WaveDataModule(LightningDataModule):
         self.single_example = single_example
         self.mu = mu
         self.var = var
+        self.device = device
 
     def setup(self, stage: Optional[str] = None) -> None:
         self.train_dataset = WaveDataset(self.data_dir, self.vae_model, split=self.train_split,
-                                         single_example=self.single_example, mu=self.mu, var=self.var)
+                                         single_example=self.single_example, mu=self.mu, var=self.var,
+                                         device=self.device)
 
         self.val_dataset = WaveDataset(self.data_dir, self.vae_model, split=self.val_split,
-                                       single_example=self.single_example, mu=self.mu, var=self.var)
+                                       single_example=self.single_example, mu=self.mu, var=self.var, device=self.device)
 
     def train_dataloader(self) -> DataLoader:
         return DataLoader(
