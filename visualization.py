@@ -91,6 +91,8 @@ for s in sdr_file_bgtype:
     except IndexError:
         print(f'{s[0]} not found.')
         continue
+    except ModuleNotFoundError:
+        sdr_f = load([c for c in sdr_file if s[0] in c][0], import_pickle=False)
     mfilt = GetAdvMatchedFilter(sdr_f[0], fft_len=fft_len)
     rollback = -int(np.round(sdr_f[0].baseband_fc / (sdr_f[0].fs / fft_len)))
     ims = []
