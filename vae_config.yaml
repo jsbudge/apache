@@ -29,8 +29,8 @@ generate_data_settings:
 
 dataset_params:
   data_path: ./data
-  train_batch_size: 32
-  val_batch_size: 32
+  train_batch_size: 128
+  val_batch_size: 128
   num_workers: 8
   pin_memory: False
   train_split: .2
@@ -43,7 +43,7 @@ exp_params:
   LR: 0.0001
   weight_decay: 0.0
   scheduler_gamma: 0.95
-  kld_weight: .436
+  kld_weight: .361
   log_epoch: 10
   output_images: False
   model_type: WAE_MMD
@@ -61,12 +61,12 @@ wave_exp_params:
 
 model_params:
   in_channels: 2
-  latent_dim: 77
+  latent_dim: 70
   loss_type: 'H'
   gamma: 4430.
   max_capacity: 25
   capacity_max_iter: 10000
-  reg_weight: 7560  # MMD weight
+  reg_weight: 370.  # MMD weight
   kernel_type: 'rbf'
   alpha: -5.4139     # KLD weight
   beta: 1.86106      # Reconstruction weight
@@ -74,7 +74,7 @@ model_params:
 
 train_params:
   log_dir: ./logs
-  max_epochs: 5
+  max_epochs: 5000
 
 compression_params:
   in_channels: 2
