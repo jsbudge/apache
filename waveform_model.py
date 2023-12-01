@@ -1,12 +1,9 @@
 from typing import List, Any, TypeVar
-
-# from torch import tensor as Tensor
-Tensor = TypeVar('torch.tensor')
 import torch
 from torch import nn
-from torch.nn import functional as F
-from abc import abstractmethod
 from pytorch_lightning import LightningModule
+
+Tensor = TypeVar('torch.tensor')
 
 
 class GeneratorModel(LightningModule):
@@ -21,34 +18,44 @@ class GeneratorModel(LightningModule):
         self.n_ants = n_ants
         self.bin_bw = bin_bw
 
+        stack_output_sz = 64
+        kernel_reduc = stack_output_sz - 29
+
         self.clutter_stack = nn.Sequential(
-            nn.Linear(clutter_latent_size, 32),
+            nn.Linear(clutter_latent_size, stack_output_sz),
             nn.LeakyReLU(),
         )
 
         self.target_stack = nn.Sequential(
-            nn.Linear(target_latent_size, 32),
+            nn.Linear(target_latent_size, stack_output_sz),
             nn.LeakyReLU(),
         )
 
         self.ffinit = nn.Sequential(
-            nn.Conv1d(1, 512, 3, 1, 1),
+            nn.Conv1d(1, 512, kernel_reduc, 1, 1),
+            nn.LeakyReLU(),
+            nn.Conv1d(512, 1024, 3, 1, 1),
+            nn.LeakyReLU(),
+            nn.ConvTranspose1d(1024, 512, 35, 1, 1),
             nn.LeakyReLU(),
             nn.Conv1d(512, 512, 3, 1, 1),
             nn.LeakyReLU(),
-            nn.ConvTranspose1d(512, 256, 35, 1, 1),
+            nn.ConvTranspose1d(512, 256, 67, 1, 1),
             nn.LeakyReLU(),
-            nn.ConvTranspose1d(256, 256, 67, 1, 1),
+            nn.Conv1d(256, 256, 3, 1, 1),
             nn.LeakyReLU(),
             nn.ConvTranspose1d(256, 64, 131, 1, 1),
             nn.LeakyReLU(),
+            nn.Conv1d(64, 64, 3, 1, 1),
+            nn.LeakyReLU(),
             nn.Conv1d(64, n_ants * 2, 33, 1, 1),
+
             nn.Upsample(scale_factor=29, mode='linear')
         )
 
     def forward(self, clutter: Tensor, target: Tensor) -> Tensor:
         ct_stack = torch.add(self.clutter_stack(clutter), self.target_stack(target))
-        ct_stack = ct_stack.view(-1, 1, 32)
+        ct_stack = ct_stack.view(-1, 1, 64)
         return self.ffinit(ct_stack)
 
     def loss_function(self, *args, **kwargs) -> dict:

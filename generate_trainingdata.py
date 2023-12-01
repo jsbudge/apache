@@ -156,7 +156,7 @@ if __name__ == '__main__':
                     pmean, cov_dt = getVAECov(pulse_data, mfilt, rollback, sdr_f[0].nsam, fft_len)
                     clutter_abs.append(np.stack((pmean.real, pmean.imag), axis=1))
                     inp_data.append(np.stack((cov_dt.real, cov_dt.imag), axis=2))
-                if len(inp_data) == 0:
+                if not inp_data:
                     break
                 inp_data = np.array(inp_data, dtype=np.float32)
                 clutter_abs = formatTargetClutterData(np.array(clutter_abs), bin_bw).astype(np.float32)
@@ -173,7 +173,7 @@ if __name__ == '__main__':
         print('Running targets...')
         targs = []
         targ_abs = []
-        for ntarg in tqdm(range(10)):
+        for _ in tqdm(range(128)):
             tpsd = genTargetPSDSwerling1(config['settings']['bandwidth'], config['settings']['fc'],
                                          config['perf_params']['vehicle_slant_range_min'],
                                          config['perf_params']['vehicle_slant_range_max'],
@@ -185,14 +185,11 @@ if __name__ == '__main__':
             targs.append(np.stack((cov_dt.real, cov_dt.imag), axis=2))
         targs = np.array(targs).astype(np.float32)
         targ_abs = formatTargetClutterData(np.array(targ_abs), bin_bw).astype(np.float32)
-        with open(
-                f'./data/targets.cov', 'ab') as writer:
+        with open('./data/targets.cov', 'ab') as writer:
             targs.tofile(writer)
-        with open(
-                f'./data/targets.spec', 'ab') as writer:
+        with open('./data/targets.spec', 'ab') as writer:
             targ_abs.tofile(writer)
 
     # Some checks
-    with open(
-            f'./data/targets.spec', 'rb') as writer:
+    with open('./data/targets.spec', 'rb') as writer:
         data = np.fromfile(writer, dtype=np.float32).reshape((-1, 6554, 2))

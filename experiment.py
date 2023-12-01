@@ -261,7 +261,6 @@ class GeneratorExperiment(pl.LightningModule):
             print('Model saved to disk.')
 
     def configure_optimizers(self):
-
         optims = []
         scheds = []
 

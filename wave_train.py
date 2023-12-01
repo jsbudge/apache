@@ -11,6 +11,7 @@ import plotly.graph_objects as go
 import plotly.io as pio
 import pickle
 import torch
+from pytorch_lightning.strategies import DDPStrategy
 from pytorch_lightning import Trainer, loggers, seed_everything
 from pytorch_lightning.callbacks import EarlyStopping
 import yaml
@@ -57,9 +58,10 @@ def getRange(alt, theta_el):
 
 
 if __name__ == '__main__':
+    strat = DDPStrategy(process_group_backend='nccl')
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-    # seed_everything(43, workers=True)
+    seed_everything(43, workers=True)
 
     with open('./vae_config.yaml', 'r') as file:
         try:
@@ -92,7 +94,7 @@ if __name__ == '__main__':
 
     print('Setting up data generator...')
     wave_mdl = GeneratorModel(bin_bw=bin_bw, clutter_latent_size=config['model_params']['latent_dim'],
-                              target_latent_size=config['model_params']['latent_dim'], n_ants=1)
+                              target_latent_size=config['model_params']['latent_dim'], n_ants=2)
 
     data = WaveDataModule(vae_model=vae_mdl, device=device, **config["dataset_params"])
     data.setup()
@@ -102,13 +104,14 @@ if __name__ == '__main__':
     print('Setting up experiment...')
     experiment = GeneratorExperiment(wave_mdl, config['wave_exp_params'])
     logger = loggers.TensorBoardLogger(config['train_params']['log_dir'],
-                                       name=f"WaveModel")
+                                       name="WaveModel")
     trainer = Trainer(logger=logger, max_epochs=config['train_params']['max_epochs'],
                       log_every_n_steps=config['exp_params']['log_epoch'],
-                      devices=1,
-                      callbacks=[EarlyStopping(monitor='loss', patience=50, check_finite=True)])
+                      strategy=strat, devices=1, num_nodes=2,
+                      callbacks=[EarlyStopping(monitor='loss', patience=config['wave_exp_params']['patience'],
+                                               check_finite=True)])
 
-    print(f"======= Training =======")
+    print("======= Training =======")
     trainer.fit(experiment, datamodule=data)
 
     wave_mdl.eval()

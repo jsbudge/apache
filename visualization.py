@@ -20,6 +20,7 @@ from data_converter.SDRParsing import SDRParse, load
 from tqdm import tqdm
 from jax.numpy import fft as jaxfft
 from sklearn.decomposition import KernelPCA
+import matplotlib.animation as animation
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 with open('./vae_config.yaml') as y:
@@ -60,11 +61,11 @@ latent_reps = []
 images = []
 
 train_transforms = transforms.Compose(
-            [
-                transforms.ToTensor(),
-                transforms.Normalize((0., 0.), param_dict['dataset_params']['var']),
-            ]
-        )
+    [
+        transforms.ToTensor(),
+        transforms.Normalize((0., 0.), param_dict['dataset_params']['var']),
+    ]
+)
 
 iters = 100
 
@@ -92,8 +93,8 @@ for s in sdr_file_bgtype:
         print(f'{s[0]} not found.')
         continue
     except ModuleNotFoundError:
-        sdr_f = load([c for c in sdr_file if s[0] in c][0], import_pickle=False)
-    mfilt = GetAdvMatchedFilter(sdr_f[0], fft_len=fft_len)
+        sdr_f = load([c for c in sdr_file if s[0] in c][0], import_pickle=False, progress_tracker=True)
+    mfilt = sdr_f.genMatchedFilter(0, fft_len=fft_len)
     rollback = -int(np.round(sdr_f[0].baseband_fc / (sdr_f[0].fs / fft_len)))
     ims = []
     latent_z = []
@@ -119,13 +120,20 @@ for s in sdr_file_bgtype:
 
     plt.figure(f'{s[0]} Information')
     plt.subplot(2, 3, 1)
+    plt.title('True Covariance')
     plt.imshow(db(samples[0, 0, ...] + 1j * samples[0, 1, ...]))
+    plt.axis('off')
     plt.subplot(2, 3, 4)
+    plt.title('Generated Covariance')
     plt.imshow(db(dec))
+    plt.axis('off')
     plt.subplot(2, 3, (2, 5))
     plt.scatter(np.arange(latent_z.shape[1]), latent_z[0, ...], c='blue')
     plt.subplot(2, 3, (3, 6))
-    plt.imshow(ims[0, ...])
+    clim_mu = np.mean(ims[0, ...])
+    clim_std = np.std(ims[0, ...])
+    plt.imshow(ims[0, ...], cmap='gray', clim=[clim_mu - clim_std * 3, clim_mu + clim_std + 3])
+    plt.axis('off')
     plt.axis('tight')
 
     # images.append(cv2.imread([c for c in image_files if s[0] in c][0]))
@@ -180,15 +188,23 @@ lr_sppark = kpca.transform(latent_reps[10])
 fig = plt.figure()
 ax0 = fig.add_subplot(1, 3, 1)
 ax1 = fig.add_subplot(1, 3, 2, projection='3d')
+axtitle = ax0.text(x=0.5, y=0.85, s="", bbox={'facecolor': 'w', 'alpha': 0.5, 'pad': 5},
+                   transform=ax0.transAxes, ha="center")
 ax2 = fig.add_subplot(1, 3, 3)
 cam = Camera(fig)
 for idx in range(iters):
-    ax0.imshow(images[7][idx, ...])
+    ax0.imshow(images[7][idx, ...], cmap='gray', clim=[images[7].mean() - images[7].std() * 3, images[7].mean() + images[7].std() * 3])
     ax0.axis('tight')
-    ax1.scatter(lr_river[:idx, 0], lr_river[:idx, 1], lr_river[:idx, 2], c='blue')
-    ax1.scatter(lr_sppark[:idx, 0], lr_sppark[:idx, 1], lr_sppark[:idx, 2], c='red')
-    ax2.imshow(images[10][idx, ...])
+    ax0.axis('off')
+    ax1.scatter(lr_river[idx, 0], lr_river[idx, 1], lr_river[idx, 2], c='blue')
+    ax1.scatter(lr_sppark[idx, 0], lr_sppark[idx, 1], lr_sppark[idx, 2], c='red')
+    ax0.title = ax0.text(x=0.5, y=0.85, s=f'CPI {idx}',
+                   transform=ax0.transAxes, ha="center")
+    ax2.imshow(images[10][idx, ...], cmap='gray', clim=[images[10].mean() - images[10].std() * 3, images[10].mean() + images[10].std() * 3])
     ax2.axis('tight')
+    ax2.axis('off')
     cam.snap()
-anim = cam.animate(interval=1000)
+anim = cam.animate(interval=100)
+pilwriter = animation.PillowWriter(fps=10)
+anim.save('./visualization.gif', writer=pilwriter)
 plt.show()

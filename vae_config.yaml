@@ -24,7 +24,7 @@ settings:
 generate_data_settings:
   iterations: 20
   fft_sz: 32768
-  run_clutter: True
+  run_clutter: False
   run_targets: True
 
 dataset_params:
@@ -50,14 +50,13 @@ exp_params:
   is_tuning: False
 
 wave_exp_params:
-  LR: 0.0005
-  weight_decay: 0.19
+  LR: 0.0001
+  weight_decay: 0.0
   scheduler_gamma: 0.95
-  kld_weight: .798
+  kld_weight: .361
   log_epoch: 10
-  output_images: False
-  model_type: WAE_MMD
   is_tuning: False
+  patience: 5
 
 model_params:
   in_channels: 2
@@ -74,7 +73,7 @@ model_params:
 
 train_params:
   log_dir: ./logs
-  max_epochs: 5000
+  max_epochs: 50000
 
 compression_params:
   in_channels: 2

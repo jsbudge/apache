@@ -2,16 +2,14 @@ import torch
 from pytorch_lightning import Trainer, loggers, seed_everything
 from pytorch_lightning.callbacks import EarlyStopping
 import yaml
-import matplotlib.pyplot as plt
 from pathlib import Path
 from dataloaders import CovDataModule
 from experiment import VAExperiment
 from models import BetaVAE, InfoVAE, WAE_MMD, init_weights
-import numpy as np
 
 print(f'Cuda is available? {torch.cuda.is_available()}')
 
-seed_everything(43, workers=True)
+seed_everything(70, workers=True)
 
 with open('./vae_config.yaml') as y:
     param_dict = yaml.safe_load(y.read())
@@ -37,15 +35,14 @@ logger = loggers.TensorBoardLogger(param_dict['train_params']['log_dir'],
                                    name=f"{param_dict['exp_params']['model_type']}")
 trainer = Trainer(logger=logger, max_epochs=param_dict['train_params']['max_epochs'],
                   log_every_n_steps=param_dict['exp_params']['log_epoch'],
-                  strategy='ddp', deterministic=True,
-                  callbacks=[EarlyStopping(monitor='Reconstruction_Loss', patience=50, check_finite=True)])
+                  strategy='ddp', deterministic=True)
 
 # Generate filepaths for sample and reconstruction images
 Path(f"{logger.log_dir}/Samples").mkdir(exist_ok=True, parents=True)
 Path(f"{logger.log_dir}/Reconstructions").mkdir(exist_ok=True, parents=True)
 # trainer.test(model, train_loader, verbose=True)
 
-print(f"======= Training =======")
+print("======= Training =======")
 trainer.fit(experiment, datamodule=data)
 
 model.eval()
@@ -56,6 +53,6 @@ if trainer.is_global_zero:
     try:
         torch.save(model.state_dict(), './model/inference_model.state')
         print('Model saved to disk.')
-    except:
-        print('Model not saved.')
+    except Exception as e:
+        print(f'Model not saved: {e}')
 
