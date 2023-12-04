@@ -7,6 +7,11 @@ from torch import nn
 from torch.nn import functional as F
 from abc import abstractmethod
 from pytorch_lightning import LightningModule
+import numpy as np
+
+
+def calc_conv_size(inp_sz, kernel_sz, stride, padding):
+    return np.floor((inp_sz - kernel_sz + 2 * padding) / stride) + 1
 
 
 class RichConv2D(LightningModule):
@@ -24,7 +29,7 @@ class RichConv2D(LightningModule):
 
 
 def init_weights(m):
-    if isinstance(m, nn.Conv2d) or isinstance(m, nn.ConvTranspose2d):
+    if isinstance(m, (nn.Conv2d, nn.ConvTranspose2d)):
         torch.nn.init.xavier_normal_(m.weight)
         m.bias.data.fill_(0.01)
 
@@ -108,8 +113,17 @@ class BetaVAE(BaseVAE):
         self.C_max = torch.Tensor([max_capacity])
         self.C_stop_iter = capacity_max_iter
 
-        self.save_hyperparameters('in_channels', 'latent_dim', 'hidden_dims', 'beta', 'gamma', 'max_capacity',
-                                  'capacity_max_iter', 'loss_type', *[k for k in kwargs.keys()])
+        self.save_hyperparameters(
+            'in_channels',
+            'latent_dim',
+            'hidden_dims',
+            'beta',
+            'gamma',
+            'max_capacity',
+            'capacity_max_iter',
+            'loss_type',
+            *list(kwargs.keys())
+        )
 
         modules = []
         # Kernel size, stride, padding
@@ -144,14 +158,17 @@ class BetaVAE(BaseVAE):
         hidden_dims.reverse()
         layer_params.reverse()
 
-        for i in range(len(hidden_dims) - 1):
-            modules.append(
-                nn.Sequential(
-                    RichConv2DTranspose(hidden_dims[i], hidden_dims[i + 1], layer_params[i]),
-                    nn.ConvTranspose2d(hidden_dims[i + 1], hidden_dims[i + 1], 3, 1, 1),
-                )
+        modules.extend(
+            nn.Sequential(
+                RichConv2DTranspose(
+                    hidden_dims[i], hidden_dims[i + 1], layer_params[i]
+                ),
+                nn.ConvTranspose2d(
+                    hidden_dims[i + 1], hidden_dims[i + 1], 3, 1, 1
+                ),
             )
-
+            for i in range(len(hidden_dims) - 1)
+        )
         self.decoder = nn.Sequential(*modules)
         self.decoder.apply(init_weights)
 

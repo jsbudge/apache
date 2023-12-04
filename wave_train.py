@@ -20,8 +20,8 @@ from torchvision import transforms
 from pathlib import Path
 from dataloaders import CovDataModule, WaveDataModule
 from experiment import VAExperiment, GeneratorExperiment
-from models import BetaVAE, InfoVAE, WAE_MMD, init_weights
-from waveform_model import GeneratorModel
+from models import BetaVAE, InfoVAE, WAE_MMD
+from waveform_model import GeneratorModel, init_weights
 
 # pio.renderers.default = 'svg'
 pio.renderers.default = 'browser'
@@ -47,10 +47,14 @@ def upsample(val, fac=8):
 
 
 def buildWaveform(wd, fft_len, bin_bw):
-    ret = np.zeros((wd.shape[0], fft_len), dtype=np.complex64)
-    ret[:, :bin_bw // 2] = wd[:, 0, -bin_bw // 2:] + 1j * wd[:, 1, -bin_bw // 2:]
-    ret[:, -bin_bw // 2:] = wd[:, 0, :bin_bw // 2] + 1j * wd[:, 1, :bin_bw // 2]
-    return ret
+    ret = np.zeros((wd.shape[0], wd.shape[1] // 2, fft_len), dtype=np.complex64)
+    ret[:, :, :bin_bw // 2] = wd[:, ::2, -bin_bw // 2:] + 1j * wd[:, 1::2, -bin_bw // 2:]
+    ret[:, :, -bin_bw // 2:] = wd[:, ::2, :bin_bw // 2] + 1j * wd[:, 1::2, :bin_bw // 2]
+    return normalize(ret)
+
+
+def normalize(data):
+    return data / np.expand_dims(np.sqrt(np.sum(data * data.conj(), axis=-1).real), axis=len(data.shape) - 1)
 
 
 def getRange(alt, theta_el):
@@ -58,7 +62,6 @@ def getRange(alt, theta_el):
 
 
 if __name__ == '__main__':
-    strat = DDPStrategy(process_group_backend='nccl')
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     seed_everything(43, workers=True)
@@ -96,6 +99,8 @@ if __name__ == '__main__':
     wave_mdl = GeneratorModel(bin_bw=bin_bw, clutter_latent_size=config['model_params']['latent_dim'],
                               target_latent_size=config['model_params']['latent_dim'], n_ants=2)
 
+    wave_mdl.apply(init_weights)
+
     data = WaveDataModule(vae_model=vae_mdl, device=device, **config["dataset_params"])
     data.setup()
 
@@ -107,68 +112,69 @@ if __name__ == '__main__':
                                        name="WaveModel")
     trainer = Trainer(logger=logger, max_epochs=config['train_params']['max_epochs'],
                       log_every_n_steps=config['exp_params']['log_epoch'],
-                      strategy=strat, devices=1, num_nodes=2,
                       callbacks=[EarlyStopping(monitor='loss', patience=config['wave_exp_params']['patience'],
                                                check_finite=True)])
 
     print("======= Training =======")
     trainer.fit(experiment, datamodule=data)
 
-    wave_mdl.eval()
+    if trainer.global_rank == 0:
+        wave_mdl.eval()
 
-    cc, tc, cs, ts = next(iter(data.train_dataloader()))
+        cc, tc, cs, ts = next(iter(data.train_dataloader()))
 
-    test = wave_mdl(cc.unsqueeze(0), tc.unsqueeze(0)).data.numpy()
-    waves = buildWaveform(test, fft_len, bin_bw)
+        test = wave_mdl(cc.unsqueeze(0), tc.unsqueeze(0)).data.numpy()
+        waves = buildWaveform(test, fft_len, bin_bw)
 
-    clutter = cs.data.numpy()
-    clutter = clutter[:, :, 0] + 1j * clutter[:, :, 1]
-    targets = ts.data.numpy()
-    targets = targets[:, :, 0] + 1j * targets[:, :, 1]
+        clutter = cs.data.numpy()
+        clutter = normalize(clutter[:, :, 0] + 1j * clutter[:, :, 1])
+        targets = ts.data.numpy()
+        targets = normalize(targets[:, :, 0] + 1j * targets[:, :, 1])
 
-    # Run some plots for an idea of what's going on
-    freqs = np.fft.fftshift(np.fft.fftfreq(bin_bw, 1 / fs))
-    plt.figure(f'Waveform PSD')
-    plt.plot(freqs, db(np.fft.fftshift(waves[0])[fft_len // 2 - bin_bw // 2:fft_len // 2 + bin_bw // 2]))
-    # plt.plot(freqs, np.fft.fftshift(waves[0, :].imag))
-    plt.plot(freqs, np.fft.fftshift(db(targets[0])), linestyle='--')
-    plt.plot(freqs, np.fft.fftshift(db(clutter[0])), linestyle=':')
-    plt.legend(['Waveform 1', 'Waveform 2', 'Target', 'Clutter'])
-    plt.ylabel('Relative Power (dB)')
-    plt.xlabel('Freq (Hz)')
+        # Run some plots for an idea of what's going on
+        freqs = np.fft.fftshift(np.fft.fftfreq(bin_bw, 1 / fs))
+        plt.figure('Waveform PSD')
+        plt.plot(freqs, db(np.fft.fftshift(waves[0, 0])[fft_len // 2 - bin_bw // 2:fft_len // 2 + bin_bw // 2]))
+        plt.plot(freqs, db(np.fft.fftshift(waves[0, 1])[fft_len // 2 - bin_bw // 2:fft_len // 2 + bin_bw // 2]))
+        plt.plot(freqs, db(targets[0]), linestyle='--')
+        plt.plot(freqs, db(clutter[0]), linestyle=':')
+        plt.legend(['Waveform 1', 'Waveform 2', 'Target', 'Clutter'])
+        plt.ylabel('Relative Power (dB)')
+        plt.xlabel('Freq (Hz)')
 
-    # Save the model structure out to a PNG
-    # plot_model(mdl, to_file='./mdl_plot.png', show_shapes=True)
-    # waveforms = np.fft.fftshift(waveforms, axes=2)
-    plt.figure(f'Autocorrelation')
-    linear = np.fft.fft(
-        genPulse(np.linspace(0, 1, 10),
-                 np.linspace(0, 1, 10), nr, fs, config['settings']['fc'], config['settings']['bandwidth']), fft_len)
-    inp_wave = waves[0] * waves[0].conj()
-    autocorr1 = np.fft.fftshift(db(np.fft.ifft(upsample(inp_wave))))
-    inp_wave = waves[0] * waves[0].conj()
-    autocorr2 = np.fft.fftshift(db(np.fft.ifft(upsample(inp_wave))))
-    inp_wave = waves[0] * waves[0].conj()
-    autocorrcr = np.fft.fftshift(db(np.fft.ifft(upsample(inp_wave))))
-    perf_autocorr = np.fft.fftshift(db(np.fft.ifft(upsample(linear * linear.conj()))))
-    lags = np.arange(len(autocorr1)) - len(autocorr1) // 2
-    plt.plot(lags[len(lags) // 2 - 200:len(lags) // 2 + 200],
-             autocorr1[len(lags) // 2 - 200:len(lags) // 2 + 200] - autocorr1.max())
-    plt.plot(lags[len(lags) // 2 - 200:len(lags) // 2 + 200],
-             autocorr2[len(lags) // 2 - 200:len(lags) // 2 + 200] - autocorr2.max())
-    plt.plot(lags[len(lags) // 2 - 200:len(lags) // 2 + 200],
-             autocorrcr[len(lags) // 2 - 200:len(lags) // 2 + 200] - autocorr1.max())
-    plt.plot(lags[len(lags) // 2 - 200:len(lags) // 2 + 200],
-             perf_autocorr[len(lags) // 2 - 200:len(lags) // 2 + 200] - perf_autocorr.max(),
-             linestyle='--')
-    plt.legend(['Waveform 1', 'Waveform 2', 'Cross Correlation', 'Linear Chirp'])
-    plt.xlabel('Lag')
+        # Save the model structure out to a PNG
+        # plot_model(mdl, to_file='./mdl_plot.png', show_shapes=True)
+        # waveforms = np.fft.fftshift(waveforms, axes=2)
+        plt.figure('Autocorrelation')
+        linear = np.fft.fft(
+            genPulse(np.linspace(0, 1, 10),
+                     np.linspace(0, 1, 10), nr, fs, config['settings']['fc'],
+                     config['settings']['bandwidth']), fft_len)
+        inp_wave = waves[0, 0] * waves[0, 0].conj()
+        autocorr1 = np.fft.fftshift(db(np.fft.ifft(upsample(inp_wave))))
+        inp_wave = waves[0, 1] * waves[0, 1].conj()
+        autocorr2 = np.fft.fftshift(db(np.fft.ifft(upsample(inp_wave))))
+        inp_wave = waves[0, 0] * waves[0, 1].conj()
+        autocorrcr = np.fft.fftshift(db(np.fft.ifft(upsample(inp_wave))))
+        perf_autocorr = np.fft.fftshift(db(np.fft.ifft(upsample(linear * linear.conj()))))
+        lags = np.arange(len(autocorr1)) - len(autocorr1) // 2
+        plt.plot(lags[len(lags) // 2 - 200:len(lags) // 2 + 200],
+                 autocorr1[len(lags) // 2 - 200:len(lags) // 2 + 200] - autocorr1.max())
+        plt.plot(lags[len(lags) // 2 - 200:len(lags) // 2 + 200],
+                 autocorr2[len(lags) // 2 - 200:len(lags) // 2 + 200] - autocorr2.max())
+        plt.plot(lags[len(lags) // 2 - 200:len(lags) // 2 + 200],
+                 autocorrcr[len(lags) // 2 - 200:len(lags) // 2 + 200] - autocorr1.max())
+        plt.plot(lags[len(lags) // 2 - 200:len(lags) // 2 + 200],
+                 perf_autocorr[len(lags) // 2 - 200:len(lags) // 2 + 200] - perf_autocorr.max(),
+                 linestyle='--')
+        plt.legend(['Waveform 1', 'Waveform 2', 'Cross Correlation', 'Linear Chirp'])
+        plt.xlabel('Lag')
 
-    plt.figure(f'Time Series')
-    plot_t = np.arange(fft_len) / fs
-    plt.plot(plot_t, np.fft.ifft(np.fft.fftshift(waves[0])).real)
-    plt.plot(plot_t, np.fft.ifft(np.fft.fftshift(waves[0])).real)
-    plt.legend(['Waveform 1', 'Waveform 2'])
-    plt.xlabel('Time')
+        plt.figure('Time Series')
+        plot_t = np.arange(fft_len) / fs
+        plt.plot(plot_t, np.fft.ifft(np.fft.fftshift(waves[0, 0])).real)
+        plt.plot(plot_t, np.fft.ifft(np.fft.fftshift(waves[0, 1])).real)
+        plt.legend(['Waveform 1', 'Waveform 2'])
+        plt.xlabel('Time')
 
-    plt.show()
+        plt.show()

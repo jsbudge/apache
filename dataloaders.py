@@ -13,7 +13,7 @@ from models import BaseVAE
 
 class CovarianceDataset(Dataset):
 
-    def __init__(self, root_dir, transform=None, split=1., single_example=False, mu=0., var=1.):
+    def __init__(self, root_dir, transform=None, split=1., single_example=False, mu=0., var=1., noise_level=0.):
         if Path(root_dir).is_dir():
             clutter_files = glob(f'{root_dir}/clutter_*.cov')
             self.data = np.concatenate([np.fromfile(c,
@@ -36,10 +36,14 @@ class CovarianceDataset(Dataset):
                 ]
             )
 
+        self.noise_level = noise_level
+
     def __getitem__(self, idx):
         img = self.data[idx, ...]
         if self.transform is not None:
             img = self.transform(img)
+        if self.noise_level > 0:
+            return img + torch.randn_like(img) * self.noise_level, img
         return img, img
 
     def __len__(self):
@@ -142,7 +146,6 @@ class CovDataModule(LightningDataModule):
             data_path: str,
             train_batch_size: int = 8,
             val_batch_size: int = 8,
-            patch_size: Union[int, Sequence[int]] = (256, 256),
             num_workers: int = 0,
             pin_memory: bool = False,
             train_split: float = .7,
@@ -159,7 +162,6 @@ class CovDataModule(LightningDataModule):
         self.data_dir = data_path
         self.train_batch_size = train_batch_size
         self.val_batch_size = val_batch_size
-        self.patch_size = patch_size
         self.num_workers = num_workers
         self.pin_memory = pin_memory
         self.train_split = train_split

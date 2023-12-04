@@ -38,6 +38,7 @@ dataset_params:
   single_example: False
   mu: 0.
   var: 0.4151423
+  noise_level: 0.01
 
 exp_params:
   LR: 0.0001
