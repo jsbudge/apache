@@ -1,0 +1,11 @@
+/logs/
+
+*.gif
+
+*.mp4
+
+*.state
+
+*.pyc
+
+.idea/
