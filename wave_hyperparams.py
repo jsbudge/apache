@@ -49,11 +49,11 @@ def objective(trial: optuna.Trial):
 
     experiment = GeneratorExperiment(wave_mdl, param_dict['wave_exp_params'])
     trainer = Trainer(logger=False, max_epochs=param_dict['train_params']['max_epochs'], enable_checkpointing=False,
-                      devices=1, callbacks=[EarlyStopping(patience=5, monitor='Reconstruction_Loss',
+                      devices=1, callbacks=[EarlyStopping(patience=5, monitor='loss',
                                                           check_finite=True)])
     trainer.fit(experiment, datamodule=data)
 
-    return trainer.callback_metrics['Reconstruction_Loss'].item()
+    return trainer.callback_metrics['loss'].item()
 
 
 study = optuna.create_study()
