@@ -22,22 +22,11 @@ parser.add_argument("--local_rank", type=int,
                     help="Local rank. Necessary for using the torch.distributed.launch utility.")
 argv = parser.parse_args()
 
-'''try:
-    os.environ['MASTER_PORT'] = argv.master_port
-except TypeError:
-    os.environ['MASTER_PORT'] = '7'
-try:
-    os.environ['MASTER_ADDR'] = argv.master_addr
-except TypeError:
-    os.environ['MASTER_ADDR'] = '127.0.0.1'
-try:
-    os.environ['WORLD_SIZE'] = argv.world_size
-except TypeError:
-    os.environ['WORLD_SIZE'] = '2'
-try:
-    os.environ['NODE_RANK'] = argv.local_rank
-except TypeError:
-    os.environ['NODE_RANK'] = '0'''''
+
+os.environ['MASTER_PORT'] = str(argv.master_port)
+os.environ['MASTER_ADDR'] = argv.master_addr
+os.environ['WORLD_SIZE'] = str(argv.world_size)
+os.environ['NODE_RANK'] = str(argv.local_rank)
 
 seed_everything(56)
 
