@@ -9,13 +9,35 @@ from dataloaders import CovDataModule
 from experiment import VAExperiment
 from models import BetaVAE, InfoVAE, WAE_MMD
 import argparse
+import os
 
-'''parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+parser.add_argument("--master_port", type=int,
+                    help="Master port to connect to.")
+parser.add_argument("--master_addr", type=str,
+                    help="Master IP address.")
+parser.add_argument("--world_size", type=int,
+                    help="World size, number of computers on network.")
 parser.add_argument("--local_rank", type=int,
                     help="Local rank. Necessary for using the torch.distributed.launch utility.")
 argv = parser.parse_args()
 
-local_rank = argv.local_rank'''
+'''try:
+    os.environ['MASTER_PORT'] = argv.master_port
+except TypeError:
+    os.environ['MASTER_PORT'] = '7'
+try:
+    os.environ['MASTER_ADDR'] = argv.master_addr
+except TypeError:
+    os.environ['MASTER_ADDR'] = '127.0.0.1'
+try:
+    os.environ['WORLD_SIZE'] = argv.world_size
+except TypeError:
+    os.environ['WORLD_SIZE'] = '2'
+try:
+    os.environ['NODE_RANK'] = argv.local_rank
+except TypeError:
+    os.environ['NODE_RANK'] = '0'''''
 
 seed_everything(56)
 
