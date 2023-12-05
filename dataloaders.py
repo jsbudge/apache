@@ -153,6 +153,7 @@ class CovDataModule(LightningDataModule):
             single_example: bool = False,
             mu: float = 0.,
             var: float = 1.,
+            noise_level: float = 0.,
             **kwargs,
     ):
         super().__init__()
@@ -169,13 +170,16 @@ class CovDataModule(LightningDataModule):
         self.single_example = single_example
         self.mu = mu
         self.var = var
+        self.noise_level = noise_level
 
     def setup(self, stage: Optional[str] = None) -> None:
         self.train_dataset = CovarianceDataset(self.data_dir, split=self.train_split,
-                                               single_example=self.single_example, mu=self.mu, var=self.var)
+                                               single_example=self.single_example, mu=self.mu, var=self.var,
+                                               noise_level=self.noise_level)
 
         self.val_dataset = CovarianceDataset(self.data_dir, split=self.val_split,
-                                             single_example=self.single_example, mu=self.mu, var=self.var)
+                                             single_example=self.single_example, mu=self.mu, var=self.var,
+                                             noise_level=self.noise_level)
 
     def train_dataloader(self) -> DataLoader:
         return DataLoader(

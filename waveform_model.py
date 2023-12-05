@@ -67,8 +67,8 @@ class GeneratorModel(LightningModule):
         )
 
         self.ffinit = nn.Sequential(
-            RichConvTranspose1d(1, 512, stack_output_sz),
-            RichConvTranspose1d(512, 256, 128),
+            RichConvTranspose1d(1, 256, stack_output_sz),
+            RichConvTranspose1d(256, 256, 128),
             RichConvTranspose1d(256, 128, 256),
             RichConvTranspose1d(128, 64, 512),
             RichConvTranspose1d(64, 32, 1024),

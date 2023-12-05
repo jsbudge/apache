@@ -17,6 +17,8 @@ argv = parser.parse_args()
 
 local_rank = argv.local_rank'''
 
+seed_everything(56)
+
 strat = DDPStrategy(process_group_backend='nccl')
 print(f'Cuda is available? {torch.cuda.is_available()}')
 
@@ -38,7 +40,7 @@ experiment = VAExperiment(model, param_dict['exp_params'])
 logger = loggers.TensorBoardLogger(param_dict['train_params']['log_dir'],
                                    name=f"{param_dict['exp_params']['model_type']}")
 trainer = Trainer(logger=logger, max_epochs=param_dict['train_params']['max_epochs'], log_every_n_steps=50,
-                  strategy=strat, devices=2, num_nodes=4)
+                  strategy=strat, devices=-1, num_nodes=2)
 
 # Generate filepaths for sample and reconstruction images
 Path(f"{logger.log_dir}/Samples").mkdir(exist_ok=True, parents=True)
