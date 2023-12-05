@@ -58,12 +58,13 @@ Path(f"{logger.log_dir}/Samples").mkdir(exist_ok=True, parents=True)
 Path(f"{logger.log_dir}/Reconstructions").mkdir(exist_ok=True, parents=True)
 # trainer.test(model, train_loader, verbose=True)
 
-print(f"======= Training =======")
+print("======= Training =======")
 trainer.fit(experiment, datamodule=data)
 
-try:
-    torch.save(model.state_dict(), './model/inference_model.state')
-    print('Model saved to disk.')
-except:
-    print('Model not saved.')
+if trainer.global_rank == 0:
+    try:
+        torch.save(model.state_dict(), './model/inference_model.state')
+        print('Model saved to disk.')
+    except:
+        print('Model not saved.')
 
