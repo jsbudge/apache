@@ -38,7 +38,7 @@ dataset_params:
   single_example: False
   mu: 0.
   var: 0.4151423
-  noise_level: .5
+  noise_level: .1
 
 exp_params:
   LR: 0.0001
@@ -74,7 +74,7 @@ model_params:
 
 train_params:
   log_dir: ./logs
-  max_epochs: 50000
+  max_epochs: 5000
 
 compression_params:
   in_channels: 2

@@ -98,11 +98,13 @@ class GeneratorModel(LightningModule):
         left_sig_t = (gen_waveform - target_spectrum[:, None, :])
 
         clutter_loss = 4. * self.n_ants - torch.abs(torch.sum(torch.sum(left_sig_c * torch.conj(left_sig_c),
-                                                                                   dim=2))) / gen_waveform.shape[0]
+                                                                        dim=2))) / gen_waveform.shape[0]
         target_loss = torch.abs(torch.sum(torch.sum(left_sig_t * torch.conj(left_sig_t),
-                                                               dim=2))) / gen_waveform.shape[0]
+                                                    dim=2))) / gen_waveform.shape[0]
+        ortho_loss = torch.sum(torch.abs(
+            torch.sum(gen_waveform[:, 0, :] * torch.conj(gen_waveform[:, 1, :]), dim=1))) / gen_waveform.shape[0]
         # wave_sidelobe = torch.abs(torch.cov(gen_waveform))
 
-        loss = clutter_loss + 2 * target_loss  # + wave_sidelobe
+        loss = torch.sqrt(clutter_loss**2 + 2 * target_loss**2 + ortho_loss**2)
 
-        return {'loss': loss, 'clutter_loss': clutter_loss, 'target_loss': target_loss}
+        return {'loss': loss, 'clutter_loss': clutter_loss, 'target_loss': target_loss, 'ortho_loss': ortho_loss}
