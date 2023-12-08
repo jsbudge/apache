@@ -53,7 +53,13 @@ def objective(trial: optuna.Trial):
                                                           check_finite=True)])
     trainer.fit(experiment, datamodule=data)
 
-    return trainer.callback_metrics['loss'].item()
+    ret_loss = trainer.callback_metrics['loss'].item()
+
+    with open('./logs/optimization.txt', 'a') as f:
+        f.write(f'Trial: batch_sz {batch_sz} weight_decay {weight_decay} kld_weight {kld_weight} '
+                f'lr {lr} loss: {ret_loss}\n')
+
+    return ret_loss
 
 
 study = optuna.create_study()

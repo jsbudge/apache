@@ -74,7 +74,7 @@ model_params:
 
 train_params:
   log_dir: ./logs
-  max_epochs: 5000
+  max_epochs: 150
 
 compression_params:
   in_channels: 2
