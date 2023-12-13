@@ -2,7 +2,8 @@ import numpy as np
 from simulib.simulation_functions import genPulse, findPowerOf2, db
 # import tensorflow_probability as tfp
 import matplotlib.pyplot as plt
-from scipy.signal import welch
+from scipy.signal.windows import taylor
+from scipy.signal import stft, butter, sosfilt
 from scipy.stats import rayleigh
 from data_converter.SDRParsing import SDRParse, load
 from tqdm import tqdm
@@ -48,6 +49,8 @@ def upsample(val, fac=8):
 
 def buildWaveform(wd, fft_len, bin_bw):
     ret = np.zeros((wd.shape[0], wd.shape[1] // 2, fft_len), dtype=np.complex64)
+    # ret[:, :, :bin_bw // 2] = wd[:, ::2, -bin_bw // 2:] * np.exp(-1j * wd[:, 1::2, -bin_bw // 2:])
+    # ret[:, :, -bin_bw // 2:] = wd[:, ::2, :bin_bw // 2] * np.exp(-1j * wd[:, 1::2, :bin_bw // 2])
     ret[:, :, :bin_bw // 2] = wd[:, ::2, -bin_bw // 2:] + 1j * wd[:, 1::2, -bin_bw // 2:]
     ret[:, :, -bin_bw // 2:] = wd[:, ::2, :bin_bw // 2] + 1j * wd[:, 1::2, :bin_bw // 2]
     return normalize(ret)
@@ -123,7 +126,9 @@ if __name__ == '__main__':
 
         cc, tc, cs, ts = next(iter(data.train_dataloader()))
 
-        test = wave_mdl(cc.unsqueeze(0), tc.unsqueeze(0)).data.numpy()
+        # taywin = taylor(6554, 10, 60)
+        test = wave_mdl(cc, tc).data.numpy() #  * taywin[None, None, :]
+
         waves = buildWaveform(test, fft_len, bin_bw)
 
         clutter = cs.data.numpy()
@@ -132,12 +137,13 @@ if __name__ == '__main__':
         targets = normalize(targets[:, :, 0] + 1j * targets[:, :, 1])
 
         # Run some plots for an idea of what's going on
-        freqs = np.fft.fftshift(np.fft.fftfreq(bin_bw, 1 / fs))
+        freqs = np.fft.fftshift(np.fft.fftfreq(fft_len, 1 / fs))
+        freqs = freqs[fft_len // 2 - bin_bw // 2:fft_len // 2 + bin_bw // 2]
         plt.figure('Waveform PSD')
         plt.plot(freqs, db(np.fft.fftshift(waves[0, 0])[fft_len // 2 - bin_bw // 2:fft_len // 2 + bin_bw // 2]))
         plt.plot(freqs, db(np.fft.fftshift(waves[0, 1])[fft_len // 2 - bin_bw // 2:fft_len // 2 + bin_bw // 2]))
-        plt.plot(freqs, db(targets[0]), linestyle='--')
-        plt.plot(freqs, db(clutter[0]), linestyle=':')
+        plt.plot(freqs, db(targets[0]), linestyle='--', linewidth=.1)
+        plt.plot(freqs, db(clutter[0]), linestyle=':', linewidth=.1)
         plt.legend(['Waveform 1', 'Waveform 2', 'Target', 'Clutter'])
         plt.ylabel('Relative Power (dB)')
         plt.xlabel('Freq (Hz)')
@@ -150,6 +156,7 @@ if __name__ == '__main__':
             genPulse(np.linspace(0, 1, 10),
                      np.linspace(0, 1, 10), nr, fs, config['settings']['fc'],
                      config['settings']['bandwidth']), fft_len)
+        linear = linear / sum(linear * linear.conj())  # Unit energy
         inp_wave = waves[0, 0] * waves[0, 0].conj()
         autocorr1 = np.fft.fftshift(db(np.fft.ifft(upsample(inp_wave))))
         inp_wave = waves[0, 1] * waves[0, 1].conj()
@@ -171,10 +178,20 @@ if __name__ == '__main__':
         plt.xlabel('Lag')
 
         plt.figure('Time Series')
+        wave1 = waves.copy()
         plot_t = np.arange(fft_len) / fs
-        plt.plot(plot_t, np.fft.ifft(np.fft.fftshift(waves[0, 0])).real)
-        plt.plot(plot_t, np.fft.ifft(np.fft.fftshift(waves[0, 1])).real)
+        plt.plot(plot_t, np.fft.ifft(wave1[0, 0]).real)
+        plt.plot(plot_t, np.fft.ifft(wave1[0, 1]).real)
         plt.legend(['Waveform 1', 'Waveform 2'])
+        plt.xlabel('Time')
+
+        wave_t = np.fft.ifft(waves[0, 0])
+        # sos = butter(100, 180e6, fs=2e9, output='sos')
+        # wave_t = sosfilt(sos, wave_t)
+        freq_stft, t_stft, wave_stft = stft(wave_t, return_onesided=False, fs=2e9)
+        plt.figure('Wave STFT')
+        plt.pcolormesh(t_stft, np.fft.fftshift(freq_stft), np.fft.fftshift(db(wave_stft), axes=0))
+        plt.ylabel('Freq')
         plt.xlabel('Time')
 
         plt.show()
