@@ -3,7 +3,7 @@ from simulib.simulation_functions import genPulse, findPowerOf2, db
 # import tensorflow_probability as tfp
 import matplotlib.pyplot as plt
 from scipy.signal.windows import taylor
-from scipy.signal import stft, butter, sosfilt
+from scipy.signal import stft, butter, sosfilt, istft
 from scipy.stats import rayleigh
 from data_converter.SDRParsing import SDRParse, load
 from tqdm import tqdm
@@ -47,12 +47,13 @@ def upsample(val, fac=8):
             4 * wheel_height_m * theta_az) / (8 * np.pi * wheel_height_m * rotor_velocity_rad_s)'''
 
 
-def buildWaveform(wd, fft_len, bin_bw):
-    ret = np.zeros((wd.shape[0], wd.shape[1] // 2, fft_len), dtype=np.complex64)
+def buildWaveform(wd, fft_len, stft_win):
+    ret = np.zeros((wd.shape[0], wd.shape[1] // 2, stft_win, wd.shape[3]), dtype=np.complex64)
     # ret[:, :, :bin_bw // 2] = wd[:, ::2, -bin_bw // 2:] * np.exp(-1j * wd[:, 1::2, -bin_bw // 2:])
     # ret[:, :, -bin_bw // 2:] = wd[:, ::2, :bin_bw // 2] * np.exp(-1j * wd[:, 1::2, :bin_bw // 2])
-    ret[:, :, :bin_bw // 2] = wd[:, ::2, -bin_bw // 2:] + 1j * wd[:, 1::2, -bin_bw // 2:]
-    ret[:, :, -bin_bw // 2:] = wd[:, ::2, :bin_bw // 2] + 1j * wd[:, 1::2, :bin_bw // 2]
+    ret[:, :, :wd.shape[2] // 2, :] = wd[:, ::2, :wd.shape[2] // 2] + 1j * wd[:, 1::2, :wd.shape[2] // 2]
+    ret[:, :, -wd.shape[2] // 2:] = wd[:, ::2, -wd.shape[2] // 2:] + 1j * wd[:, 1::2, -wd.shape[2] // 2:]
+    ret = np.fft.fft(istft(ret)[1], fft_len, axis=-1)
     return normalize(ret)
 
 
@@ -79,12 +80,17 @@ if __name__ == '__main__':
     bin_bw = int(config['settings']['bandwidth'] // (fs / fft_len))
     bin_bw += 1 if bin_bw % 2 != 0 else 0
 
+    stft_bw = int(config['settings']['bandwidth'] // (fs / config['settings']['stft_win_sz']))
+    stft_bw += 1 if stft_bw % 2 != 0 else 0
+
     franges = np.linspace(config['perf_params']['vehicle_slant_range_min'],
                           config['perf_params']['vehicle_slant_range_max'], 1000) * 2 / c0
     nrange = franges[0]
     pulse_length = (nrange - 1 / TAC) * config['settings']['plp']
     duty_cycle_time_s = pulse_length + franges
     nr = int(pulse_length * fs)
+
+    stft_tbins = int(np.ceil(nr / (config['settings']['stft_win_sz'] / 4)))
 
     # Get the VAE set up
     print('Setting up model...')
@@ -99,7 +105,9 @@ if __name__ == '__main__':
     # vae_mdl.to(device)  # Move to GPU
 
     print('Setting up data generator...')
-    wave_mdl = GeneratorModel(bin_bw=bin_bw, clutter_latent_size=config['model_params']['latent_dim'],
+    wave_mdl = GeneratorModel(bin_bw=bin_bw, stft_params=(stft_bw, stft_tbins),
+                              stft_win_sz=config['settings']['stft_win_sz'],
+                              clutter_latent_size=config['model_params']['latent_dim'],
                               target_latent_size=config['model_params']['latent_dim'], n_ants=2)
 
     wave_mdl.apply(init_weights)
@@ -114,7 +122,7 @@ if __name__ == '__main__':
     logger = loggers.TensorBoardLogger(config['train_params']['log_dir'],
                                        name="WaveModel")
     trainer = Trainer(logger=logger, max_epochs=config['train_params']['max_epochs'],
-                      log_every_n_steps=config['exp_params']['log_epoch'],
+                      log_every_n_steps=config['exp_params']['log_epoch'], devices=1,
                       callbacks=[EarlyStopping(monitor='loss', patience=config['wave_exp_params']['patience'],
                                                check_finite=True)])
 
@@ -185,7 +193,7 @@ if __name__ == '__main__':
         plt.legend(['Waveform 1', 'Waveform 2'])
         plt.xlabel('Time')
 
-        wave_t = np.fft.ifft(waves[0, 0])
+        wave_t = np.fft.ifft(waves[0, 0])[:nr]
         sos = butter(100, 180e6, fs=2e9, output='sos')
         wave_t = sosfilt(sos, wave_t)
         freq_stft, t_stft, wave_stft = stft(wave_t, return_onesided=False, fs=2e9)

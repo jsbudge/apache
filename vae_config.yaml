@@ -19,6 +19,7 @@ settings:
   batch_sz: 128
   fc: 10000000000.
   bandwidth: 400000000.
+  stft_win_sz: 256
   plp: .5
 
 generate_data_settings:
@@ -71,7 +72,7 @@ model_params:
 
 train_params:
   log_dir: ./logs
-  max_epochs: 150
+  max_epochs: 1
 
 compression_params:
   in_channels: 2
