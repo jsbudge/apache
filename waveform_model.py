@@ -84,16 +84,14 @@ class GeneratorModel(LightningModule):
         )
 
         self.ffinit = nn.Sequential(
-            RichConvTranspose1d(3, 128, stack_output_sz, activation=activation),
-            RichConvTranspose1d(128, 64, 128, activation=activation),
-            RichConvTranspose1d(64, 64, 256, activation=activation),
-            RichConvTranspose1d(64, 64, 512, activation=activation),
+            RichConvTranspose1d(3, 512, stack_output_sz, activation=activation),
+            RichConvTranspose1d(512, 256, 128, activation=activation),
+            RichConvTranspose1d(256, 128, 256, activation=activation),
+            RichConvTranspose1d(128, 64, 512, activation=activation),
             RichConvTranspose1d(64, 64, 1024, activation=activation),
-            RichConvTranspose1d(64, 32, 2048, activation=activation),
-            nn.Conv1d(32, 32, 820, 1, 0),
-            nn.Conv1d(32, n_ants * 2, 3, 1, 1),
-
-            nn.Upsample(scale_factor=2, mode='linear')
+            nn.Conv1d(64, 32, 410, 1, 0),
+            nn.Upsample(scale_factor=4, mode='linear'),
+            nn.Conv1d(32, n_ants * 2, 3, 1, 0),
         )
 
         self.stack_output_sz = stack_output_sz
@@ -110,7 +108,12 @@ class GeneratorModel(LightningModule):
         # gen_waveform = args[0][:, ::2, :] * torch.exp(-1j * args[0][:, 1::2, :])
         gen_waveform = torch.complex(args[0][:, ::2, :], args[0][:, 1::2, :])
         gen_waveform = gen_waveform / torch.sqrt(torch.sum(gen_waveform * torch.conj(gen_waveform), dim=2))[:, :, None]
+
         gen_psd = gen_waveform * gen_waveform.conj()
+        gen_fullwave = torch.zeros((gen_waveform.shape[0], gen_waveform.shape[1], 32768), dtype=torch.complex64)
+        gen_fullwave[:, :, :gen_waveform.shape[2] // 2] = gen_psd[:, :, -gen_waveform.shape[2] // 2:]
+        gen_fullwave[:, :, -gen_waveform.shape[2] // 2:] = gen_psd[:, :, :gen_waveform.shape[2] // 2]
+        sidelobe_func = torch.abs(torch.fft.ifft(gen_fullwave, dim=2))
         # Get clutter spectrum into complex form and normalize to unit energy
         clutter_spectrum = torch.complex(args[1][:, :, 0], args[1][:, :, 1])
         clutter_spectrum = clutter_spectrum / torch.sqrt(torch.sum(clutter_spectrum * torch.conj(clutter_spectrum),
@@ -137,8 +140,10 @@ class GeneratorModel(LightningModule):
                                                      dim=2))) / gen_waveform.shape[0]) / (2. * self.n_ants)
         ortho_loss = torch.sum(torch.abs(
             torch.sum(gen_waveform[:, 0, :] * torch.conj(gen_waveform[:, 1, :]), dim=1))) / gen_waveform.shape[0]
-        # wave_sidelobe = torch.abs(torch.cov(gen_waveform))
+        sidelobe_loss = (torch.sum(10**(torch.log(torch.mean(sidelobe_func, dim=2) / sidelobe_func[:, :, 0]) / 10)) /
+                         (gen_waveform.shape[0] * self.n_ants))
 
-        loss = torch.sqrt((clutter_loss / 4) ** 2 + (2 * target_loss) ** 2 + ortho_loss ** 2)
+        loss = torch.sqrt((clutter_loss / 4) ** 2 + (2 * target_loss) ** 2 + ortho_loss ** 2 + sidelobe_loss**2)
 
-        return {'loss': loss, 'clutter_loss': clutter_loss, 'target_loss': target_loss, 'ortho_loss': ortho_loss}
+        return {'loss': loss, 'clutter_loss': clutter_loss, 'target_loss': target_loss, 'ortho_loss': ortho_loss,
+                'sidelobe_loss': sidelobe_loss}

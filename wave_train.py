@@ -186,8 +186,8 @@ if __name__ == '__main__':
         plt.xlabel('Time')
 
         wave_t = np.fft.ifft(waves[0, 0])
-        # sos = butter(100, 180e6, fs=2e9, output='sos')
-        # wave_t = sosfilt(sos, wave_t)
+        sos = butter(100, 180e6, fs=2e9, output='sos')
+        wave_t = sosfilt(sos, wave_t)
         freq_stft, t_stft, wave_stft = stft(wave_t, return_onesided=False, fs=2e9)
         plt.figure('Wave STFT')
         plt.pcolormesh(t_stft, np.fft.fftshift(freq_stft), np.fft.fftshift(db(wave_stft), axes=0))

@@ -51,8 +51,8 @@ exp_params:
   is_tuning: False
 
 wave_exp_params:
-  LR: 0.0001
-  weight_decay: 0.01
+  LR: 0.000001
+  weight_decay: 0.1
   scheduler_gamma: 0.95
   kld_weight: .001
   log_epoch: 10
@@ -71,7 +71,7 @@ model_params:
 
 train_params:
   log_dir: ./logs
-  max_epochs: 1
+  max_epochs: 150
 
 compression_params:
   in_channels: 2
