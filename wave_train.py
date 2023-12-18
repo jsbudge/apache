@@ -53,7 +53,7 @@ def buildWaveform(wd, fft_len, stft_win):
     # ret[:, :, -bin_bw // 2:] = wd[:, ::2, :bin_bw // 2] * np.exp(-1j * wd[:, 1::2, :bin_bw // 2])
     ret[:, :, :wd.shape[2] // 2, :] = wd[:, ::2, :wd.shape[2] // 2] + 1j * wd[:, 1::2, :wd.shape[2] // 2]
     ret[:, :, -wd.shape[2] // 2:] = wd[:, ::2, -wd.shape[2] // 2:] + 1j * wd[:, 1::2, -wd.shape[2] // 2:]
-    ret = np.fft.fft(istft(ret)[1], fft_len, axis=-1)
+    ret = np.fft.fft(istft(ret, input_onesided=False, nperseg=stft_win, noverlap=(stft_win * 3) // 4)[1], fft_len, axis=-1)
     return normalize(ret)
 
 
@@ -122,7 +122,8 @@ if __name__ == '__main__':
     logger = loggers.TensorBoardLogger(config['train_params']['log_dir'],
                                        name="WaveModel")
     trainer = Trainer(logger=logger, max_epochs=config['train_params']['max_epochs'],
-                      log_every_n_steps=config['exp_params']['log_epoch'], devices=1,
+                      log_every_n_steps=config['exp_params']['log_epoch'],
+                      strategy='ddp_find_unused_parameters_true',
                       callbacks=[EarlyStopping(monitor='loss', patience=config['wave_exp_params']['patience'],
                                                check_finite=True)])
 
@@ -137,7 +138,7 @@ if __name__ == '__main__':
         # taywin = taylor(6554, 10, 60)
         test = wave_mdl(cc, tc).data.numpy() #  * taywin[None, None, :]
 
-        waves = buildWaveform(test, fft_len, bin_bw)
+        waves = buildWaveform(test, fft_len, config['settings']['stft_win_sz'])
 
         clutter = cs.data.numpy()
         clutter = normalize(clutter[:, :, 0] + 1j * clutter[:, :, 1])
@@ -187,19 +188,20 @@ if __name__ == '__main__':
 
         plt.figure('Time Series')
         wave1 = waves.copy()
-        plot_t = np.arange(fft_len) / fs
-        plt.plot(plot_t, np.fft.ifft(wave1[0, 0]).real)
-        plt.plot(plot_t, np.fft.ifft(wave1[0, 1]).real)
+        plot_t = np.arange(nr) / fs
+        plt.plot(plot_t, np.fft.ifft(wave1[0, 0]).real[:nr])
+        plt.plot(plot_t, np.fft.ifft(wave1[0, 1]).real[:nr])
         plt.legend(['Waveform 1', 'Waveform 2'])
         plt.xlabel('Time')
 
         wave_t = np.fft.ifft(waves[0, 0])[:nr]
-        sos = butter(100, 180e6, fs=2e9, output='sos')
-        wave_t = sosfilt(sos, wave_t)
+        # sos = butter(100, 180e6, fs=2e9, output='sos')
+        # wave_t = sosfilt(sos, wave_t)
         freq_stft, t_stft, wave_stft = stft(wave_t, return_onesided=False, fs=2e9)
         plt.figure('Wave STFT')
         plt.pcolormesh(t_stft, np.fft.fftshift(freq_stft), np.fft.fftshift(db(wave_stft), axes=0))
         plt.ylabel('Freq')
         plt.xlabel('Time')
+        plt.colorbar()
 
         plt.show()

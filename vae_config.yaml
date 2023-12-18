@@ -32,7 +32,7 @@ dataset_params:
   data_path: ./data
   train_batch_size: 32
   val_batch_size: 32
-  num_workers: 11
+  num_workers: 0
   pin_memory: False
   train_split: .2
   val_split: .1
@@ -52,7 +52,7 @@ exp_params:
   is_tuning: False
 
 wave_exp_params:
-  LR: 0.000001
+  LR: 0.0000001
   weight_decay: 0.1
   scheduler_gamma: 0.95
   kld_weight: .001
@@ -72,7 +72,7 @@ model_params:
 
 train_params:
   log_dir: ./logs
-  max_epochs: 1
+  max_epochs: 150
 
 compression_params:
   in_channels: 2

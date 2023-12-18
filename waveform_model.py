@@ -97,7 +97,7 @@ class GeneratorModel(LightningModule):
         self.stft_bw = stft_params[0]
         self.stft_sz = stft_params[1]
 
-        stack_output_sz = 169
+        stack_output_sz = 64
         self.batch_norm = nn.BatchNorm1d(1)
 
         self.clutter_stack = nn.Sequential(
@@ -111,19 +111,29 @@ class GeneratorModel(LightningModule):
         )
 
         self.ffinit = nn.Sequential(
-            RichConvTranspose2d(3, 64, 13, activation=activation),
-            RichConvTranspose2d(64, 16, 26, activation=activation),
-            nn.Conv2d(16, 8, 3, 1, 1),
-            nn.Conv2d(8, n_ants * 2, 3, 1, 1),
+            RichConvTranspose2d(2, 128, 8, activation=activation),
+            nn.Conv2d(128, 128, 6, 1, 1),
+            nn.LeakyReLU(),
+            RichConvTranspose2d(128, 128, 13, activation=activation),
+            RichConvTranspose2d(128, 64, 26, activation=activation),
+            nn.Conv2d(64, 64, 7, 1, 3),
+            nn.LeakyReLU(),
+            nn.Conv2d(64, 64, 5, 1, 2),
+            nn.LeakyReLU(),
+            nn.Conv2d(64, 64, 3, 1, 1),
+            nn.LeakyReLU(),
+            nn.Conv2d(64, 32, 3, 1, 1),
+            nn.LeakyReLU(),
+            nn.Conv2d(32, n_ants * 2, 3, 1, 1),
         )
 
         self.stack_output_sz = stack_output_sz
 
     def forward(self, clutter: Tensor, target: Tensor) -> Tensor:
-        add_stack = self.batch_norm(torch.add(self.clutter_stack(clutter), self.target_stack(target)).view(
-            -1, 1, self.stack_output_sz))
-        ct_stack = torch.concat([add_stack.squeeze(1), self.clutter_stack(clutter), self.target_stack(target)])
-        ct_stack = ct_stack.view(-1, 3, 13, 13)
+        # add_stack = self.batch_norm(torch.add(self.clutter_stack(clutter), self.target_stack(target)).view(
+        #     -1, 1, self.stack_output_sz))
+        ct_stack = torch.concat([self.clutter_stack(clutter), self.target_stack(target)])
+        ct_stack = ct_stack.view(-1, 2, 8, 8)
         return self.ffinit(ct_stack)
 
     def loss_function(self, *args, **kwargs) -> dict:
@@ -133,7 +143,10 @@ class GeneratorModel(LightningModule):
         stft_sz = self.stft_sz
         stft_win = self.stft_win
         bin_bw = self.bin_bw
-        sidelobe_loss = clutter_loss = target_loss = torch.tensor(0., device=dev)
+        sidelobe_loss = torch.tensor(0., device=dev)
+        clutter_loss = torch.tensor(0., device=dev)
+        target_loss = torch.tensor(0., device=dev)
+        ortho_loss = torch.tensor(0., device=dev)
         # Get clutter spectrum into complex form and normalize to unit energy
         clutter_spectrum = torch.complex(args[1][:, :, 0], args[1][:, :, 1])
         clutter_spectrum = clutter_spectrum / torch.sqrt(torch.sum(clutter_spectrum * torch.conj(clutter_spectrum),
@@ -163,7 +176,10 @@ class GeneratorModel(LightningModule):
             g1 = g1 / torch.sqrt(torch.sum(g1 * torch.conj(g1), dim=1))[:, None]
             sidelobe_func = torch.abs(torch.fft.ifft(g1 * g1.conj(), dim=1))
 
-            g1 = torch.fft.fftshift(g1[:, 32768 // 2 - bin_bw // 2: 32768 // 2 + bin_bw // 2], dim=1)
+            g1 = torch.fft.fftshift(g1, dim=1)[:, 32768 // 2 - bin_bw // 2: 32768 // 2 + bin_bw // 2]
+
+            if n > 0:
+                ortho_loss += torch.sum(torch.abs(g1 * gn)) / gen_waveform.shape[0]
 
             gen_psd = g1 * g1.conj()
 
@@ -179,10 +195,14 @@ class GeneratorModel(LightningModule):
             sidelobe_loss += (
                         torch.sum(10 ** (torch.log(torch.mean(sidelobe_func, dim=1) / sidelobe_func[:, 0]) / 10)) /
                         gen_waveform.shape[0])
+            gn = g1.conj()
         # ortho_loss = torch.sum(torch.abs(
         #     torch.sum(gen_waveform[:, 0, :] * torch.conj(gen_waveform[:, 1, :]), dim=1))) / gen_waveform.shape[0]
 
-        loss = torch.sqrt((clutter_loss / 4) ** 2 + (2 * target_loss) ** 2 + sidelobe_loss**2)
+        loss = torch.sqrt((clutter_loss / 4) ** 2 + (2 * target_loss) ** 2 + sidelobe_loss**2 + ortho_loss**2)
 
         return {'loss': loss, 'clutter_loss': clutter_loss, 'target_loss': target_loss,
-                'sidelobe_loss': sidelobe_loss}
+                'sidelobe_loss': sidelobe_loss, 'ortho_loss': ortho_loss}
+
+    def getWaveform(self, cs, ts):
+        self.forward(cs, ts)
