@@ -1,7 +1,5 @@
 from typing import List, Any, TypeVar
-
-# from torch import tensor as Tensor
-Tensor = TypeVar('torch.tensor')
+from layers import RichConv2d, RichConvTranspose2d
 import torch
 from torch import nn
 from torch.nn import functional as F
@@ -9,60 +7,17 @@ from abc import abstractmethod
 from pytorch_lightning import LightningModule
 import numpy as np
 
+Tensor = TypeVar('torch.tensor')
+
 
 def calc_conv_size(inp_sz, kernel_sz, stride, padding):
     return np.floor((inp_sz - kernel_sz + 2 * padding) / stride) + 1
-
-
-class RichConv2D(LightningModule):
-    def __init__(self, in_channels, out_channels, layer_sz):
-        super(RichConv2D, self).__init__()
-        self.branch0 = nn.Conv2d(in_channels, out_channels, 4, 2, 1)
-        self.branch1 = nn.Conv2d(in_channels, out_channels, layer_sz + 3, 1, 1)
-        self.branch2 = nn.Conv2d(in_channels, out_channels, layer_sz + 1, 1, 0)
-        self.batch_norm = nn.BatchNorm2d(out_channels)
-
-    def forward(self, x):
-        x = torch.add(torch.add(F.leaky_relu(self.branch0(x)), F.leaky_relu(self.branch1(x))),
-                      F.leaky_relu(self.branch2(x)))
-        return self.batch_norm(x)
 
 
 def init_weights(m):
     if isinstance(m, (nn.Conv2d, nn.ConvTranspose2d)):
         torch.nn.init.xavier_normal_(m.weight)
         m.bias.data.fill_(0.01)
-
-
-class RichConv2DTranspose(LightningModule):
-    def __init__(self, in_channels, out_channels, layer_sz):
-        super(RichConv2DTranspose, self).__init__()
-        self.branch0 = nn.ConvTranspose2d(in_channels, out_channels, 4, 2, 1)
-        self.branch1 = nn.ConvTranspose2d(in_channels, out_channels, layer_sz + 3, 1, 1)
-        self.branch2 = nn.ConvTranspose2d(in_channels, out_channels, layer_sz + 1, 1, 0)
-        self.batch_norm = nn.BatchNorm2d(out_channels)
-
-    def forward(self, x):
-        x = torch.add(torch.add(F.leaky_relu(self.branch0(x)), F.leaky_relu(self.branch1(x))),
-                      F.leaky_relu(self.branch2(x)))
-        return self.batch_norm(x)
-
-
-class Linear2D(LightningModule):
-    def __init__(self, width, height, nchan):
-        super(Linear2D, self).__init__()
-        self.width = width
-        self.height = height
-        self.nchan = nchan
-        self.total_weights = width * height * nchan
-        self.linear = nn.Linear(self.total_weights, self.total_weights)
-
-    def forward(self, x):
-        x = x.view(-1, self.total_weights)
-        x = self.linear(x)
-        x = F.leaky_relu(x)
-        x = x.view(-1, self.nchan, self.width, self.height)
-        return x
 
 
 class BaseVAE(LightningModule):
@@ -139,7 +94,7 @@ class BetaVAE(BaseVAE):
         for h_dim, l_params in zip(hidden_dims, layer_params):
             modules.append(
                 nn.Sequential(
-                    RichConv2D(in_channels, h_dim, l_params),
+                    RichConv2d(in_channels, h_dim, l_params),
                     nn.Conv2d(h_dim, h_dim, 3, 1, 1),
                 )
             )
@@ -160,7 +115,7 @@ class BetaVAE(BaseVAE):
 
         modules.extend(
             nn.Sequential(
-                RichConv2DTranspose(
+                RichConvTranspose2d(
                     hidden_dims[i], hidden_dims[i + 1], layer_params[i]
                 ),
                 nn.ConvTranspose2d(
@@ -314,7 +269,7 @@ class InfoVAE(BaseVAE):
         # Build Encoder
         for h_dim, l_params in zip(hidden_dims, layer_params):
             modules.append(
-                RichConv2D(in_channels, h_dim, l_params)
+                RichConv2d(in_channels, h_dim, l_params)
             )
             in_channels = h_dim
 
@@ -332,7 +287,7 @@ class InfoVAE(BaseVAE):
 
         for i in range(len(hidden_dims) - 1):
             modules.append(
-                RichConv2DTranspose(hidden_dims[i], hidden_dims[i + 1], layer_params[i])
+                RichConvTranspose2d(hidden_dims[i], hidden_dims[i + 1], layer_params[i])
             )
 
         self.decoder = nn.Sequential(*modules)
@@ -557,7 +512,7 @@ class WAE_MMD(BaseVAE):
         for h_dim, l_params in zip(hidden_dims, layer_params):
             modules.append(
                 nn.Sequential(
-                    RichConv2D(in_channels, h_dim, l_params),
+                    RichConv2d(in_channels, h_dim, l_params),
                     nn.Conv2d(h_dim, h_dim, 1, 1, 0),
                     nn.ELU(),
                     # Linear2D(l_params, l_params, h_dim),
@@ -579,7 +534,7 @@ class WAE_MMD(BaseVAE):
         for i in range(len(hidden_dims) - 1):
             modules.append(
                 nn.Sequential(
-                    RichConv2DTranspose(hidden_dims[i], hidden_dims[i + 1], layer_params[i]),
+                    RichConvTranspose2d(hidden_dims[i], hidden_dims[i + 1], layer_params[i]),
                     nn.ConvTranspose2d(hidden_dims[i + 1], hidden_dims[i + 1], 1, 1, 0),
                     nn.ELU(),
                     # Linear2D(layer_params[i] * 2, layer_params[i] * 2, hidden_dims[i + 1]),
@@ -777,7 +732,7 @@ class ConvAE(LightningModule):
         # Build Encoder
         for h_dim, l_params in zip(hidden_dims, layer_params):
             modules.append(
-                RichConv2D(in_channels, h_dim, l_params)
+                RichConv2d(in_channels, h_dim, l_params)
             )
             in_channels = h_dim
         modules.append(nn.Conv2d(in_channels, 1, 1))
@@ -792,7 +747,7 @@ class ConvAE(LightningModule):
 
         for i in range(len(hidden_dims) - 1):
             modules.append(
-                RichConv2DTranspose(hidden_dims[i], hidden_dims[i + 1], layer_params[i])
+                RichConvTranspose2d(hidden_dims[i], hidden_dims[i + 1], layer_params[i])
             )
 
         self.decoder = nn.Sequential(*modules)
