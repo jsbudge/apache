@@ -8,7 +8,7 @@ from models import WAE_MMD, init_weights
 from waveform_model import GeneratorModel
 import optuna
 import numpy as np
-
+import sys
 
 fs = 2e9
 c0 = 299792458.0
@@ -18,6 +18,12 @@ inch_to_m = .0254
 m_to_ft = 3.2808
 
 print(f'Cuda is available? {torch.cuda.is_available()}')
+try:
+    pref_device = int(sys.argv[1])
+    opt_study = sys.argv[2]
+except:
+    pref_device = 0
+    opt_study = './logs/opt0.txt'
 
 with open('./vae_config.yaml') as y:
     param_dict = yaml.safe_load(y.read())
@@ -42,6 +48,15 @@ vae_mdl.load_state_dict(torch.load('./model/inference_model.state'))
 vae_mdl.eval()  # Set to inference mode
 
 vae_mdl.to('cpu')
+
+
+def log_callback(curr_study: optuna.Study, trial: optuna.Trial):
+    if curr_study.best_trial.number == trial.number:
+        params = trial.params
+        with open(opt_study, 'a') as f:
+            f.write(f'Trial {trial.number}: batch_sz {trial.params["batch_size"]} '
+                    f'weight_decay {trial.params["weight_decay"]} kld_weight {trial.params["kld_weight"]} '
+                    f'lr {trial.params["lr"]} ({curr_study.best_value})\n')
 
 
 def objective(trial: optuna.Trial):
@@ -73,25 +88,18 @@ def objective(trial: optuna.Trial):
 
     experiment = GeneratorExperiment(wave_mdl, param_dict['wave_exp_params'])
     trainer = Trainer(logger=False, max_epochs=param_dict['train_params']['max_epochs'], enable_checkpointing=False,
-                      devices=1, callbacks=[EarlyStopping(patience=5000, monitor='loss',
-                                                          check_finite=True)])
+                      devices=[pref_device], accelerator='gpu', callbacks=[EarlyStopping(patience=5, monitor='loss',
+                                                                                         check_finite=True)])
     trainer.fit(experiment, datamodule=data)
 
-    ret_loss = trainer.callback_metrics['loss'].item()
-
-    with open('./logs/optimization.txt', 'a') as f:
-        f.write(f'Trial: batch_sz {batch_sz} weight_decay {weight_decay} kld_weight {kld_weight} '
-                f'lr {lr} loss: {ret_loss}\n')
-
-    return ret_loss
+    return trainer.callback_metrics['loss'].item()
 
 
 study = optuna.create_study()
-study.optimize(objective, n_trials=150)
+study.optimize(objective, n_trials=150, callbacks=[log_callback])
 
 print(study.best_params)
 
 optuna.visualization.plot_optimization_history(study).show()
 optuna.visualization.plot_contour(study).show()
 optuna.visualization.plot_parallel_coordinate(study).show()
-

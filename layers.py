@@ -103,9 +103,9 @@ class RichConv2d(LightningModule):
         return self.batch_norm(x)
 
 
-class Linear2D(LightningModule):
+class Linear2d(LightningModule):
     def __init__(self, width, height, nchan):
-        super(Linear2D, self).__init__()
+        super(Linear2d, self).__init__()
         self.width = width
         self.height = height
         self.nchan = nchan

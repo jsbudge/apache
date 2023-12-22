@@ -53,7 +53,8 @@ def buildWaveform(wd, fft_len, stft_win):
     # ret[:, :, -bin_bw // 2:] = wd[:, ::2, :bin_bw // 2] * np.exp(-1j * wd[:, 1::2, :bin_bw // 2])
     ret[:, :, :wd.shape[2] // 2, :] = wd[:, ::2, :wd.shape[2] // 2] + 1j * wd[:, 1::2, :wd.shape[2] // 2]
     ret[:, :, -wd.shape[2] // 2:] = wd[:, ::2, -wd.shape[2] // 2:] + 1j * wd[:, 1::2, -wd.shape[2] // 2:]
-    ret = np.fft.fft(istft(ret, input_onesided=False, nperseg=stft_win, noverlap=(stft_win * 3) // 4)[1], fft_len, axis=-1)
+    ret = np.fft.fft(istft(ret, input_onesided=False, nperseg=stft_win, noverlap=(stft_win * 3) // 4,
+                           window=np.ones(stft_win))[1], fft_len, axis=-1)
     return normalize(ret)
 
 
@@ -67,6 +68,7 @@ def getRange(alt, theta_el):
 
 if __name__ == '__main__':
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    # torch.cuda.empty_cache()
 
     seed_everything(43, workers=True)
 
@@ -135,10 +137,7 @@ if __name__ == '__main__':
 
         cc, tc, cs, ts = next(iter(data.train_dataloader()))
 
-        # taywin = taylor(6554, 10, 60)
-        test = wave_mdl(cc, tc).data.numpy() #  * taywin[None, None, :]
-
-        waves = buildWaveform(test, fft_len, config['settings']['stft_win_sz'])
+        waves = wave_mdl.getWaveform(cc, tc).data.numpy()
 
         clutter = cs.data.numpy()
         clutter = normalize(clutter[:, :, 0] + 1j * clutter[:, :, 1])
@@ -197,7 +196,7 @@ if __name__ == '__main__':
         wave_t = np.fft.ifft(waves[0, 0])[:nr]
         # sos = butter(100, 180e6, fs=2e9, output='sos')
         # wave_t = sosfilt(sos, wave_t)
-        freq_stft, t_stft, wave_stft = stft(wave_t, return_onesided=False, fs=2e9)
+        freq_stft, t_stft, wave_stft = stft(wave_t, return_onesided=False, fs=2e9, window=np.ones(256))
         plt.figure('Wave STFT')
         plt.pcolormesh(t_stft, np.fft.fftshift(freq_stft), np.fft.fftshift(db(wave_stft), axes=0))
         plt.ylabel('Freq')

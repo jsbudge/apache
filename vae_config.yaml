@@ -52,7 +52,7 @@ exp_params:
   is_tuning: False
 
 wave_exp_params:
-  LR: 0.00005
+  LR: 0.00001
   weight_decay: 0.03
   scheduler_gamma: 0.95
   kld_weight: .147

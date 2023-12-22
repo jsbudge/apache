@@ -261,14 +261,12 @@ class GeneratorExperiment(pl.LightningModule):
             print('Model saved to disk.')
 
     def configure_optimizers(self):
-        optims = []
         scheds = []
 
         optimizer = optim.Adam(self.model.parameters(),
                                lr=self.params['LR'],
                                weight_decay=self.params['weight_decay'])
-        optims.append(optimizer)
-
+        optims = [optimizer]
         try:
             if self.params['scheduler_gamma'] is not None:
                 scheduler = optim.lr_scheduler.ExponentialLR(optims[0],
