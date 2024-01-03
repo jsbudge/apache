@@ -1,26 +1,14 @@
 import numpy as np
 from simulib.simulation_functions import genPulse, findPowerOf2, db
-# import tensorflow_probability as tfp
 import matplotlib.pyplot as plt
-from scipy.signal.windows import taylor
-from scipy.signal import stft, butter, sosfilt, istft
-from scipy.stats import rayleigh
-from data_converter.SDRParsing import SDRParse, load
-from tqdm import tqdm
-import plotly.express as px
-import plotly.graph_objects as go
+from scipy.signal import stft, istft
 import plotly.io as pio
-import pickle
 import torch
-from pytorch_lightning.strategies import DDPStrategy
 from pytorch_lightning import Trainer, loggers, seed_everything
 from pytorch_lightning.callbacks import EarlyStopping
 import yaml
-from glob import glob
-from torchvision import transforms
-from pathlib import Path
-from dataloaders import CovDataModule, WaveDataModule
-from experiment import VAExperiment, GeneratorExperiment
+from dataloaders import WaveDataModule
+from experiment import GeneratorExperiment
 from models import BetaVAE, InfoVAE, WAE_MMD
 from waveform_model import GeneratorModel, init_weights
 
@@ -194,8 +182,6 @@ if __name__ == '__main__':
         plt.xlabel('Time')
 
         wave_t = np.fft.ifft(waves[0, 0])[:nr]
-        # sos = butter(100, 180e6, fs=2e9, output='sos')
-        # wave_t = sosfilt(sos, wave_t)
         freq_stft, t_stft, wave_stft = stft(wave_t, return_onesided=False, fs=2e9, window=np.ones(256))
         plt.figure('Wave STFT')
         plt.pcolormesh(t_stft, np.fft.fftshift(freq_stft), np.fft.fftshift(db(wave_stft), axes=0))
