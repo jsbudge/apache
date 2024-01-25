@@ -1,0 +1,47 @@
+bg_file: '/home/jeff/SDR_DATA/RAW/08092023/SAR_08092023_112016.sar'
+upsample: 1
+poly_num: 1
+use_aps_debug: False
+rotate_grid: False
+use_ecef: True
+cpi_len: 256
+plp: .3
+partial_pulse_percent: .2
+debug: True
+ngrids: 2
+pts_per_m: [2, 4]
+grid_width: [200, 10]
+grid_height: [200, 10]
+channel: 0
+fdelay: 1.5
+origin: [[40.138044, -111.660027, 1365.8849123907273], [40.138031, -111.660020, 1365.8849123907273]]
+gen_data: True
+gps_check: False
+pts_per_tri: [1, 1]
+noise_level: -300
+
+simulation_params:
+  use_sdr_gps: False
+  use_sdr_gimbal: True
+  use_sdr_waveform: False
+  use_sdr_fc: True
+  # This is for use_sdr_gps == False
+  collect_duration: 2
+  prf: 2200
+  scan_rate: 10  # deg/s
+  scan_angle: 20  # degrees
+  standoff_range: 2181.  # meters
+  az_bw: .866
+  el_bw: .866
+
+antenna_params:
+  n_tx: 2
+  n_rx: 2
+  gain: [25, 25]
+  transmit_power: [100, 100]
+  tx_pos: [[-0.015614190520833333, 0., 0.], [0.015614190520833333, 0, 0]]
+  rx_pos: [[0., -0.015614190520833333, 0.], [0., 0.015614190520833333, 0]]
+
+waveform_params:
+  use_model: False
+  fc: []

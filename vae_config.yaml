@@ -1,0 +1,80 @@
+apache_params:
+  blade_chord_m: .533
+  rotor_diameter_m: 14.63
+  wheel_height_m: 2.4384
+  rotor_velocity_rad_s: 29.7404
+
+perf_params:
+  dismount_slant_range_min: 500
+  dismount_slant_range_max: 15000
+  vehicle_slant_range_min: 500
+  vehicle_slant_range_max: 25000
+  alt_min: 30.48
+  alt_max: 1524.
+  az_min_bw: .0130899
+  el_min_bw: .034906
+
+settings:
+  cpi_len: 32
+  batch_sz: 128
+  fc: 10000000000.
+  bandwidth: 400000000.
+  stft_win_sz: 256
+  plp: .5
+
+generate_data_settings:
+  iterations: 20
+  fft_sz: 4096
+  run_clutter: True
+  run_targets: False
+
+dataset_params:
+  data_path: /data6/Jeff/vae_training_data
+  train_batch_size: 32
+  val_batch_size: 32
+  fft_sz: 4096
+  num_workers: 0
+  pin_memory: False
+  train_split: .4
+  val_split: .1
+  single_example: False
+  mu: 0.
+  var: 1.
+  noise_level: .1
+
+exp_params:
+  LR: 0.000005
+  weight_decay: 0.0
+  scheduler_gamma: 0.95
+  kld_weight: .39
+  log_epoch: 10
+  output_images: False
+  model_type: WAE_MMD
+  is_tuning: False
+
+wave_exp_params:
+  LR: 0.000005
+  weight_decay: 0.08
+  scheduler_gamma: 0.95
+  kld_weight: .39
+  log_epoch: 10
+  is_tuning: False
+  patience: 5
+
+model_params:
+  in_channels: 2
+  latent_dim: 58
+  max_capacity: 25
+  capacity_max_iter: 10000
+  reg_weight: 6140.  # MMD weight
+  kernel_type: 'rbf'
+  activation: leaky
+
+train_params:
+  log_dir: ./logs
+  max_epochs: 1
+
+compression_params:
+  in_channels: 2
+  latent_dim: 4
+  hidden_dims: 256

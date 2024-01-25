@@ -1,0 +1,38 @@
+bg_file: '/home/jeff/SDR_DATA/RAW/08092023/SAR_08092023_112016.sar'
+upsample: 4
+poly_num: 1
+use_aps_debug: False
+rotate_grid: False
+use_ecef: True
+ipr_mode: False
+cpi_len: 32
+plp: 0
+partial_pulse_percent: .2
+debug: True
+pts_per_m: 20
+grid_width: 10
+grid_height: 10
+channel: 0
+fdelay: 1.5
+origin: [40.138044, -111.660027, 1365.8849123907273]
+gen_data: False
+gps_check: False
+pts_per_tri: 2
+noise_level: -100
+save_as_target: True
+
+simulation_params:
+  use_sdr_gps: True
+  use_sdr_gimbal: True
+  use_sdr_bandwidth: True
+  use_sdr_fc: True
+
+antenna_params:
+  n_ants: 2
+  gain: [25, 25]
+  transmit_power: [100, 100]
+  rel_pos: [[1., 0., 0.], [-1., 0., 0.]]
+
+waveform_params:
+  use_model: False
+  fc: []
