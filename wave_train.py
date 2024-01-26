@@ -35,17 +35,6 @@ def upsample(val, fac=8):
             4 * wheel_height_m * theta_az) / (8 * np.pi * wheel_height_m * rotor_velocity_rad_s)'''
 
 
-def buildWaveform(wd, fft_len, stft_win):
-    ret = np.zeros((wd.shape[0], wd.shape[1] // 2, stft_win, wd.shape[3]), dtype=np.complex64)
-    # ret[:, :, :bin_bw // 2] = wd[:, ::2, -bin_bw // 2:] * np.exp(-1j * wd[:, 1::2, -bin_bw // 2:])
-    # ret[:, :, -bin_bw // 2:] = wd[:, ::2, :bin_bw // 2] * np.exp(-1j * wd[:, 1::2, :bin_bw // 2])
-    ret[:, :, :wd.shape[2] // 2, :] = wd[:, ::2, :wd.shape[2] // 2] + 1j * wd[:, 1::2, :wd.shape[2] // 2]
-    ret[:, :, -wd.shape[2] // 2:] = wd[:, ::2, -wd.shape[2] // 2:] + 1j * wd[:, 1::2, -wd.shape[2] // 2:]
-    ret = np.fft.fft(istft(ret, input_onesided=False, nperseg=stft_win, noverlap=(stft_win * 3) // 4,
-                           window=np.ones(stft_win))[1], fft_len, axis=-1)
-    return normalize(ret)
-
-
 def normalize(data):
     return data / np.expand_dims(np.sqrt(np.sum(data * data.conj(), axis=-1).real), axis=len(data.shape) - 1)
 

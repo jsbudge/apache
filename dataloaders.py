@@ -75,6 +75,42 @@ class PulseDataset(Dataset):
         return self.data.shape[0]
 
 
+class WindowDataset(Dataset):
+    def __init__(self, dataset_size=256, win_sz=256, max_bandwidth=1.5e9, min_bandwidth=250e6, fs=2e9):
+        # Load in data
+        data = torch.zeros((dataset_size, 4))
+        for idx, d in enumerate(range(0, dataset_size, dataset_size // 4)):
+            data[d:d+dataset_size // 4, idx] = 1.
+        data[:, 0] = torch.rand((dataset_size,))
+
+        # Load in labels
+        labels = torch.zeros((dataset_size, 1, win_sz))
+        for idx in range(dataset_size):
+            bwidth = data[idx, 0] * (max_bandwidth - min_bandwidth) + min_bandwidth
+            bwidth = int(bwidth // (fs / win_sz))
+            bwidth += 1 if bwidth % 2 != 0 else 0
+            bwin = torch.ones((bwidth,))
+            if data[idx, 2]:
+                bwin = torch.windows.bartlett(bwidth)
+            elif data[idx, 3]:
+                bwin = torch.windows.kaiser(bwidth)
+            elif data[idx, 1]:
+                bwin = torch.windows.hann(bwidth)
+            win = torch.zeros((win_sz,))
+            win[:bwidth // 2] = bwin[-bwidth // 2:]
+            win[-bwidth // 2:] = bwin[:bwidth // 2]
+            labels[idx, :, :] = win
+
+        self.data = data
+        self.labels = labels
+
+    def __getitem__(self, idx):
+        return self.data[idx, :], self.labels[idx, :]
+
+    def __len__(self):
+        return self.data.shape[0]
+
+
 class WaveDataset(Dataset):
     def __init__(self, root_dir, vae_model, fft_sz, transform=None, spec_transform=None, split=.1, single_example=False,
                  device='cpu', mu=0., var=1.):
@@ -256,6 +292,67 @@ class WaveDataModule(LightningDataModule):
 
         self.val_dataset = WaveDataset(self.data_dir, self.vae_model, self.fft_sz, split=self.val_split,
                                        single_example=self.single_example, mu=self.mu, var=self.var, device=self.device)
+
+    def train_dataloader(self) -> DataLoader:
+        return DataLoader(
+            self.train_dataset,
+            batch_size=self.train_batch_size,
+            num_workers=self.num_workers,
+            shuffle=True,
+            pin_memory=self.pin_memory,
+        )
+
+    def val_dataloader(self) -> Union[DataLoader, List[DataLoader]]:
+        return DataLoader(
+            self.val_dataset,
+            batch_size=self.val_batch_size,
+            num_workers=self.num_workers,
+            shuffle=False,
+            pin_memory=self.pin_memory,
+        )
+
+    def test_dataloader(self) -> Union[DataLoader, List[DataLoader]]:
+        return DataLoader(
+            self.val_dataset,
+            batch_size=144,
+            num_workers=self.num_workers,
+            shuffle=True,
+            pin_memory=self.pin_memory,
+        )
+
+
+class WindowModule(LightningDataModule):
+    def __init__(
+            self,
+            dataset_size: int = 256,
+            train_batch_size: int = 8,
+            val_batch_size: int = 8,
+            num_workers: int = 0,
+            pin_memory: bool = False,
+            train_split: float = .7,
+            val_split: float = .3,
+            single_example: bool = False,
+            device: str = 'cpu',
+            **kwargs,
+    ):
+        super().__init__()
+
+        self.val_dataset = None
+        self.train_dataset = None
+        self.train_batch_size = train_batch_size
+        self.val_batch_size = val_batch_size
+        self.num_workers = num_workers
+        self.pin_memory = pin_memory
+        self.train_split = train_split
+        self.val_split = val_split
+        self.single_example = single_example
+        self.device = device
+        self.dataset_size = dataset_size
+
+    def setup(self, stage: Optional[str] = None) -> None:
+        self.train_dataset = WindowDataset(dataset_size=self.dataset_size)
+
+        self.val_dataset = WindowDataset(dataset_size=self.dataset_size)
 
     def train_dataloader(self) -> DataLoader:
         return DataLoader(

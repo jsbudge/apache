@@ -1,3 +1,4 @@
+import contextlib
 import os
 import torch
 from torch import optim
@@ -158,9 +159,7 @@ class AExperiment(pl.LightningModule):
         self.curr_device = real_img.device
 
         results = self.forward(real_img, labels=labels)
-        train_loss = self.model.loss_function(*results,
-                                              optimizer_idx=optimizer_idx,
-                                              batch_idx=batch_idx)
+        train_loss = self.model.loss_function(*results)
 
         self.log_dict({key: val.item() for key, val in train_loss.items()}, sync_dist=True)
 
@@ -264,6 +263,59 @@ class GeneratorExperiment(pl.LightningModule):
         if self.trainer.is_global_zero and not self.params['is_tuning']:
             torch.save(self.model.state_dict(), './model/waveform_model.state')
             print('Model saved to disk.')
+
+    def configure_optimizers(self):
+        optimizer = optim.Adam(self.model.parameters(),
+                               lr=self.params['LR'],
+                               weight_decay=self.params['weight_decay'])
+        optims = [optimizer]
+        if self.params['scheduler_gamma'] is None:
+            return optims
+        scheduler = optim.lr_scheduler.ExponentialLR(optims[0],
+                                                     gamma=self.params['scheduler_gamma'])
+        scheds = [scheduler]
+
+        return optims, scheds
+
+
+class WinExperiment(pl.LightningModule):
+
+    def __init__(self,
+                 vae_model: pl.LightningModule,
+                 params: dict) -> None:
+        super(WinExperiment, self).__init__()
+
+        self.model = vae_model
+        self.params = params
+        self.curr_device = None
+        self.hold_graph = False
+        with contextlib.suppress(Exception):
+            self.hold_graph = self.params['retain_first_backpass']
+
+    def forward(self, winput: Tensor) -> Tensor:
+        return self.model(winput)
+
+    def training_step(self, batch, batch_idx):
+        real_img, labels = batch
+        self.curr_device = real_img.device
+        self.automatic_optimization = True
+
+        results = self.forward(real_img)
+        train_loss = self.model.loss_function(results, labels)
+
+        self.log_dict({key: val.item() for key, val in train_loss.items()}, sync_dist=True)
+
+        return train_loss['loss']
+
+    def validation_step(self, batch, batch_idx, optimizer_idx=0):
+        real_img, labels = batch
+        self.curr_device = real_img.device
+        self.automatic_optimization = True
+
+        results = self.forward(real_img)
+        val_loss = self.model.loss_function(results, labels)
+
+        self.log_dict({f"val_{key}": val.item() for key, val in val_loss.items()}, sync_dist=True)
 
     def configure_optimizers(self):
         optimizer = optim.Adam(self.model.parameters(),

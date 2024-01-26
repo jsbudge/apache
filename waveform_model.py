@@ -66,6 +66,17 @@ class GeneratorModel(LightningModule):
             nn.LSTM(stack_output_sz, stack_output_sz, num_layers=4, batch_first=True),
         )
 
+        self.attention_lstm = nn.LSTM(stack_output_sz, stack_output_sz, batch_first=True)
+
+        self.attention_stack = nn.Sequential(
+            nn.Conv2d(1, channel_sz, stft_win_sz // 2 + 1, 1, stft_win_sz // 4),
+            nn.LeakyReLU(),
+            nn.ConvTranspose2d(channel_sz, channel_sz, kernel_size=(4, 3), stride=(2, 1), padding=1),
+            nn.LeakyReLU(),
+            nn.ConvTranspose2d(channel_sz, channel_sz, kernel_size=(4, 3), stride=(2, 1), padding=1),
+            nn.Sigmoid(),
+        )
+
         # Output is Nb x Nchan x stft_win_sz x n_frames
         self.backbone = nn.Sequential(
             nn.Conv2d(1, channel_sz, stft_win_sz // 2 + 1, 1, stft_win_sz // 4),
@@ -79,7 +90,6 @@ class GeneratorModel(LightningModule):
             nn.LeakyReLU(),
             nn.ConvTranspose2d(channel_sz, channel_sz, kernel_size=(4, 3), stride=(2, 1), padding=1),
             nn.LeakyReLU(),
-
         )
         # self.backbone.apply(init_weights)
 
@@ -115,11 +125,22 @@ class GeneratorModel(LightningModule):
         ct_stack = self.comb_stack(ct_stack.view(-1, self.stack_output_sz * 2))
         ct_stack = torch.concat([ct_stack.view(-1, 1, self.stack_output_sz) for _ in range(n_frames)], dim=1)
         lstm_stack = self.prev_stft_stack(ct_stack)[0]
-        x = self.backbone(lstm_stack.reshape(-1, 1, self.stack_output_sz, n_frames))
+        att_stack = self.attention_lstm(ct_stack)[0]
+        att_stack = self.attention_stack(att_stack.reshape(-1, 1, self.stack_output_sz, n_frames))
+        x = self.backbone(lstm_stack.reshape(-1, 1, self.stack_output_sz, n_frames)) * att_stack
         # x0 = self.backbone(ct_stack)
         for d in self.deep_layers:
             x = torch.add(x, d(x))
         return self.final(x)
+
+    def getWindow(self, bandwidth: float, fs: float, n_frames: int):
+        bwidth = int(bandwidth // (fs / self.stft_win_sz))
+        bwidth += 1 if bwidth % 2 != 0 else 0
+        bwin = torch.ones((bwidth,), device=self.device)
+        win = torch.zeros((1, 1, self.stft_win_sz, 1), device=self.device)
+        win[0, 0, :bwidth // 2, 0] = bwin[-bwidth // 2:]
+        win[0, 0, -bwidth // 2:, 0] = bwin[:bwidth // 2]
+        return torch.tile(win, (1, self.n_ants * 2, 1, n_frames))
 
     def loss_function(self, *args, **kwargs) -> dict:
         # These values are set here purely for debugging purposes
@@ -162,7 +183,7 @@ class GeneratorModel(LightningModule):
             # Power in the leftover signal for both clutter and target
             gen_psd = g1 * g1.conj()
             left_sig_c = torch.abs(gen_psd - clutter_psd)
-            left_sig_c[torch.abs(clutter_psd) < 1e-9] = 1.
+            # left_sig_c[torch.abs(clutter_psd) < 1e-9] = 1.
 
             # The scaling here sets clutter and target losses to be between 0 and 1
             target_loss += torch.sum(torch.abs(left_sig_c - left_sig_tc)) / gen_waveform.shape[0] / 2.
@@ -202,10 +223,48 @@ class GeneratorModel(LightningModule):
                 win_func[:self.bin_bw // 2] = torch.windows.hann(self.bin_bw, device=self.device)[-self.bin_bw // 2:]
                 win_func[-self.bin_bw // 2:] = torch.windows.hann(self.bin_bw, device=self.device)[:self.bin_bw // 2]
                 g1 = torch.fft.fft(torch.istft(complex_stft, stft_win, hop_length=self.hop, window=win_func,
-                                               return_complex=True), self.fft_sz, dim=-1)
+                                               return_complex=True, center=False), self.fft_sz, dim=-1)
             else:
                 g1 = torch.fft.fft(torch.istft(complex_stft, stft_win, hop_length=self.hop,
                                                return_complex=True), self.fft_sz, dim=-1)
             g1 = g1 / torch.sqrt(torch.sum(g1 * torch.conj(g1), dim=1))[:, None]  # Unit energy calculation
             gen_waveform[:, n, ...] = g1
         return gen_waveform
+
+
+class WindowModel(LightningModule):
+    def __init__(self,
+                 fft_sz: int,
+                 n_ants: int,
+                 ) -> None:
+        super(WindowModel, self).__init__()
+
+        self.fft_sz = fft_sz
+        self.n_ants = n_ants
+
+        self.init_stack = nn.Sequential(
+            nn.Linear(4, 128),
+            nn.LeakyReLU(),
+            nn.Linear(128, fft_sz),
+            nn.LeakyReLU(),
+        )
+
+        self.conv_stack = nn.Sequential(
+            nn.Conv1d(1, 64, 3, 1, 1),
+            nn.LeakyReLU(),
+            nn.Conv1d(64, 64, 65, 1, 32),
+            nn.LeakyReLU(),
+            nn.Conv1d(64, 64, 33, 1, 16),
+            nn.LeakyReLU(),
+            nn.Conv1d(64, 1, 5, 1, 2),
+            nn.Sigmoid(),
+        )
+
+        self.loss = nn.MSELoss()
+
+    def forward(self, windata: Tensor) -> Tensor:
+        x = self.init_stack(windata)
+        return self.conv_stack(x.view(-1, 1, self.fft_sz))
+
+    def loss_function(self, *args, **kwargs) -> dict:
+        return {'loss': self.loss(args[0], args[1])}
