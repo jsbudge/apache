@@ -97,6 +97,40 @@ def getVAECov(data: np.ndarray, mfilt: np.ndarray = None, rollback: int = 0,
             np.stack(((cov_dt.real - mu) / var, (cov_dt.imag - mu) / var), axis=2))
 
 
+sdr_fnmes = ['/data6/SAR_DATA/2023/06072023/SAR_06072023_111559.sar',
+             '/data6/SAR_DATA/2023/06072023/SAR_06072023_154802.sar',
+             '/data6/SAR_DATA/2023/06202023/SAR_06202023_135617.sar',
+             '/data6/SAR_DATA/2023/06202023/SAR_06202023_140503.sar',
+             '/data6/SAR_DATA/2023/07112023/SAR_07112023_164706.sar',
+             '/data6/SAR_DATA/2023/07122023/SAR_07122023_104842.sar',
+             '/data6/SAR_DATA/2023/07122023/SAR_07122023_105424.sar',
+             '/data6/SAR_DATA/2023/08092023/SAR_08092023_115234.sar',
+             '/data6/SAR_DATA/2023/08092023/SAR_08092023_143927.sar',
+             '/data6/SAR_DATA/2023/08092023/SAR_08092023_144029.sar',
+             '/data6/SAR_DATA/2023/08092023/SAR_08092023_144437.sar',
+             '/data6/SAR_DATA/2023/08102023/SAR_08102023_150617.sar',
+             '/data6/SAR_DATA/2023/08222023/SAR_08222023_083700.sar',
+             '/data6/SAR_DATA/2023/08222023/SAR_08222023_084158.sar',
+             '/data6/SAR_DATA/2023/08222023/SAR_08222023_090159.sar',
+             '/data6/SAR_DATA/2023/08222023/SAR_08222023_121923.sar',
+             '/data6/SAR_DATA/2023/08222023/SAR_08222023_122248.sar',
+             '/data6/SAR_DATA/2023/08232023/SAR_08232023_091003.sar',
+             '/data6/SAR_DATA/2023/08232023/SAR_08232023_110946.sar',
+             '/data6/SAR_DATA/2023/08232023/SAR_08232023_112652.sar',
+             '/data6/SAR_DATA/2023/08232023/SAR_08232023_115317.sar',
+             '/data6/SAR_DATA/2023/08232023/SAR_08232023_150257.sar',
+             '/data6/SAR_DATA/2023/09112023/SAR_09112023_151139.sar',
+             '/data6/SAR_DATA/2023/09112023/SAR_09112023_151257.sar',
+             '/data6/SAR_DATA/2023/09122023/SAR_09122023_152050.sar',
+             '/data6/SAR_DATA/2023/09122023/SAR_09122023_152903.sar',
+             '/data6/SAR_DATA/2023/09122023/SAR_09122023_153015.sar',
+             '/data6/SAR_DATA/2023/09132023/SAR_09132023_115432.sar',
+             '/data6/SAR_DATA/2023/10042023/SAR_10042023_135851.sar',
+             '/data6/SAR_DATA/2023/10062023/SAR_10062023_112753.sar',
+             '/data6/SAR_DATA/2023/10232023/SAR_10232023_093009.sar',
+             '/data6/SAR_DATA/2023/10242023/SAR_10242023_113149.sar']
+
+
 if __name__ == '__main__':
     with open('./vae_config.yaml', 'r') as file:
         try:
@@ -104,7 +138,7 @@ if __name__ == '__main__':
         except yaml.YAMLError as exc:
             print(exc)
 
-    sdr_fnmes = glob('/data6/SAR_DATA/2023/**/*.sar')
+    # sdr_fnmes = glob('/data6/SAR_DATA/2023/**/*.sar')
     sdr_file = []
     for s in sdr_fnmes:
         if Path(f'./data/clutter_{s.split("/")[-1].split(".")[0]}.cov').exists():

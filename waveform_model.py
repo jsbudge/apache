@@ -40,10 +40,12 @@ class GeneratorModel(LightningModule):
         self.fft_sz = fft_sz
         self.stft_win_sz = stft_win_sz
         self.hop = stft_win_sz // 4
+        self.bin_bw = 52
 
         stack_output_sz = self.stft_win_sz // 4
         channel_sz = 32
 
+        # Both the clutter and target stack standardize the output for any latent size
         self.clutter_stack = nn.Sequential(
             nn.Linear(clutter_latent_size, stack_output_sz),
             nn.LeakyReLU(),
@@ -59,12 +61,14 @@ class GeneratorModel(LightningModule):
             nn.LeakyReLU(),
         )
 
+        # LSTM layer to expand the network output to the correct size for pulse length
         self.prev_stft_stack = nn.Sequential(
             nn.LSTM(stack_output_sz, stack_output_sz, num_layers=4, batch_first=True),
         )
-        # Output is Nb x Nchan x stft_win_sz x 3
+
+        # Output is Nb x Nchan x stft_win_sz x n_frames
         self.backbone = nn.Sequential(
-            nn.Conv2d(1, channel_sz, 13, 1, 6),
+            nn.Conv2d(1, channel_sz, stft_win_sz // 2 + 1, 1, stft_win_sz // 4),
             nn.LeakyReLU(),
             nn.Conv2d(channel_sz, channel_sz, 7, 1, 3),
             nn.LeakyReLU(),
@@ -92,7 +96,7 @@ class GeneratorModel(LightningModule):
                 nn.Conv2d(channel_sz, channel_sz, nl * 2 + 3, 1, nl + 1),
                 nn.LeakyReLU(),
             )
-            for nl in range(5, -1, -1)
+            for nl in range(15, -1, -3)
         )
         for d in self.deep_layers:
             d.apply(init_weights)
@@ -158,6 +162,7 @@ class GeneratorModel(LightningModule):
             # Power in the leftover signal for both clutter and target
             gen_psd = g1 * g1.conj()
             left_sig_c = torch.abs(gen_psd - clutter_psd)
+            left_sig_c[torch.abs(clutter_psd) < 1e-9] = 1.
 
             # The scaling here sets clutter and target losses to be between 0 and 1
             target_loss += torch.sum(torch.abs(left_sig_c - left_sig_tc)) / gen_waveform.shape[0] / 2.
@@ -193,7 +198,10 @@ class GeneratorModel(LightningModule):
         for n in range(n_ants):
             complex_stft = torch.complex(full_stft[:, n, :, :], full_stft[:, n + 1, :, :])
             if use_window:
-                g1 = torch.fft.fft(torch.istft(complex_stft, stft_win, hop_length=self.hop,
+                win_func = torch.zeros(self.stft_win_sz, device=self.device)
+                win_func[:self.bin_bw // 2] = torch.windows.hann(self.bin_bw, device=self.device)[-self.bin_bw // 2:]
+                win_func[-self.bin_bw // 2:] = torch.windows.hann(self.bin_bw, device=self.device)[:self.bin_bw // 2]
+                g1 = torch.fft.fft(torch.istft(complex_stft, stft_win, hop_length=self.hop, window=win_func,
                                                return_complex=True), self.fft_sz, dim=-1)
             else:
                 g1 = torch.fft.fft(torch.istft(complex_stft, stft_win, hop_length=self.hop,

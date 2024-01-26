@@ -3,7 +3,7 @@
   <component name="Black">
     <option name="sdkName" value="apache" />
   </component>
-  <component name="ProjectRootManager" version="2" project-jdk-name="video_denoising" project-jdk-type="Python SDK" />
+  <component name="ProjectRootManager" version="2" project-jdk-name="torch" project-jdk-type="Python SDK" />
   <component name="PyPackaging">
     <option name="earlyReleasesAsUpgrades" value="true" />
   </component>

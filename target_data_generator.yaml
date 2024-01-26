@@ -4,7 +4,6 @@ poly_num: 1
 use_aps_debug: False
 rotate_grid: False
 use_ecef: True
-ipr_mode: False
 cpi_len: 32
 plp: 0
 partial_pulse_percent: .2

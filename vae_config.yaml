@@ -23,7 +23,7 @@ settings:
   plp: .5
 
 generate_data_settings:
-  iterations: 20
+  iterations: 10
   fft_sz: 4096
   run_clutter: True
   run_targets: False
@@ -35,7 +35,7 @@ dataset_params:
   fft_sz: 4096
   num_workers: 0
   pin_memory: False
-  train_split: .4
+  train_split: .8
   val_split: .1
   single_example: False
   mu: 0.
@@ -72,7 +72,7 @@ model_params:
 
 train_params:
   log_dir: ./logs
-  max_epochs: 1
+  max_epochs: 1000
 
 compression_params:
   in_channels: 2
