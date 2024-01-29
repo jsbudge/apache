@@ -27,6 +27,8 @@ generate_data_settings:
   fft_sz: 4096
   run_clutter: True
   run_targets: False
+  use_local_storage: True
+  local_path: ./data
 
 dataset_params:
   data_path: /data6/Jeff/vae_training_data
@@ -43,30 +45,30 @@ dataset_params:
   noise_level: .1
 
 exp_params:
-  LR: 0.000005
+  LR: 0.0005
   weight_decay: 0.0
   scheduler_gamma: 0.95
-  kld_weight: .39
+  kld_weight: .34
   log_epoch: 10
   output_images: False
   model_type: WAE_MMD
   is_tuning: False
 
 wave_exp_params:
-  LR: 0.000005
+  LR: 0.0000001
   weight_decay: 0.08
   scheduler_gamma: 0.95
   kld_weight: .39
   log_epoch: 10
   is_tuning: False
-  patience: 5
+  patience: 10
 
 model_params:
   in_channels: 2
-  latent_dim: 58
+  latent_dim: 50
   max_capacity: 25
   capacity_max_iter: 10000
-  reg_weight: 6140.  # MMD weight
+  reg_weight: 7140.  # MMD weight
   kernel_type: 'rbf'
   activation: leaky
 

@@ -140,8 +140,10 @@ if __name__ == '__main__':
 
     # sdr_fnmes = glob('/data6/SAR_DATA/2023/**/*.sar')
     sdr_file = []
+    save_path = config['generate_data_settings']['local_path'] if (
+        config)['generate_data_settings']['use_local_storage'] else config['dataset_params']['data_path']
     for s in sdr_fnmes:
-        if Path(f'./data/clutter_{s.split("/")[-1].split(".")[0]}.cov').exists():
+        if Path(f'{save_path}/clutter_{s.split("/")[-1].split(".")[0]}.cov').exists():
             print(f'{s} already has a .cov file.')
             continue
         if int(s.split('/')[4][:2]) >= 6 and np.any([Path(s).parts[-1][:-4] in g and
@@ -209,10 +211,10 @@ if __name__ == '__main__':
                 inp_data = np.array(inp_data, dtype=np.float32)
                 clutter_abs = np.array(clutter_abs)  #formatTargetClutterData(np.array(clutter_abs), bin_bw).astype(np.float32)
                 with open(
-                        f'./data/clutter_{fn.split("/")[-1].split(".")[0]}.cov', 'ab') as writer:
+                        f'{save_path}/clutter_{fn.split("/")[-1].split(".")[0]}.cov', 'ab') as writer:
                     inp_data.tofile(writer)
                 with open(
-                        f'./data/clutter_{fn.split("/")[-1].split(".")[0]}.spec', 'ab') as writer:
+                        f'{save_path}/clutter_{fn.split("/")[-1].split(".")[0]}.spec', 'ab') as writer:
                     clutter_abs.tofile(writer)
 
     if config['generate_data_settings']['run_targets']:
@@ -233,11 +235,7 @@ if __name__ == '__main__':
             targs.append(np.stack((cov_dt.real, cov_dt.imag), axis=2))
         targs = np.array(targs).astype(np.float32)
         targ_abs = formatTargetClutterData(np.array(targ_abs), bin_bw).astype(np.float32)
-        with open('./data/targets.cov', 'ab') as writer:
+        with open(f'{save_path}/targets.cov', 'ab') as writer:
             targs.tofile(writer)
-        with open('./data/targets.spec', 'ab') as writer:
+        with open(f'{save_path}/targets.spec', 'ab') as writer:
             targ_abs.tofile(writer)
-
-    # Some checks
-    with open('./data/targets.spec', 'rb') as writer:
-        data = np.fromfile(writer, dtype=np.float32).reshape((-1, 6554, 2))
