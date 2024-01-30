@@ -85,7 +85,6 @@ class GeneratorModel(LightningModule):
             nn.LeakyReLU(),
             nn.Conv2d(channel_sz, channel_sz, 3, 1, 1),
             nn.LeakyReLU(),
-            SelfAttention(channel_sz),
             nn.ConvTranspose2d(channel_sz, channel_sz, kernel_size=(4, 3), stride=(2, 1), padding=1),
             nn.LeakyReLU(),
             nn.ConvTranspose2d(channel_sz, channel_sz, kernel_size=(4, 3), stride=(2, 1), padding=1),
@@ -120,7 +119,8 @@ class GeneratorModel(LightningModule):
         self.stack_output_sz = stack_output_sz
 
     def forward(self, clutter: Tensor, target: Tensor, pulse_length: int) -> Tensor:
-        n_frames = 1 + (pulse_length - self.stft_win_sz) // self.hop
+        # Use only the first pulse_length because it gives batch_size random numbers as part of the dataloader
+        n_frames = 1 + (pulse_length[0] - self.stft_win_sz) // self.hop
         ct_stack = torch.concat([self.clutter_stack(clutter), self.target_stack(target)])
         ct_stack = self.comb_stack(ct_stack.view(-1, self.stack_output_sz * 2))
         ct_stack = torch.concat([ct_stack.view(-1, 1, self.stack_output_sz) for _ in range(n_frames)], dim=1)

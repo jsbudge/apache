@@ -56,17 +56,11 @@ if __name__ == '__main__':
             print(exc)
 
     fft_len = config['generate_data_settings']['fft_sz']
-    bin_bw = int(config['settings']['bandwidth'] // (fs / fft_len))
-    bin_bw += 1 if bin_bw % 2 != 0 else 0
-
-    stft_bw = int(config['settings']['bandwidth'] // (fs / config['settings']['stft_win_sz']))
-    stft_bw += 1 if stft_bw % 2 != 0 else 0
 
     franges = np.linspace(config['perf_params']['vehicle_slant_range_min'],
                           config['perf_params']['vehicle_slant_range_max'], 1000) * 2 / c0
     nrange = franges[0]
     pulse_length = (nrange - 1 / TAC) * config['settings']['plp']
-    duty_cycle_time_s = pulse_length + franges
     nr = int(pulse_length * fs)
 
     stft_tbins = int(np.ceil(nr / (config['settings']['stft_win_sz'] / 4)))
@@ -89,7 +83,9 @@ if __name__ == '__main__':
                               clutter_latent_size=config['model_params']['latent_dim'],
                               target_latent_size=config['model_params']['latent_dim'], n_ants=2)
 
-    # wave_mdl.apply(init_weights)
+    config['dataset_params']['max_pulse_length'] = (
+        int((config['perf_params']['vehicle_slant_range_max'] * 2 / c0 - 1 / TAC) * fs))
+    config['dataset_params']['min_pulse_length'] = config['settings']['stft_win_sz'] + 64
 
     data = WaveDataModule(vae_model=vae_mdl, device=device, **config["dataset_params"])
     data.setup()

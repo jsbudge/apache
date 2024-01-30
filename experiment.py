@@ -229,15 +229,15 @@ class GeneratorExperiment(pl.LightningModule):
         except:
             pass
 
-    def forward(self, clutter: Tensor, target: Tensor) -> Tensor:
-        return self.model(clutter, target, self.params['nr'])
+    def forward(self, clutter: Tensor, target: Tensor, pulse_length: int) -> Tensor:
+        return self.model(clutter, target, pulse_length)
 
     def training_step(self, batch, batch_idx):
-        clutter_cov, target_cov, clutter_spec, target_spec = batch
+        clutter_cov, target_cov, clutter_spec, target_spec, pulse_length = batch
         self.curr_device = clutter_cov.device
         self.automatic_optimization = True
 
-        results = self.forward(clutter_cov, target_cov)
+        results = self.forward(clutter_cov, target_cov, pulse_length=pulse_length)
         train_loss = self.model.loss_function(results, clutter_spec, target_spec)
 
         self.log_dict({key: val.item() for key, val in train_loss.items()}, sync_dist=True, prog_bar=True)
@@ -250,11 +250,11 @@ class GeneratorExperiment(pl.LightningModule):
             self.logger.add_graph(self.model, (sample, sample))'''
 
     def validation_step(self, batch, batch_idx, optimizer_idx=0):
-        clutter_cov, target_cov, clutter_spec, target_spec = batch
+        clutter_cov, target_cov, clutter_spec, target_spec, pulse_length = batch
         self.curr_device = clutter_cov.device
         self.automatic_optimization = True
 
-        results = self.forward(clutter_cov, target_cov)
+        results = self.forward(clutter_cov, target_cov, pulse_length=pulse_length)
         train_loss = self.model.loss_function(results, clutter_spec, target_spec)
 
         self.log_dict({key: val.item() for key, val in train_loss.items()}, sync_dist=True, prog_bar=True)

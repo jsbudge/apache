@@ -113,7 +113,7 @@ class WindowDataset(Dataset):
 
 class WaveDataset(Dataset):
     def __init__(self, root_dir, vae_model, fft_sz, transform=None, spec_transform=None, split=.1, single_example=False,
-                 device='cpu', mu=0., var=1.):
+                 device='cpu', min_pulse_length=1, max_pulse_length=2):
         assert Path(root_dir).is_dir()
 
         clutter_cov_files = glob(f'{root_dir}/clutter_*.cov')
@@ -121,9 +121,9 @@ class WaveDataset(Dataset):
         target_cov_files = glob(f'{root_dir}/targets.cov')
         target_spec_files = glob(f'{root_dir}/targets.spec')
         ccdata = np.concatenate([np.fromfile(c, dtype=np.float32).reshape(
-            (-1, 32, 32, 2)) for c in clutter_cov_files]).swapaxes(1, 3) / var
+            (-1, 32, 32, 2)) for c in clutter_cov_files]).swapaxes(1, 3)
         tcdata = np.concatenate([np.fromfile(c, dtype=np.float32).reshape(
-            (-1, 32, 32, 2)) for c in target_cov_files]).swapaxes(1, 3) / var
+            (-1, 32, 32, 2)) for c in target_cov_files]).swapaxes(1, 3)
         csdata = np.concatenate([np.fromfile(c, dtype=np.float32).reshape(
             (-1, fft_sz, 2)) for c in clutter_spec_files])
         tsdata = np.concatenate([np.fromfile(c, dtype=np.float32).reshape(
@@ -157,6 +157,8 @@ class WaveDataset(Dataset):
 
         self.spec_transform = spec_transform
         self.transform = transform
+        self.min_pulse_length = min_pulse_length
+        self.max_pulse_length = max_pulse_length
 
     def __getitem__(self, idx):
         ccd = self.ccdata[idx, ...]
@@ -174,7 +176,7 @@ class WaveDataset(Dataset):
             csd = self.spec_transform(csd)
             tsd = self.spec_transform(tsd)
 
-        return ccd, tcd, csd, tsd
+        return ccd, tcd, csd, tsd, np.random.randint(self.min_pulse_length, self.max_pulse_length)
 
     def __len__(self):
         return self.csdata.shape[0]
@@ -265,6 +267,8 @@ class WaveDataModule(LightningDataModule):
             var: float = 1.,
             device: str = 'cpu',
             fft_sz: int = 4096,
+            min_pulse_length: int = 1,
+            max_pulse_length: int = 2,
             **kwargs,
     ):
         super().__init__()
@@ -280,18 +284,20 @@ class WaveDataModule(LightningDataModule):
         self.train_split = train_split
         self.val_split = val_split
         self.single_example = single_example
-        self.mu = mu
-        self.var = var
+        self.min_pulse_length = min_pulse_length
+        self.max_pulse_length = max_pulse_length
         self.device = device
         self.fft_sz = fft_sz
 
     def setup(self, stage: Optional[str] = None) -> None:
         self.train_dataset = WaveDataset(self.data_dir, self.vae_model, self.fft_sz, split=self.train_split,
-                                         single_example=self.single_example, mu=self.mu, var=self.var,
+                                         single_example=self.single_example, min_pulse_length=self.min_pulse_length,
+                                         max_pulse_length=self.max_pulse_length,
                                          device=self.device)
 
         self.val_dataset = WaveDataset(self.data_dir, self.vae_model, self.fft_sz, split=self.val_split,
-                                       single_example=self.single_example, mu=self.mu, var=self.var, device=self.device)
+                                       single_example=self.single_example, min_pulse_length=self.min_pulse_length,
+                                         max_pulse_length=self.max_pulse_length, device=self.device)
 
     def train_dataloader(self) -> DataLoader:
         return DataLoader(

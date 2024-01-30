@@ -42,8 +42,9 @@ with open('./target_location_list.yaml') as y:
     except yaml.YAMLError as exc:
         print(exc)
 
-for tfile, tloc, tgrid_sz in (
-        zip(target_list['target_file'], target_list['target_location'], target_list['target_grid_sz'])):
+for tfile, tloc, tgrid_sz, tname in (
+        zip(target_list['target_file'], target_list['target_location'], target_list['target_grid_sz'],
+            target_list['target_name'])):
     nbpj_pts = (int(tgrid_sz[0] * settings['pts_per_m']), int(tgrid_sz[1] * settings['pts_per_m']))
 
     print('Loading SDR file...')
@@ -260,12 +261,12 @@ for tfile, tloc, tgrid_sz in (
 
     if settings['save_as_target']:
         inp_data = np.array(inp_data, dtype=np.float32)
-        clutter_abs = np.array(clutter_abs).astype(np.float32) #formatTargetClutterData(np.array(clutter_abs), bin_bw).astype(np.float32)
+        clutter_abs = np.array(clutter_abs).astype(np.float32)
         with open(
-                f'./data/targets.cov', 'ab') as writer:
+                f'./data/targets_{tname}.cov', 'ab') as writer:
             inp_data.tofile(writer)
         with open(
-                f'./data/targets.spec', 'ab') as writer:
+                f'./data/targets_{tname}.spec', 'ab') as writer:
             clutter_abs.tofile(writer)
 
     """

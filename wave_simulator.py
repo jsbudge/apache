@@ -39,20 +39,20 @@ def getFootprint(pos, az, el, az_bw, el_bw, near_range, far_range):
     return np.array(footprint)
 
 
-def reloadWaveforms(model, device, wave_mdl, pulse_data, mfilt, rollback, nsam, fft_len, tc_d, train_transforms, rps,
+def reloadWaveforms(model, device, wave_mdl, pulse_data, mfilt, rollback, nsam, nr, fft_len, tc_d, train_transforms, rps,
                     cpi_len, taytay):
     _, cov_dt = getVAECov(pulse_data, mfilt, rollback, nsam, fft_len)
     dt = train_transforms(cov_dt.astype(np.float32)).unsqueeze(0)
     waves = wave_mdl.getWaveform(model.forward(dt.to(device))[2].to(wave_mdl.device),
-                                 model.forward(tc_d)[2].to(wave_mdl.device), use_window=True
+                                 model.forward(tc_d)[2].to(wave_mdl.device), pulse_length=nr
                                  ).data.numpy().squeeze(0) * 1e4
     chirps = []
     mfilt_jax = []
     for rp in rps:
         chirp = jnp.array(waves[rp.tx_num, :])
-        mfilt = chirp.conj() * taytay
+        new_mfilt = chirp.conj() * taytay
         chirps.append(jnp.tile(chirp, (cpi_len, 1)).T)
-        mfilt_jax.append(np.tile(mfilt, (cpi_len, 1)).T)
+        mfilt_jax.append(np.tile(new_mfilt, (cpi_len, 1)).T)
     return chirps, mfilt_jax
 
 
@@ -151,9 +151,9 @@ else:
     ranges_sampled = rpi.calcRangeBins(u.mean(), 1, settings['plp'], ranges=(1500, 1800))
     nsam = len(ranges_sampled)
     nr = rpi.calcPulseLength(u.mean(), settings['plp'], True)
-    fft_len = findPowerOf2(nsam + nr) if sim_settings['use_sdr_waveform'] else (
-        wave_config)['generate_data_settings']['fft_sz']
+    fft_len = findPowerOf2(nsam + nr)
     print(f'Plane slant range is {np.linalg.norm(plane_pos - rpi.pos(rpi.gpst), axis=1).mean()}')
+wave_fft_len = wave_config['generate_data_settings']['fft_sz']
 
 plat_e, plat_n, plat_u = rpi.pos(rpi.gpst).T
 plat_r, plat_p, plat_y = rpi.att(rpi.gpst).T
@@ -161,21 +161,20 @@ gimbal = np.array([rpi.pan(rpi.gpst), rpi.tilt(rpi.gpst)]).T
 cpi_len = max(settings['cpi_len'], full_scan)
 
 rps = []
-rx_array = []
+vx_array = []
 vx_perm = [(n, q) for q in range(settings['antenna_params']['n_tx']) for n in range(settings['antenna_params']['n_rx'])]
 for tx, rx in vx_perm:
     txpos = np.array(settings['antenna_params']['tx_pos'][tx])
     rxpos = np.array(settings['antenna_params']['rx_pos'][rx])
     vx_pos = rxpos + txpos
-    if not np.any([sum(vx_pos - r) == 0 for r in rx_array]):
-        rps.append(RadarPlatform(plat_e, plat_n, plat_u, plat_r, plat_p, plat_y, rpi.gpst, txpos, rxpos, gimbal, goff,
-                                 grot, rpi.dep_ang, 0., rpi.az_half_bw * 2 / DTR, rpi.el_half_bw * 2 / DTR,
-                                 rpi.fs, tx_num=tx, rx_num=rx))
-        rx_array.append(rxpos + txpos)
+    rps.append(RadarPlatform(plat_e, plat_n, plat_u, plat_r, plat_p, plat_y, rpi.gpst, txpos, rxpos, gimbal, goff,
+                             grot, rpi.dep_ang, 0., rpi.az_half_bw * 2 / DTR, rpi.el_half_bw * 2 / DTR,
+                             rpi.fs, tx_num=tx, rx_num=rx))
+    vx_array.append(rxpos + txpos)
 rpref = RadarPlatform(plat_e, plat_n, plat_u, plat_r, plat_p, plat_y, rpi.gpst, np.array([0., 0., 0.]),
                       np.array([0., 0., 0.]), gimbal, goff, grot, rpi.dep_ang, 0.,
                       rpi.az_half_bw * 2 / DTR, rpi.el_half_bw * 2 / DTR, rpi.fs)
-rx_array = np.array(rx_array)
+vx_array = np.array(vx_array)
 
 # Get reference data
 fs = rpi.fs
@@ -217,15 +216,6 @@ if sim_settings['use_sdr_waveform']:
         chirps.append(jnp.tile(chirp, (cpi_len, 1)).T)
         mfilt_jax.append(np.tile(mfilt, (cpi_len, 1)).T)
 else:
-    bin_bw = int(wave_config['settings']['bandwidth'] // (sdr[0].fs / wave_config['generate_data_settings']['fft_sz']))
-    bin_bw += 1 if bin_bw % 2 != 0 else 0
-
-    stft_bw = int(wave_config['settings']['bandwidth'] // (sdr[0].fs / wave_config['settings']['stft_win_sz']))
-    stft_bw += 1 if stft_bw % 2 != 0 else 0
-
-    stft_tbins = int(np.ceil(int((wave_config['perf_params']['vehicle_slant_range_min'] * 2 / c0 - 1 / TAC) *
-                                 wave_config['settings']['plp'] * sdr[0].fs) / (
-                                     wave_config['settings']['stft_win_sz'] / 4)))
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     mfilt = sdr.genMatchedFilter(0, fft_len=fft_len)
     rollback = -int(np.round(sdr[0].baseband_fc / (sdr[0].fs / fft_len)))
@@ -241,10 +231,10 @@ else:
     model.eval()  # Set to inference mode
     model.to(device)
 
-    tcdata = np.fromfile('./data/targets.cov', dtype=np.float32).reshape(
+    tcdata = np.fromfile(f'{wave_config["dataset_params"]["data_path"]}/targets.cov', dtype=np.float32).reshape(
         (-1, 32, 32, 2))
 
-    wave_mdl = GeneratorModel(bin_bw=bin_bw, stft_params=(stft_bw, stft_tbins),
+    wave_mdl = GeneratorModel(fft_sz=fft_len,
                               stft_win_sz=wave_config['settings']['stft_win_sz'],
                               clutter_latent_size=wave_config['model_params']['latent_dim'],
                               target_latent_size=wave_config['model_params']['latent_dim'], n_ants=2)
@@ -253,7 +243,7 @@ else:
 
     active_clutter = sdr.getPulses(sdr[0].frame_num[:wave_config['settings']['cpi_len']], 0)[1]
 
-    chirps, mfilt_jax = reloadWaveforms(model, device, wave_mdl, active_clutter, mfilt, rollback, nsam, fft_len,
+    chirps, mfilt_jax = reloadWaveforms(model, device, wave_mdl, active_clutter, mfilt, rollback, nsam, nr, fft_len,
                                         train_transforms(tcdata[0, ...]).unsqueeze(0).to(device), train_transforms,
                                         rps, cpi_len, taytay)
 
@@ -262,26 +252,14 @@ mapped_rpg = jax.vmap(range_profile_vectorized,
                       in_axes=[None, None, None, None, 0, 0, 0, 0, 0, 0,
                                None, None, None, None, None, None, None, None])
 mapped_rbi = jax.vmap(real_beam_image,
-                      in_axes=[1, None, None, None, 0, 0, 0, None, None, None])
-
-# Generate range/angle grid for a given position
-data = rpi.boresight(rpi.gpst)
-sorted_data = data[np.lexsort(data.T), :]
-row_mask = np.append([True], np.any(np.diff(sorted_data, axis=0), 1))
-unique_boresights = sorted_data[row_mask].T
-az_spread = np.linspace(rpi.pan(rpi.gpst).min(), rpi.pan(rpi.gpst).max(), 200)
-im_ranges = np.linspace(2181 - 100., 2181 + 100., 200)
-imgrid = np.hstack([azelToVec(az_spread, np.ones_like(az_spread) * rpi.dep_ang) * g for g in im_ranges])
-im_x = (imgrid[0, :] + rpi.pos(rpi.gpst[0])[0]).reshape((len(az_spread), len(im_ranges)), order='F')
-im_y = (imgrid[1, :] + rpi.pos(rpi.gpst[0])[1]).reshape((len(az_spread), len(im_ranges)), order='F')
-im_z = (imgrid[2, :] + rpi.pos(rpi.gpst[0])[2]).reshape((len(az_spread), len(im_ranges)), order='F')
-# bg.resampleGrid(settings['origin'], settings['grid_width'], settings['grid_height'], *nbpj_pts,
-#                 bg.heading if settings['rotate_grid'] else 0)
+                      in_axes=[None, None, None, None, 0, 0, None, None, None, None, None])
 
 # This replaces the ASI background with a custom image
 bg_image = imageio.imread('/data6/Jeff_Backup/Pictures/josh.png').sum(axis=2)
 bg_image = RectBivariateSpline(np.arange(bg_image.shape[0]), np.arange(bg_image.shape[1]), bg_image)(
     np.linspace(0, bg_image.shape[0], nbpj_pts[0][0]), np.linspace(0, bg_image.shape[1], nbpj_pts[0][1])) / 750
+# bg_image = np.zeros(nbpj_pts[0])
+# bg_image[::50, ::50] = 1
 
 # Constant part of the radar equation
 receive_power_scale = (settings['antenna_params']['transmit_power'][0] / .01 *
@@ -313,13 +291,25 @@ for n in range(settings['ngrids']):
     bg_refgrid[-1] += abs(bg_refgrid[-1].min())
     bg_refgrid[-1] *= 1e7
 
-# im_x = grid_x[0][::2, ::2]
-# im_y = grid_y[0][::2, ::2]
-# im_z = grid_z[0][::2, ::2]
+# Generate range/angle grid for a given position
+# First, get the center of the grid for angle calcs
+plat_to_grid = rpi.pos(rpi.gpst[0]) - llh2enu(*settings['origin'][0], bg.ref)
+data = rpi.boresight(rpi.gpst)
+sorted_data = data[np.lexsort(data.T), :]
+row_mask = np.append([True], np.any(np.diff(sorted_data, axis=0), 1))
+unique_boresights = sorted_data[row_mask].T
+az_spread = np.linspace(rpi.pan(rpi.gpst).min(), rpi.pan(rpi.gpst).max(), 200)
+im_ranges = np.linspace(2181 - 100., 2181 + 100., 200)
+imgrid = np.hstack([azelToVec(az_spread, np.ones_like(az_spread) *
+                              np.arcsin(plat_to_grid[2] / np.linalg.norm(plat_to_grid))) * g for g in im_ranges])
+im_x = (imgrid[0, :] + rpi.pos(rpi.gpst[0])[0]).reshape((len(az_spread), len(im_ranges)), order='F')
+im_y = (imgrid[1, :] + rpi.pos(rpi.gpst[0])[1]).reshape((len(az_spread), len(im_ranges)), order='F')
+im_z = (imgrid[2, :] + rpi.pos(rpi.gpst[0])[2]).reshape((len(az_spread), len(im_ranges)), order='F')
 
 # Get pointing vector for MIMO consolidation
-ublock = -azelToVec(np.pi / 2, 0)
-fine_ucavec = np.exp(1j * 2 * np.pi * sdr[0].fc / c0 * rx_array.dot(ublock))
+ublock = np.array([azelToVec(n, 0) for n in np.linspace(-sim_settings['az_bw'] / 2, sim_settings['az_bw'] / 2, full_scan)]).T
+fine_ucavec = np.exp(-1j * 2 * np.pi * sdr[0].fc / c0 * vx_array.dot(ublock))
+array_factor = fine_ucavec.conj().T.dot(np.eye(vx_array.shape[0])).dot(fine_ucavec)[:, 0] / vx_array.shape[0]
 
 # Run through loop to get data simulated
 if settings['simulation_params']['use_sdr_gps']:
@@ -338,7 +328,7 @@ rbi_image = np.zeros((len(az_spread), len(im_ranges)), dtype=np.complex128)
 nz = np.zeros(full_scan)
 tx_pattern = applyRadiationPattern(nz, np.linspace(-sim_settings['az_bw'] / 2, sim_settings['az_bw'] / 2, full_scan),
                                    nz, nz, nz, nz, rpi.az_half_bw, rpi.el_half_bw)
-H = convolution_matrix(tx_pattern / np.linalg.norm(tx_pattern), cpi_len, 'valid').T
+H = convolution_matrix(tx_pattern * array_factor, cpi_len, 'valid').T
 
 # Truncated SVD for superresolution
 U, eig, Vt = np.linalg.svd(H, full_matrices=False)
@@ -358,7 +348,7 @@ for tidx, frames in tqdm(enumerate(idx_t[pos:pos + cpi_len] for pos in frame_gen
     tmp_len = len(ts)
     ex_chirps.append(np.array(chirps[0][:, 0]))
     if not sim_settings['use_sdr_waveform'] and tmp_len == cpi_len:
-        chirps, mfilt_jax = reloadWaveforms(model, device, wave_mdl, active_clutter, mfilt, rollback, nsam, fft_len,
+        chirps, mfilt_jax = reloadWaveforms(model, device, wave_mdl, active_clutter, mfilt, rollback, nsam, nr, fft_len,
                                             train_transforms(tcdata[tidx, ...]).unsqueeze(0).to(device),
                                             train_transforms, rps, cpi_len, taytay)
     # Pan and Tilt are shared by each channel, antennas are all facing the same way
@@ -396,22 +386,30 @@ for tidx, frames in tqdm(enumerate(idx_t[pos:pos + cpi_len] for pos in frame_gen
         cupy.cuda.Device().synchronize()
 
         # This is equivalent to a dot product
-        beamform_data += rtdata * fine_ucavec[ch_idx]
+        beamform_data += rtdata
     cupy.cuda.Device().synchronize()
 
     # Real-beam imaging
     range_walk = np.linalg.norm(pt_ref, axis=1) - abs_range_min
     if tmp_len == cpi_len:
         rbi_y = beamform_data.get()  # * np.exp(-1j * 2 * np.pi * fc / c0 * range_walk)
-        g_k = np.zeros((H.shape[1], nsam))
+        '''g_k = np.zeros((H.shape[1], nsam))
         b_k = np.zeros_like(g_k)
-        sig_k = np.linalg.pinv(.01 * H.T.dot(H) + 10 * np.eye(H.shape[1])).dot(.01 * H.T.dot(rbi_y.T) + 10 * (g_k - b_k))
+        sig_k = np.linalg.pinv(.01 * H.T.dot(H) + 10 * np.eye(H.shape[1])).dot(.01 * H.T.dot(rbi_y.T) + 10 * (g_k - b_k))'''
         sig_k = rbi_y.dot(Hinv.T)
         rbi_image += jnp.sum(mapped_rbi(sig_k, im_x, im_y, im_z,
                                         postx[cpi_len // 2 - H.shape[1] // 2 - 1:cpi_len // 2 + H.shape[1] // 2, :],
                                         posrx[cpi_len // 2 - H.shape[1] // 2 - 1:cpi_len // 2 + H.shape[1] // 2, :],
                                         panrx[cpi_len // 2 - H.shape[1] // 2 - 1:cpi_len // 2 + H.shape[1] // 2],
-                                        near_range_s, fs * settings['upsample'], 2 * np.pi / (c0 / fc)), axis=0)
+                                        near_range_s, fs * settings['upsample'], 2 * np.pi * (fc / c0),
+                                        nsam), axis=0)
+        '''rbi_image += jnp.sum(mapped_rbi(sig_k, grid_x[0], grid_y[0], grid_z[0],
+                                        postx,
+                                        posrx,
+                                        panrx,
+                                        near_range_s, fs * settings['upsample'], 2 * np.pi * (fc / c0),
+                                        elrx,
+                                        rpi.az_half_bw, rpi.el_half_bw), axis=0)'''
         if not sim_settings['use_sdr_waveform']:
             active_clutter = rbi_y.T[:, :32]
 
@@ -440,7 +438,7 @@ plt.title('Time Series')
 plt.plot(np.fft.ifft(ex_chirps[0]).real)
 plt.plot(np.fft.ifft(ex_chirps[1]).real)
 
-plt.figure()
+plt.figure('Chirp Changes')
 for n in ex_chirps:
     plt.plot(db(n))
 plt.show()
@@ -448,11 +446,13 @@ plt.show()
 rbi_image = np.array(rbi_image)
 
 plane_vec = plane_pos - rpi.pos(rpi.gpst).mean(axis=0)
-clims = abs(rbi_image)[abs(rbi_image) > 40]
+clims = abs(rbi_image)
+clims = (max(np.median(clims) - 3 * clims.std(), 0),
+         np.median(clims) + 3 * clims.std() - min(0, np.median(clims) - 3 * clims.std()))
 fig = plt.figure('RBI image')
 ax = fig.add_subplot(111, projection='polar')
 ax.pcolormesh(az_spread, np.flip(im_ranges), abs(rbi_image),
-              clim=(clims.mean() - 3 * clims.std(), clims.mean() + 3 * clims.std()), edgecolors='face')
+              clim=clims, edgecolors='face')
 ax.scatter(np.arctan2(plane_vec[0], plane_vec[1]), np.linalg.norm(plane_vec))
 ax.set_ylim(0, ranges[-1])
 ax.set_xlim(az_spread.min(), az_spread.max())
@@ -460,8 +460,7 @@ ax.grid(False)
 plt.axis('tight')
 
 plt.figure('RBI cartesian')
-
-plt.imshow(abs(rbi_image), clim=(clims.mean() - 3 * clims.std(), clims.mean() + 3 * clims.std()),
+plt.imshow(abs(rbi_image), clim=clims,
            extent=[az_spread[0] / DTR, az_spread[-1] / DTR, im_ranges[0], im_ranges[-1]])
 plt.scatter(np.arctan2(plane_vec[0], plane_vec[1]) / DTR, np.linalg.norm(plane_vec))
 plt.axis('tight')
@@ -477,5 +476,9 @@ if settings['ngrids'] > 1:
 pfig.show()
 
 plt.show()
+
+pfig = px.scatter_3d(x=grid_x[0].flatten(), y=grid_y[0].flatten(), z=grid_z[0].flatten())
+pfig.add_scatter3d(x=im_x.flatten(), y=im_y.flatten(), z=im_z.flatten())
+pfig.show()
 
 # px.imshow(abs(rbi_image), zmin=clims.mean() - 3 * clims.std(), zmax=clims.mean() + 3 * clims.std()).show()

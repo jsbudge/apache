@@ -10,3 +10,7 @@ target_grid_sz: [[12, 12],
                  [15, 15],
                  [30, 30],
                  [25, 25]]
+target_name: ['cessna',
+              'shipping_container',
+              'baseball_pavilion',
+              'multiprop_plane']

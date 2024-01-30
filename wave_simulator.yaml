@@ -8,10 +8,10 @@ cpi_len: 256
 plp: .3
 partial_pulse_percent: .2
 debug: True
-ngrids: 2
+ngrids: 1
 pts_per_m: [2, 4]
-grid_width: [200, 10]
-grid_height: [200, 10]
+grid_width: [100, 10]
+grid_height: [100, 10]
 channel: 0
 fdelay: 1.5
 origin: [[40.138044, -111.660027, 1365.8849123907273], [40.138031, -111.660020, 1365.8849123907273]]
@@ -29,7 +29,7 @@ simulation_params:
   collect_duration: 2
   prf: 2200
   scan_rate: 10  # deg/s
-  scan_angle: 20  # degrees
+  scan_angle: 10  # degrees
   standoff_range: 2181.  # meters
   az_bw: .866
   el_bw: .866

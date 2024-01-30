@@ -61,7 +61,7 @@ wave_exp_params:
   kld_weight: .39
   log_epoch: 10
   is_tuning: False
-  patience: 10
+  patience: 1
 
 model_params:
   in_channels: 2
@@ -74,7 +74,7 @@ model_params:
 
 train_params:
   log_dir: ./logs
-  max_epochs: 100
+  max_epochs: 1
 
 compression_params:
   in_channels: 2
