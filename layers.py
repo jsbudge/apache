@@ -144,3 +144,22 @@ class SelfAttention(LightningModule):
         beta = F.softmax(torch.bmm(f.transpose(1, 2), g), dim=1)
         o = self.gamma * torch.bmm(h, beta) + x
         return o.view(*size).contiguous()
+
+
+class STFTAttention(LightningModule):
+    '''
+    This is taken from a Medium article that references Self-Attention Generative Adversarial Networks:
+    https://arxiv.org/pdf/1805.08318.pdf
+    '''
+    def __init__(self, n_channels, *args: Any, **kwargs: Any):
+        super().__init__(*args, **kwargs)
+        self.query = nn.Conv1d(n_channels, n_channels, kernel_size=1, bias=False)
+        self.key = nn.Conv1d(n_channels, n_channels, kernel_size=1, bias=False)
+        self.value = nn.Conv2d(1, n_channels, kernel_size=1, bias=False)
+        self.gamma = nn.Parameter(torch.tensor([0.]))
+
+    def forward(self, x):
+        f, g = self.query(x[:, :, 0, :]), self.key(x[:, :, :, 0])
+        beta = self.value(F.softmax(torch.bmm(g.transpose(1, 2), f), dim=1).unsqueeze(1))
+        o = self.gamma * beta + x
+        return o.contiguous()

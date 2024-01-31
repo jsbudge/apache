@@ -23,6 +23,12 @@ inch_to_m = .0254
 m_to_ft = 3.2808
 
 
+def force_cudnn_initialization():
+    s = 32
+    dev = torch.device('cuda')
+    torch.nn.functional.conv2d(torch.zeros(s, s, s, s, device=dev), torch.zeros(s, s, s, s, device=dev))
+
+
 def upsample(val, fac=8):
     upval = np.zeros(len(val) * fac, dtype=np.complex128)
     upval[:len(val) // 2] = val[:len(val) // 2]
@@ -44,6 +50,7 @@ def getRange(alt, theta_el):
 
 
 if __name__ == '__main__':
+    force_cudnn_initialization()
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     # torch.cuda.empty_cache()
 
@@ -56,14 +63,7 @@ if __name__ == '__main__':
             print(exc)
 
     fft_len = config['generate_data_settings']['fft_sz']
-
-    franges = np.linspace(config['perf_params']['vehicle_slant_range_min'],
-                          config['perf_params']['vehicle_slant_range_max'], 1000) * 2 / c0
-    nrange = franges[0]
-    pulse_length = (nrange - 1 / TAC) * config['settings']['plp']
-    nr = int(pulse_length * fs)
-
-    stft_tbins = int(np.ceil(nr / (config['settings']['stft_win_sz'] / 4)))
+    nr = int((config['perf_params']['vehicle_slant_range_min'] * 2 / c0 - 1 / TAC) * fs)
 
     # Get the VAE set up
     print('Setting up model...')
@@ -83,8 +83,8 @@ if __name__ == '__main__':
                               clutter_latent_size=config['model_params']['latent_dim'],
                               target_latent_size=config['model_params']['latent_dim'], n_ants=2)
 
-    config['dataset_params']['max_pulse_length'] = (
-        int((config['perf_params']['vehicle_slant_range_max'] * 2 / c0 - 1 / TAC) * fs))
+    # Since these are dependent on apache params, we set them up here instead of in the yaml file
+    config['dataset_params']['max_pulse_length'] = nr
     config['dataset_params']['min_pulse_length'] = config['settings']['stft_win_sz'] + 64
 
     data = WaveDataModule(vae_model=vae_mdl, device=device, **config["dataset_params"])
@@ -93,15 +93,14 @@ if __name__ == '__main__':
     vae_mdl.to('cpu')
 
     print('Setting up experiment...')
-    config['wave_exp_params']['nr'] = nr
     experiment = GeneratorExperiment(wave_mdl, config['wave_exp_params'])
     logger = loggers.TensorBoardLogger(config['train_params']['log_dir'],
                                        name="WaveModel")
     trainer = Trainer(logger=logger, max_epochs=config['train_params']['max_epochs'],
                       log_every_n_steps=config['exp_params']['log_epoch'],
-                      strategy='ddp_find_unused_parameters_true',
-                      callbacks=[EarlyStopping(monitor='loss', patience=config['wave_exp_params']['patience'],
-                                               check_finite=True)])
+                      strategy='ddp', callbacks=
+                      [EarlyStopping(monitor='loss', patience=config['wave_exp_params']['patience'],
+                    check_finite=True)])
 
     print("======= Training =======")
     trainer.fit(experiment, datamodule=data)
@@ -109,9 +108,9 @@ if __name__ == '__main__':
     if trainer.global_rank == 0:
         wave_mdl.eval()
 
-        cc, tc, cs, ts = next(iter(data.train_dataloader()))
+        cc, tc, cs, ts, _ = next(iter(data.train_dataloader()))
 
-        waves = wave_mdl.getWaveform(cc, tc, nr).data.numpy()
+        waves = wave_mdl.getWaveform(cc, tc, [nr]).data.numpy()
 
         clutter = cs.data.numpy()
         clutter = normalize(clutter[:, :, 0] + 1j * clutter[:, :, 1])

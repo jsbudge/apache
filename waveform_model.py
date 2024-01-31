@@ -1,3 +1,4 @@
+import contextlib
 from typing import List, Any, TypeVar
 import torch
 from torch import nn
@@ -5,7 +6,7 @@ from pytorch_lightning import LightningModule
 from torch.nn import functional as F
 from numpy import log2, ceil
 from torchvision import transforms
-from layers import RichConvTranspose2d, RichConv2d, Linear2d, SelfAttention
+from layers import RichConvTranspose2d, RichConv2d, Linear2d, SelfAttention, STFTAttention
 
 Tensor = TypeVar('torch.tensor')
 
@@ -21,8 +22,9 @@ def getTrainTransforms(var):
 
 def init_weights(m):
     if isinstance(m, (nn.Conv1d, nn.ConvTranspose1d, nn.Conv2d, nn.ConvTranspose2d)):
-        torch.nn.init.xavier_normal_(m.weight)
-        m.bias.data.fill_(0.01)
+        with contextlib.suppress(AttributeError):
+            torch.nn.init.xavier_normal_(m.weight)
+            m.bias.data.fill_(0.01)
 
 
 class GeneratorModel(LightningModule):
@@ -43,7 +45,7 @@ class GeneratorModel(LightningModule):
         self.bin_bw = 52
 
         stack_output_sz = self.stft_win_sz // 4
-        channel_sz = 32
+        channel_sz = 16
 
         # Both the clutter and target stack standardize the output for any latent size
         self.clutter_stack = nn.Sequential(
@@ -63,18 +65,7 @@ class GeneratorModel(LightningModule):
 
         # LSTM layer to expand the network output to the correct size for pulse length
         self.prev_stft_stack = nn.Sequential(
-            nn.LSTM(stack_output_sz, stack_output_sz, num_layers=4, batch_first=True),
-        )
-
-        self.attention_lstm = nn.LSTM(stack_output_sz, stack_output_sz, batch_first=True)
-
-        self.attention_stack = nn.Sequential(
-            nn.Conv2d(1, channel_sz, stft_win_sz // 2 + 1, 1, stft_win_sz // 4),
-            nn.LeakyReLU(),
-            nn.ConvTranspose2d(channel_sz, channel_sz, kernel_size=(4, 3), stride=(2, 1), padding=1),
-            nn.LeakyReLU(),
-            nn.ConvTranspose2d(channel_sz, channel_sz, kernel_size=(4, 3), stride=(2, 1), padding=1),
-            nn.Sigmoid(),
+            nn.LSTM(stack_output_sz, stack_output_sz, num_layers=1, batch_first=True),
         )
 
         # Output is Nb x Nchan x stft_win_sz x n_frames
@@ -89,6 +80,7 @@ class GeneratorModel(LightningModule):
             nn.LeakyReLU(),
             nn.ConvTranspose2d(channel_sz, channel_sz, kernel_size=(4, 3), stride=(2, 1), padding=1),
             nn.LeakyReLU(),
+            STFTAttention(channel_sz),
         )
         # self.backbone.apply(init_weights)
 
@@ -112,6 +104,7 @@ class GeneratorModel(LightningModule):
 
         self.final = nn.Sequential(
             nn.BatchNorm2d(channel_sz),
+            STFTAttention(channel_sz),
             nn.Conv2d(channel_sz, n_ants * 2, 3, 1, 1),
         )
         self.final.apply(init_weights)
@@ -125,9 +118,7 @@ class GeneratorModel(LightningModule):
         ct_stack = self.comb_stack(ct_stack.view(-1, self.stack_output_sz * 2))
         ct_stack = torch.concat([ct_stack.view(-1, 1, self.stack_output_sz) for _ in range(n_frames)], dim=1)
         lstm_stack = self.prev_stft_stack(ct_stack)[0]
-        att_stack = self.attention_lstm(ct_stack)[0]
-        att_stack = self.attention_stack(att_stack.reshape(-1, 1, self.stack_output_sz, n_frames))
-        x = self.backbone(lstm_stack.reshape(-1, 1, self.stack_output_sz, n_frames)) * att_stack
+        x = self.backbone(lstm_stack.reshape(-1, 1, self.stack_output_sz, n_frames))
         # x0 = self.backbone(ct_stack)
         for d in self.deep_layers:
             x = torch.add(x, d(x))
@@ -195,7 +186,9 @@ class GeneratorModel(LightningModule):
         # Apply hinge loss to sidelobes
         sidelobe_loss = max(torch.tensor(0), 2 * sidelobe_loss - 1)
         ortho_loss = max(torch.tensor(0), 2 * ortho_loss - 1)
-        loss = torch.sqrt(target_loss ** 2 + sidelobe_loss ** 2 + ortho_loss ** 2)
+
+        # Use sidelobe and orthogonality as regularization params for target loss
+        loss = target_loss * (1 + sidelobe_loss + ortho_loss)
 
         return {'loss': loss, 'target_loss': target_loss,
                 'sidelobe_loss': sidelobe_loss, 'ortho_loss': ortho_loss}
