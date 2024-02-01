@@ -75,12 +75,12 @@ class PulseDataset(Dataset):
         return self.data.shape[0]
 
 
-class WindowDataset(Dataset):
+class RCSDataset(Dataset):
     def __init__(self, dataset_size=256, win_sz=256, max_bandwidth=1.5e9, min_bandwidth=250e6, fs=2e9):
         # Load in data
         data = torch.zeros((dataset_size, 4))
         for idx, d in enumerate(range(0, dataset_size, dataset_size // 4)):
-            data[d:d+dataset_size // 4, idx] = 1.
+            data[d:d + dataset_size // 4, idx] = 1.
         data[:, 0] = torch.rand((dataset_size,))
 
         # Load in labels
@@ -112,7 +112,7 @@ class WindowDataset(Dataset):
 
 
 class WaveDataset(Dataset):
-    def __init__(self, root_dir, vae_model, fft_sz, transform=None, spec_transform=None, split=.1, single_example=False,
+    def __init__(self, root_dir, vae_model, fft_sz, transform=None, spec_transform=None, split=32, single_example=False,
                  device='cpu', min_pulse_length=1, max_pulse_length=2):
         assert Path(root_dir).is_dir()
 
@@ -120,20 +120,28 @@ class WaveDataset(Dataset):
         clutter_spec_files = glob(f'{root_dir}/clutter_*.spec')
         target_cov_files = glob(f'{root_dir}/targets.cov')
         target_spec_files = glob(f'{root_dir}/targets.spec')
-        ccdata = np.concatenate([np.fromfile(c, dtype=np.float32).reshape(
-            (-1, 32, 32, 2)) for c in clutter_cov_files]).swapaxes(1, 3)
-        tcdata = np.concatenate([np.fromfile(c, dtype=np.float32).reshape(
-            (-1, 32, 32, 2)) for c in target_cov_files]).swapaxes(1, 3)
-        csdata = np.concatenate([np.fromfile(c, dtype=np.float32).reshape(
-            (-1, fft_sz, 2)) for c in clutter_spec_files])
-        tsdata = np.concatenate([np.fromfile(c, dtype=np.float32).reshape(
-            (-1, fft_sz, 2)) for c in target_spec_files])
-
-        # Do split
-        if split < 1:
-            rch = np.random.choice(np.arange(csdata.shape[0]), int(csdata.shape[0] * split))
-            ccdata = ccdata[rch, ...]
-            csdata = csdata[rch, ...]
+        ccdata = np.fromfile(clutter_cov_files[0], dtype=np.float32).reshape(
+            (-1, 32, 32, 2))
+        tcdata = np.fromfile(target_cov_files[0], dtype=np.float32).reshape(
+            (-1, 32, 32, 2))
+        csdata = np.fromfile(clutter_spec_files[0], dtype=np.float32).reshape(
+            (-1, fft_sz, 2))
+        tsdata = np.fromfile(target_spec_files[0], dtype=np.float32).reshape(
+            (-1, fft_sz, 2))
+        per_file = int(split // len(clutter_cov_files))
+        for i in range(1, len(clutter_cov_files)):
+            tmp_cdata = np.fromfile(clutter_cov_files[i], dtype=np.float32).reshape(
+                (-1, 32, 32, 2))
+            ccs = np.random.choice(np.arange(tmp_cdata.shape[0]), per_file)
+            ccdata = np.concatenate([ccdata, tmp_cdata[ccs]])
+            csdata = np.concatenate([csdata, np.fromfile(clutter_spec_files[i], dtype=np.float32).reshape(
+                (-1, fft_sz, 2))[ccs]])
+        ccdata = ccdata[:split, ...]
+        csdata = csdata[:split, ...]
+        tcdata = tcdata[:split, ...]
+        tsdata = tsdata[:split, ...]
+        ccdata = ccdata.swapaxes(1, 3)
+        tcdata = tcdata.swapaxes(1, 3)
         if single_example:
             ccdata[1:, ...] = ccdata[0, ...]
             tcdata[1:, ...] = tcdata[0, ...]
@@ -145,9 +153,9 @@ class WaveDataset(Dataset):
         # Run through the VAE model
         vae_model.to(device)
 
-        self.ccdata = torch.vstack([vae_model.encode(torch.tensor(ccdata[i:i+64]).to(device)).detach().cpu()
+        self.ccdata = torch.vstack([vae_model.encode(torch.tensor(ccdata[i:i + 64]).to(device)).detach().cpu()
                                     for i in range(0, ccdata.shape[0], 64)])
-        self.tcdata = torch.vstack([vae_model.encode(torch.tensor(tcdata[i:i+64]).to(device)).detach().cpu()
+        self.tcdata = torch.vstack([vae_model.encode(torch.tensor(tcdata[i:i + 64]).to(device)).detach().cpu()
                                     for i in range(0, tcdata.shape[0], 64)])
         self.csdata = torch.tensor(csdata)
         self.tsdata = torch.tensor(tsdata)
@@ -260,8 +268,8 @@ class WaveDataModule(LightningDataModule):
             val_batch_size: int = 8,
             num_workers: int = 0,
             pin_memory: bool = False,
-            train_split: float = .7,
-            val_split: float = .3,
+            train_split: int = 1024,
+            val_split: int = 32,
             single_example: bool = False,
             mu: float = 0.,
             var: float = 1.,
@@ -297,7 +305,7 @@ class WaveDataModule(LightningDataModule):
 
         self.val_dataset = WaveDataset(self.data_dir, self.vae_model, self.fft_sz, split=self.val_split,
                                        single_example=self.single_example, min_pulse_length=self.min_pulse_length,
-                                         max_pulse_length=self.max_pulse_length, device=self.device)
+                                       max_pulse_length=self.max_pulse_length, device=self.device)
 
     def train_dataloader(self) -> DataLoader:
         return DataLoader(
@@ -327,7 +335,7 @@ class WaveDataModule(LightningDataModule):
         )
 
 
-class WindowModule(LightningDataModule):
+class RCSModule(LightningDataModule):
     def __init__(
             self,
             dataset_size: int = 256,
@@ -356,9 +364,9 @@ class WindowModule(LightningDataModule):
         self.dataset_size = dataset_size
 
     def setup(self, stage: Optional[str] = None) -> None:
-        self.train_dataset = WindowDataset(dataset_size=self.dataset_size)
+        self.train_dataset = RCSDataset(dataset_size=self.dataset_size)
 
-        self.val_dataset = WindowDataset(dataset_size=self.dataset_size)
+        self.val_dataset = RCSDataset(dataset_size=self.dataset_size)
 
     def train_dataloader(self) -> DataLoader:
         return DataLoader(

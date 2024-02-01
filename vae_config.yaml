@@ -37,8 +37,8 @@ dataset_params:
   fft_sz: 4096
   num_workers: 0
   pin_memory: False
-  train_split: .8
-  val_split: .1
+  train_split: 20000
+  val_split: 128
   single_example: False
   mu: 0.
   var: 1.
@@ -55,7 +55,7 @@ exp_params:
   is_tuning: False
 
 wave_exp_params:
-  LR: 0.0000001
+  LR: 0.0000000001
   weight_decay: 0.08
   scheduler_gamma: 0.95
   kld_weight: .39

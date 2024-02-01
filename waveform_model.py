@@ -45,7 +45,7 @@ class GeneratorModel(LightningModule):
         self.bin_bw = 52
 
         stack_output_sz = self.stft_win_sz // 4
-        channel_sz = 16
+        channel_sz = 32
 
         # Both the clutter and target stack standardize the output for any latent size
         self.clutter_stack = nn.Sequential(
@@ -70,9 +70,13 @@ class GeneratorModel(LightningModule):
 
         # Output is Nb x Nchan x stft_win_sz x n_frames
         self.backbone = nn.Sequential(
-            nn.Conv2d(1, channel_sz, stft_win_sz // 2 + 1, 1, stft_win_sz // 4),
+            nn.Conv2d(1, channel_sz, stack_output_sz // 2 + 1, 1, stack_output_sz // 4),
             nn.LeakyReLU(),
-            nn.Conv2d(channel_sz, channel_sz, 7, 1, 3),
+            nn.Conv2d(channel_sz, channel_sz, 9, 1, 4),
+            nn.LeakyReLU(),
+            nn.Conv2d(channel_sz, channel_sz, 3, 1, 1),
+            nn.LeakyReLU(),
+            nn.Conv2d(channel_sz, channel_sz, 3, 1, 1),
             nn.LeakyReLU(),
             nn.Conv2d(channel_sz, channel_sz, 3, 1, 1),
             nn.LeakyReLU(),
@@ -104,34 +108,31 @@ class GeneratorModel(LightningModule):
 
         self.final = nn.Sequential(
             nn.BatchNorm2d(channel_sz),
-            STFTAttention(channel_sz),
             nn.Conv2d(channel_sz, n_ants * 2, 3, 1, 1),
         )
         self.final.apply(init_weights)
 
+        self.gamma = nn.Parameter(torch.tensor([1.]))
+
         self.stack_output_sz = stack_output_sz
 
-    def forward(self, clutter: Tensor, target: Tensor, pulse_length: int) -> Tensor:
+    def forward(self, clutter: Tensor, target: Tensor, pulse_length: [int]) -> Tensor:
         # Use only the first pulse_length because it gives batch_size random numbers as part of the dataloader
         n_frames = 1 + (pulse_length[0] - self.stft_win_sz) // self.hop
+
+        # Combine clutter and target features and synthesize combined ones
         ct_stack = torch.concat([self.clutter_stack(clutter), self.target_stack(target)])
         ct_stack = self.comb_stack(ct_stack.view(-1, self.stack_output_sz * 2))
-        ct_stack = torch.concat([ct_stack.view(-1, 1, self.stack_output_sz) for _ in range(n_frames)], dim=1)
+        ct_stack = ct_stack.view(-1, 1, self.stack_output_sz)
+
+        # Concatenate the number of STFT windows we'll need and pass them through an LSTM
+        ct_stack = torch.concat([ct_stack for _ in range(n_frames)], dim=1)
         lstm_stack = self.prev_stft_stack(ct_stack)[0]
         x = self.backbone(lstm_stack.reshape(-1, 1, self.stack_output_sz, n_frames))
         # x0 = self.backbone(ct_stack)
         for d in self.deep_layers:
-            x = torch.add(x, d(x))
+            x = torch.add(x * self.gamma, d(x))
         return self.final(x)
-
-    def getWindow(self, bandwidth: float, fs: float, n_frames: int):
-        bwidth = int(bandwidth // (fs / self.stft_win_sz))
-        bwidth += 1 if bwidth % 2 != 0 else 0
-        bwin = torch.ones((bwidth,), device=self.device)
-        win = torch.zeros((1, 1, self.stft_win_sz, 1), device=self.device)
-        win[0, 0, :bwidth // 2, 0] = bwin[-bwidth // 2:]
-        win[0, 0, -bwidth // 2:, 0] = bwin[:bwidth // 2]
-        return torch.tile(win, (1, self.n_ants * 2, 1, n_frames))
 
     def loss_function(self, *args, **kwargs) -> dict:
         # These values are set here purely for debugging purposes
@@ -188,15 +189,16 @@ class GeneratorModel(LightningModule):
         ortho_loss = max(torch.tensor(0), 2 * ortho_loss - 1)
 
         # Use sidelobe and orthogonality as regularization params for target loss
-        loss = target_loss * (1 + sidelobe_loss + ortho_loss)
+        loss = torch.sqrt(target_loss**2 + sidelobe_loss**2 + ortho_loss**2)
 
         return {'loss': loss, 'target_loss': target_loss,
                 'sidelobe_loss': sidelobe_loss, 'ortho_loss': ortho_loss}
 
     def getWaveform(self, cc: Tensor = None, tc: Tensor = None, pulse_length: int = 1, nn_output: Tensor = None,
-                    use_window: bool = False) -> Tensor:
+                    use_window: bool = False, scale: bool = False) -> Tensor:
         """
         Given a clutter and target spectrum, produces a waveform FFT.
+        :param scale: If True, scales the output FFT so that it is at least pulse_length long on IFFT.
         :param pulse_length: Length of pulse in samples.
         :param use_window: if True, applies a window to the finished waveform. Set to False for training.
         :param nn_output: Optional. If the waveform data is already created, use this to avoid putting in cc and tc.
@@ -206,11 +208,20 @@ class GeneratorModel(LightningModule):
         """
         n_ants = self.n_ants
         stft_win = self.stft_win_sz
+
+        # Get the STFT either from the clutter, target, and pulse length or directly from the neural net
         full_stft = self.forward(cc, tc, pulse_length) if nn_output is None else nn_output
-        gen_waveform = torch.zeros((full_stft.shape[0], self.n_ants, self.fft_sz), dtype=torch.complex64,
-                                   device=self.device)
+        if scale:
+            new_fft_sz = int(2**(ceil(log2(pulse_length))))
+            gen_waveform = torch.zeros((full_stft.shape[0], self.n_ants, new_fft_sz), dtype=torch.complex64,
+                                       device=self.device)
+        else:
+            gen_waveform = torch.zeros((full_stft.shape[0], self.n_ants, self.fft_sz), dtype=torch.complex64,
+                                       device=self.device)
         for n in range(n_ants):
             complex_stft = torch.complex(full_stft[:, n, :, :], full_stft[:, n + 1, :, :])
+
+            # Apply a window if wanted for actual simulation
             if use_window:
                 win_func = torch.zeros(self.stft_win_sz, device=self.device)
                 win_func[:self.bin_bw // 2] = torch.windows.hann(self.bin_bw, device=self.device)[-self.bin_bw // 2:]
@@ -218,46 +229,61 @@ class GeneratorModel(LightningModule):
                 g1 = torch.fft.fft(torch.istft(complex_stft, stft_win, hop_length=self.hop, window=win_func,
                                                return_complex=True, center=False), self.fft_sz, dim=-1)
             else:
+                # This is for training purposes
                 g1 = torch.fft.fft(torch.istft(complex_stft, stft_win, hop_length=self.hop,
                                                return_complex=True), self.fft_sz, dim=-1)
             g1 = g1 / torch.sqrt(torch.sum(g1 * torch.conj(g1), dim=1))[:, None]  # Unit energy calculation
-            gen_waveform[:, n, ...] = g1
+            if scale:
+                gen_waveform[:, n, :self.fft_sz // 2] = g1[:, n, :self.fft_sz // 2]
+                gen_waveform[:, n, -self.fft_sz // 2:] = g1[:, n, -self.fft_sz // 2:]
+            else:
+                gen_waveform[:, n, ...] = g1
         return gen_waveform
 
 
-class WindowModel(LightningModule):
+class RCSModel(LightningModule):
     def __init__(self,
                  fft_sz: int,
                  n_ants: int,
                  ) -> None:
-        super(WindowModel, self).__init__()
+        super(RCSModel, self).__init__()
 
         self.fft_sz = fft_sz
         self.n_ants = n_ants
 
-        self.init_stack = nn.Sequential(
-            nn.Linear(4, 128),
+        self.optical_stack = nn.Sequential(
+            nn.Conv2d(3, 32, 4, 2, 1),
             nn.LeakyReLU(),
-            nn.Linear(128, fft_sz),
+            nn.Conv2d(32, 16, 4, 2, 1),
             nn.LeakyReLU(),
         )
 
-        self.conv_stack = nn.Sequential(
-            nn.Conv1d(1, 64, 3, 1, 1),
+        self.sar_stack = nn.Sequential(
+            nn.Conv2d(1, 32, 4, 2, 1),
             nn.LeakyReLU(),
-            nn.Conv1d(64, 64, 65, 1, 32),
+            nn.Conv2d(32, 16, 4, 2, 1),
             nn.LeakyReLU(),
-            nn.Conv1d(64, 64, 33, 1, 16),
+        )
+
+        self.pose_stack = nn.Sequential(
+            nn.Linear(7, 9),
             nn.LeakyReLU(),
-            nn.Conv1d(64, 1, 5, 1, 2),
+        )
+
+        self.comb_stack = nn.Sequential(
+            nn.ConvTranspose2d(32, 32, 4, 2, 1),
+            nn.LeakyReLU(),
+            nn.ConvTranspose2d(32, 1, 4, 2, 1),
             nn.Sigmoid(),
         )
 
         self.loss = nn.MSELoss()
 
-    def forward(self, windata: Tensor) -> Tensor:
-        x = self.init_stack(windata)
-        return self.conv_stack(x.view(-1, 1, self.fft_sz))
+    def forward(self, opt_data: Tensor, sar_data: Tensor, pose_data: Tensor) -> Tensor:
+        x = torch.stack([self.optical_stack(opt_data), self.sar_stack(sar_data)], dim=1)
+        x = torch.convolution(x, self.pose_stack(pose_data).view(-1, 1, 3, 3), bias=None, stride=[1, 1], padding=[1, 1],
+                              output_padding=[0, 0], transposed=False, dilation=[1, 1], groups=1)
+        return self.comb_stack(x)
 
     def loss_function(self, *args, **kwargs) -> dict:
         return {'loss': self.loss(args[0], args[1])}

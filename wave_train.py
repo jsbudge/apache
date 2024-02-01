@@ -157,6 +157,8 @@ if __name__ == '__main__':
         plt.legend(['Waveform 1', 'Waveform 2', 'Cross Correlation', 'Linear Chirp'])
         plt.xlabel('Lag')
 
+        waves = wave_mdl.getWaveform(cc, tc, [nr], scale=True).data.numpy()
+
         plt.figure('Time Series')
         wave1 = waves.copy()
         plot_t = np.arange(nr) / fs
