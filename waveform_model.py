@@ -166,7 +166,7 @@ class GeneratorModel(LightningModule):
         # Run losses for each channel
         for n in range(n_ants):
             g1 = gen_waveform[:, n, ...]
-            sidelobe_func = torch.abs(torch.fft.ifft(g1 * g1.conj(), dim=1))
+            sidelobe_func = 10 * torch.log(torch.abs(torch.fft.ifft(g1 * g1.conj(), dim=1)) / 10)
 
             # This is orthogonality losses, so we need a persistent value across the for loop
             if n > 0:
@@ -179,9 +179,12 @@ class GeneratorModel(LightningModule):
 
             # The scaling here sets clutter and target losses to be between 0 and 1
             target_loss += torch.sum(torch.abs(left_sig_c - left_sig_tc)) / gen_waveform.shape[0] / 2.
-            sidelobe_loss += (
-                    torch.sum(10 ** (torch.log(torch.mean(sidelobe_func, dim=1) / sidelobe_func[:, 0]) / 10)) /
-                    gen_waveform.shape[0])
+
+            # Get the PSLR for this waveform
+            idx = 1
+            while sidelobe_func[0, idx - 1] > sidelobe_func[0, idx]:
+                idx += 1
+            sidelobe_loss += sidelobe_func[0, 0] / torch.max(sidelobe_func[0, idx:-idx])
             gn = g1.conj()  # Conjugate of current g1 for orthogonality loss on next loop
 
         # Apply hinge loss to sidelobes
@@ -189,7 +192,7 @@ class GeneratorModel(LightningModule):
         ortho_loss = max(torch.tensor(0), 2 * ortho_loss - 1)
 
         # Use sidelobe and orthogonality as regularization params for target loss
-        loss = torch.sqrt(target_loss**2 + sidelobe_loss**2 + ortho_loss**2)
+        loss = torch.sqrt(target_loss * (1 + sidelobe_loss + ortho_loss))
 
         return {'loss': loss, 'target_loss': target_loss,
                 'sidelobe_loss': sidelobe_loss, 'ortho_loss': ortho_loss}
@@ -234,8 +237,8 @@ class GeneratorModel(LightningModule):
                                                return_complex=True), self.fft_sz, dim=-1)
             g1 = g1 / torch.sqrt(torch.sum(g1 * torch.conj(g1), dim=1))[:, None]  # Unit energy calculation
             if scale:
-                gen_waveform[:, n, :self.fft_sz // 2] = g1[:, n, :self.fft_sz // 2]
-                gen_waveform[:, n, -self.fft_sz // 2:] = g1[:, n, -self.fft_sz // 2:]
+                gen_waveform[:, n, :self.fft_sz // 2] = g1[:, :self.fft_sz // 2]
+                gen_waveform[:, n, -self.fft_sz // 2:] = g1[:, -self.fft_sz // 2:]
             else:
                 gen_waveform[:, n, ...] = g1
         return gen_waveform
