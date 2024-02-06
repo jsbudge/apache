@@ -267,7 +267,8 @@ class GeneratorExperiment(pl.LightningModule):
     def configure_optimizers(self):
         optimizer = optim.Adam(self.model.parameters(),
                                lr=self.params['LR'],
-                               weight_decay=self.params['weight_decay'])
+                               weight_decay=self.params['weight_decay'],
+                               eps=1e-7)
         optims = [optimizer]
         if self.params['scheduler_gamma'] is None:
             return optims

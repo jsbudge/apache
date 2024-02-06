@@ -112,8 +112,6 @@ class GeneratorModel(LightningModule):
         )
         self.final.apply(init_weights)
 
-        self.gamma = nn.Parameter(torch.tensor([1.]))
-
         self.stack_output_sz = stack_output_sz
 
     def forward(self, clutter: Tensor, target: Tensor, pulse_length: [int]) -> Tensor:
@@ -131,7 +129,7 @@ class GeneratorModel(LightningModule):
         x = self.backbone(lstm_stack.reshape(-1, 1, self.stack_output_sz, n_frames))
         # x0 = self.backbone(ct_stack)
         for d in self.deep_layers:
-            x = torch.add(x * self.gamma, d(x))
+            x = torch.add(x, d(x))
         return self.final(x)
 
     def loss_function(self, *args, **kwargs) -> dict:
@@ -180,11 +178,9 @@ class GeneratorModel(LightningModule):
             # The scaling here sets clutter and target losses to be between 0 and 1
             target_loss += torch.sum(torch.abs(left_sig_c - left_sig_tc)) / gen_waveform.shape[0] / 2.
 
-            # Get the PSLR for this waveform
-            idx = 1
-            while sidelobe_func[0, idx - 1] > sidelobe_func[0, idx]:
-                idx += 1
-            sidelobe_loss += sidelobe_func[0, 0] / torch.max(sidelobe_func[0, idx:-idx])
+            # Get the ISLR for this waveform
+            sll = torch.mean(sidelobe_func[:, 7:-7], dim=1)
+            sidelobe_loss += torch.sum(sidelobe_func[:, 0] / sll) / (self.n_ants * sidelobe_func.shape[0])
             gn = g1.conj()  # Conjugate of current g1 for orthogonality loss on next loop
 
         # Apply hinge loss to sidelobes

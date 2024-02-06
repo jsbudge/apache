@@ -1,8 +1,19 @@
 apache_params:
   blade_chord_m: .533
   rotor_diameter_m: 14.63
-  wheel_height_m: 2.4384
+  wheel_height_m: .76196
+  phase_center_offset_m: .4953
   rotor_velocity_rad_s: 29.7404
+  rotor_pitch_max: -10
+  rotor_pitch_min: 30
+  dismount_slant_range_min: 500
+  dismount_slant_range_max: 15000
+  vehicle_slant_range_min: 500
+  vehicle_slant_range_max: 25000
+  alt_min: 30.48
+  alt_max: 1524.
+  az_min_bw: .0130899
+  el_min_bw: .034906
 
 perf_params:
   dismount_slant_range_min: 500
@@ -37,7 +48,7 @@ dataset_params:
   fft_sz: 4096
   num_workers: 0
   pin_memory: False
-  train_split: 20000
+  train_split: 30000
   val_split: 128
   single_example: False
   mu: 0.
@@ -74,7 +85,7 @@ model_params:
 
 train_params:
   log_dir: ./logs
-  max_epochs: 2
+  max_epochs: 100
 
 compression_params:
   in_channels: 2

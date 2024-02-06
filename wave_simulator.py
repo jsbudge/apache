@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 
+from apache_helper import ApachePlatform
 from generate_trainingdata import getVAECov
 from models import InfoVAE, BetaVAE, WAE_MMD
 from simulib.simulation_functions import getElevation, llh2enu, findPowerOf2, db, enu2llh, azelToVec, genPulse
@@ -140,11 +141,10 @@ else:
                         np.arange(ngpssam) / GPS_UPDATE_RATE_HZ, .5)
                * sim_settings['scan_angle'] / 2 * DTR)
     gim_el = np.zeros_like(gim_pan) + np.arccos(req_alt / req_slant_range)
-    goff = np.array([0., 0., wave_config['apache_params']['wheel_height_m']])
+    goff = np.array([wave_config['phase_center_offset_m'], 0., wave_config['apache_params']['wheel_height_m']])
     grot = np.array([0., 0., 0.])
-    rpi = RadarPlatform(e, n, u, r, p, y, t, dep_angle=req_dep_ang / DTR, gimbal=np.array([gim_pan, gim_el]).T,
-                        gimbal_rotations=grot, gimbal_offset=goff, az_bw=sim_settings['az_bw'],
-                        el_bw=sim_settings['el_bw'], fs=2e9)
+    rpi = ApachePlatform(wave_config['apache_params'], e, n, u, r, p, y, t, dep_angle=req_dep_ang / DTR,
+                            gimbal=np.array([gim_pan, gim_el]).T, gimbal_rotations=grot, gimbal_offset=goff, fs=2e9)
     rpi.fc = 9.6e9
     rpi.bwidth = 400e6
     ranges = rpi.calcRangeBins(u.mean(), settings['upsample'], settings['plp'], ranges=(1500, 1800))
@@ -316,8 +316,8 @@ if settings['simulation_params']['use_sdr_gps']:
     data_t = sdr[settings['channel']].pulse_time
     idx_t = sdr[settings['channel']].frame_num
 else:
-    data_t = np.linspace(0, settings['simulation_params']['collect_duration'],
-                         int(settings['simulation_params']['prf'] * settings['simulation_params']['collect_duration']))
+    data_t = rpi.getValidPulseTimings(settings['simulation_params']['prf'], 1e-6, cpi_len)
+    data_t = data_t[data_t < data_t[0] + settings['simulation_params']['collect_duration']]
     idx_t = np.arange(len(data_t))
 test = None
 print('Running simulation...')
