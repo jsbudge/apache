@@ -238,7 +238,7 @@ else:
                               stft_win_sz=wave_config['settings']['stft_win_sz'],
                               clutter_latent_size=wave_config['model_params']['latent_dim'],
                               target_latent_size=wave_config['model_params']['latent_dim'], n_ants=2)
-
+    wave_mdl.load_state_dict(torch.load('./model/wave_model.state'))
     wave_mdl.eval()
 
     active_clutter = sdr.getPulses(sdr[0].frame_num[:wave_config['settings']['cpi_len']], 0)[1]

@@ -1,4 +1,5 @@
 import contextlib
+import pickle
 from typing import List, Any, TypeVar
 import torch
 from torch import nn
@@ -35,6 +36,7 @@ class GeneratorModel(LightningModule):
                  target_latent_size: int,
                  n_ants: int,
                  activation: str = 'leaky',
+                 **kwargs,
                  ) -> None:
         super(GeneratorModel, self).__init__()
 
@@ -43,9 +45,11 @@ class GeneratorModel(LightningModule):
         self.stft_win_sz = stft_win_sz
         self.hop = stft_win_sz // 4
         self.bin_bw = 52
+        self.clutter_latent_size = clutter_latent_size
+        self.target_latent_size = target_latent_size
 
         stack_output_sz = self.stft_win_sz // 4
-        channel_sz = 32
+        channel_sz = 16
 
         # Both the clutter and target stack standardize the output for any latent size
         self.clutter_stack = nn.Sequential(
@@ -188,10 +192,52 @@ class GeneratorModel(LightningModule):
         ortho_loss = max(torch.tensor(0), 2 * ortho_loss - 1)
 
         # Use sidelobe and orthogonality as regularization params for target loss
+        # loss = torch.sqrt(target_loss**2 + sidelobe_loss**2 + ortho_loss**2)
         loss = torch.sqrt(target_loss * (1 + sidelobe_loss + ortho_loss))
 
         return {'loss': loss, 'target_loss': target_loss,
                 'sidelobe_loss': sidelobe_loss, 'ortho_loss': ortho_loss}
+
+    def save(self, fpath, model_name='current'):
+        torch.save(self.state_dict(), f'{fpath}/{model_name}_wave_model.state')
+        with open(f'{fpath}/{model_name}_model_params.pic', 'wb') as f:
+            pickle.dump({'fft_sz': self.fft_sz, 'stft_win_sz': self.stft_win_sz,
+                         'clutter_latent_size': self.clutter_latent_size,
+                         'target_latent_size': self.target_latent_size, 'n_ants': self.n_ants,
+                         'state_file': f'{fpath}/{model_name}_wave_model.state'}, f)
+
+    def get_flat_params(self):
+        """Get flattened and concatenated params of the model."""
+        return torch.cat([torch.flatten(p) for _, p in self._get_params().items()])
+
+    def _get_params(self):
+        return {name: param.data for name, param in self.named_parameters()}
+
+    def init_from_flat_params(self, flat_params):
+        """Set all model parameters from the flattened form."""
+        assert isinstance(flat_params, torch.Tensor), "Argument to init_from_flat_params() must be torch.Tensor"
+        state_dict = self._unflatten_to_state_dict(flat_params, self._get_param_shapes())
+        for name, params in self.state_dict().items():
+            if name not in state_dict:
+                state_dict[name] = params
+        self.load_state_dict(state_dict, strict=True)
+
+    def _unflatten_to_state_dict(self, flat_w, shapes):
+        state_dict = {}
+        counter = 0
+        for shape in shapes:
+            name, tsize, tnum = shape
+            param = flat_w[counter: counter + tnum].reshape(tsize)
+            state_dict[name] = torch.nn.Parameter(param)
+            counter += tnum
+        assert counter == len(flat_w), "counter must reach the end of weight vector"
+        return state_dict
+
+    def _get_param_shapes(self):
+        return [
+            (name, param.shape, param.numel())
+            for name, param in self.named_parameters()
+        ]
 
     def getWaveform(self, cc: Tensor = None, tc: Tensor = None, pulse_length: int = 1, nn_output: Tensor = None,
                     use_window: bool = False, scale: bool = False) -> Tensor:
@@ -211,7 +257,7 @@ class GeneratorModel(LightningModule):
         # Get the STFT either from the clutter, target, and pulse length or directly from the neural net
         full_stft = self.forward(cc, tc, pulse_length) if nn_output is None else nn_output
         if scale:
-            new_fft_sz = int(2**(ceil(log2(pulse_length))))
+            new_fft_sz = int(2 ** (ceil(log2(pulse_length))))
             gen_waveform = torch.zeros((full_stft.shape[0], self.n_ants, new_fft_sz), dtype=torch.complex64,
                                        device=self.device)
         else:
@@ -230,6 +276,7 @@ class GeneratorModel(LightningModule):
             else:
                 # This is for training purposes
                 g1 = torch.fft.fft(torch.istft(complex_stft, stft_win, hop_length=self.hop,
+                                               window=torch.ones(self.stft_win_sz, device=self.device),
                                                return_complex=True), self.fft_sz, dim=-1)
             g1 = g1 / torch.sqrt(torch.sum(g1 * torch.conj(g1), dim=1))[:, None]  # Unit energy calculation
             if scale:

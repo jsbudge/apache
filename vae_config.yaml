@@ -48,7 +48,7 @@ dataset_params:
   fft_sz: 4096
   num_workers: 0
   pin_memory: False
-  train_split: 30000
+  train_split: 128
   val_split: 128
   single_example: False
   mu: 0.
@@ -72,6 +72,8 @@ wave_exp_params:
   kld_weight: .39
   log_epoch: 10
   is_tuning: False
+  save_model: True
+  loss_landscape: False
   patience: 15
 
 model_params:
@@ -85,7 +87,7 @@ model_params:
 
 train_params:
   log_dir: ./logs
-  max_epochs: 100
+  max_epochs: 300
 
 compression_params:
   in_channels: 2

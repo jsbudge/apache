@@ -1,6 +1,4 @@
 import numpy as np
-from loss_landscapes import GeneralModelWrapper
-
 from simulib.simulation_functions import genPulse, findPowerOf2, db
 import matplotlib.pyplot as plt
 from scipy.signal import stft, istft
@@ -13,8 +11,6 @@ from dataloaders import WaveDataModule
 from experiment import GeneratorExperiment
 from models import BetaVAE, InfoVAE, WAE_MMD
 from waveform_model import GeneratorModel, init_weights
-from loss_landscapes.metrics import Loss
-from loss_landscapes import ModelWrapper, random_plane
 
 # pio.renderers.default = 'svg'
 pio.renderers.default = 'browser'
@@ -25,29 +21,6 @@ TAC = 125e6
 DTR = np.pi / 180
 inch_to_m = .0254
 m_to_ft = 3.2808
-
-
-class GeneratorLoss(Loss):
-    """ Computes a specified loss function over specified input-output pairs. """
-
-    def __init__(self, loss_fn, inputs: list, target: list):
-        super().__init__(loss_fn, inputs, target)
-        self.loss_fn = loss_fn
-        self.inputs = inputs
-        self.target = target
-
-    def __call__(self, model_wrapper: ModelWrapper) -> float:
-        return self.loss_fn(model_wrapper.forward(*self.inputs), *self.target).item()
-
-
-class GModelWrapper(ModelWrapper):
-    def __init__(self, model, modules: list, forward_fn):
-        super().__init__(modules)
-        self.model = model
-        self.forward_fn = forward_fn
-
-    def forward(self, *x):
-        return self.forward_fn(*x)
 
 
 def force_cudnn_initialization():
@@ -90,7 +63,7 @@ if __name__ == '__main__':
             print(exc)
 
     fft_len = config['generate_data_settings']['fft_sz']
-    nr = 5000 # int((config['perf_params']['vehicle_slant_range_min'] * 2 / c0 - 1 / TAC) * fs)
+    nr = 5000  # int((config['perf_params']['vehicle_slant_range_min'] * 2 / c0 - 1 / TAC) * fs)
 
     # Get the VAE set up
     print('Setting up model...')
@@ -127,18 +100,23 @@ if __name__ == '__main__':
                       log_every_n_steps=config['exp_params']['log_epoch'],
                       strategy='ddp', gradient_clip_val=.5, callbacks=
                       [EarlyStopping(monitor='loss', patience=config['wave_exp_params']['patience'],
-                    check_finite=True), StochasticWeightAveraging(swa_lrs=1e-2)])
+                                     check_finite=True), StochasticWeightAveraging(swa_lrs=1e-2)])
 
     print("======= Training =======")
     trainer.fit(experiment, datamodule=data)
 
     if trainer.global_rank == 0:
         with torch.no_grad():
+            wave_mdl.to(device)
             wave_mdl.eval()
 
             cc, tc, cs, ts, _ = next(iter(data.train_dataloader()))
+            cc = cc.to(device)
+            tc = tc.to(device)
+            cs = cs.to(device)
+            ts = ts.to(device)
 
-            waves = wave_mdl.getWaveform(cc, tc, [nr]).data.numpy()
+            waves = wave_mdl.getWaveform(cc, tc, nr).cpu().data.numpy()
             print('Loaded waveforms...')
 
             clutter = cs.data.numpy()
@@ -187,7 +165,7 @@ if __name__ == '__main__':
             plt.legend(['Waveform 1', 'Waveform 2', 'Cross Correlation', 'Linear Chirp'])
             plt.xlabel('Lag')
 
-            waves = wave_mdl.getWaveform(cc, tc, [nr], scale=True).data.numpy()
+            waves = wave_mdl.getWaveform(cc, tc, nr, scale=True).cpu().data.numpy()
 
             plt.figure('Time Series')
             wave1 = waves.copy()
@@ -207,19 +185,9 @@ if __name__ == '__main__':
 
             plt.show()
 
-            mdl_wrap = GModelWrapper(
-                wave_mdl, list(wave_mdl.modules()), forward_fn=wave_mdl.forward
-            )
-            test = GeneratorLoss(wave_mdl.loss_function, [cc, tc, [nr]], [cs, ts])
-
-            loss_plane = random_plane(mdl_wrap, test)
-
         if trainer.is_global_zero:
             try:
-                torch.save(wave_mdl.state_dict(), './model/wave_model.state')
+                wave_mdl.save('./model')
                 print('Model saved to disk.')
             except Exception as e:
                 print(f'Model not saved: {e}')
-        print('Running loss landscape...')
-
-

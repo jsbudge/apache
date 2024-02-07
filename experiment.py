@@ -224,45 +224,28 @@ class GeneratorExperiment(pl.LightningModule):
         self.params = params
         self.curr_device = None
         self.hold_graph = False
-        try:
+        self.optim_path = []
+        if 'retain_first_backpass' in self.params:
             self.hold_graph = self.params['retain_first_backpass']
-        except:
-            pass
 
     def forward(self, clutter: Tensor, target: Tensor, pulse_length: int) -> Tensor:
         return self.model(clutter, target, pulse_length)
 
     def training_step(self, batch, batch_idx):
-        clutter_cov, target_cov, clutter_spec, target_spec, pulse_length = batch
-        self.curr_device = clutter_cov.device
-        self.automatic_optimization = True
-
-        results = self.forward(clutter_cov, target_cov, pulse_length=pulse_length)
-        train_loss = self.model.loss_function(results, clutter_spec, target_spec)
-
-        self.log_dict({key: val.item() for key, val in train_loss.items()}, sync_dist=True, prog_bar=True)
-
+        train_loss = self.train_val_get(batch, batch_idx)
         return train_loss['loss']
-    
-    '''def on_fit_start(self) -> None:
-        if self.trainer.is_global_zero and not self.params['is_tuning']:
-            sample = torch.rand((1, 2, 32, 32))
-            self.logger.add_graph(self.model, (sample, sample))'''
 
-    def validation_step(self, batch, batch_idx, optimizer_idx=0):
-        clutter_cov, target_cov, clutter_spec, target_spec, pulse_length = batch
-        self.curr_device = clutter_cov.device
-        self.automatic_optimization = True
-
-        results = self.forward(clutter_cov, target_cov, pulse_length=pulse_length)
-        train_loss = self.model.loss_function(results, clutter_spec, target_spec)
-
-        self.log_dict({key: val.item() for key, val in train_loss.items()}, sync_dist=True, prog_bar=True)
+    def validation_step(self, batch, batch_idx):
+        self.train_val_get(batch, batch_idx)
 
     def on_validation_end(self) -> None:
-        if self.trainer.is_global_zero and not self.params['is_tuning']:
-            torch.save(self.model.state_dict(), './model/waveform_model.state')
+        if self.trainer.is_global_zero and not self.params['is_tuning'] and self.params['save_model']:
+            self.model.save('./model')
             print('Model saved to disk.')
+
+    def on_train_epoch_end(self) -> None:
+        if self.trainer.is_global_zero and not self.params['is_tuning'] and self.params['loss_landscape']:
+            self.optim_path.append(self.model.get_flat_params())
 
     def configure_optimizers(self):
         optimizer = optim.Adam(self.model.parameters(),
@@ -277,6 +260,17 @@ class GeneratorExperiment(pl.LightningModule):
         scheds = [scheduler]
 
         return optims, scheds
+
+    def train_val_get(self, batch, batch_idx):
+        clutter_cov, target_cov, clutter_spec, target_spec, pulse_length = batch
+        self.curr_device = clutter_cov.device
+        self.automatic_optimization = True
+
+        results = self.forward(clutter_cov, target_cov, pulse_length=pulse_length)
+        train_loss = self.model.loss_function(results, clutter_spec, target_spec)
+
+        self.log_dict({key: val.item() for key, val in train_loss.items()}, sync_dist=True, prog_bar=True)
+        return train_loss
 
 
 class RCSExperiment(pl.LightningModule):
