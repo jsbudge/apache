@@ -38,7 +38,7 @@ dataset_params:
   fft_sz: 4096
   num_workers: 0
   pin_memory: False
-  train_split: 10000
+  train_split: 20000
   val_split: 128
   single_example: False
   # These values are taken from a sampling of data
@@ -81,4 +81,4 @@ model_params:
 
 train_params:
   log_dir: ./logs
-  max_epochs: 30
+  max_epochs: 100

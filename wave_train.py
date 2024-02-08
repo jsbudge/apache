@@ -54,7 +54,7 @@ if __name__ == '__main__':
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     # torch.cuda.empty_cache()
 
-    seed_everything(123, workers=True)
+    seed_everything(133, workers=True)
 
     with open('./vae_config.yaml', 'r') as file:
         try:
@@ -97,7 +97,7 @@ if __name__ == '__main__':
     logger = loggers.TensorBoardLogger(config['train_params']['log_dir'],
                                        name="WaveModel")
     trainer = Trainer(logger=logger, max_epochs=config['train_params']['max_epochs'],
-                      log_every_n_steps=config['exp_params']['log_epoch'], devices=1,
+                      log_every_n_steps=config['exp_params']['log_epoch'],
                       strategy='ddp', gradient_clip_val=.5, callbacks=
                       [EarlyStopping(monitor='loss', patience=config['wave_exp_params']['patience'],
                                      check_finite=True), StochasticWeightAveraging(swa_lrs=1e-2)])

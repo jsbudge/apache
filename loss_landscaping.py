@@ -16,23 +16,20 @@ from models import BetaVAE, InfoVAE, WAE_MMD
 from waveform_model import GeneratorModel
 from data_converter.SDRParsing import load
 from tqdm import tqdm
+from scipy.interpolate import RegularGridInterpolator
 
 # pio.renderers.default = 'svg'
 pio.renderers.default = 'browser'
 
-RES = 30
-# Controls the margin from the optim starting point to the edge of the graph.
-# The value is a multiplier on the distance between the optim start and end
-MARGIN = 0.9
 
-
-def dim_reduce(params_path, reduction_method, seed=43):
-    """Init a dimensionality reduction object.
-
-    Args:
-        params_path: list of full-dimensional flattened parameters from training.
-        reduction_method: reduction method, e.g. "pca", "random"
-        seed: seed for reproducible experiments.
+def dim_reduce(params_path: list, reduction_method: str = 'pca', seed: int = 43) -> dict:
+    """
+    Reduce the dimensions of a parameter path from a GeneratorModel object.
+    :param params_path: list of weights and biases from a GeneratorModel, flattened to be in one dimension.
+    :param reduction_method: {'pca', 'random'} Applies the reduction method. If PCA, uses PCA,
+    else picks a random direction.
+    :param seed: Seed integer used in the random states for reduction methods. Only for reproducability.
+    :return: dict with directions for reduced dimension projection as well as the optimization path in 2d.
     """
     optim_path_matrix = np.vstack([np.array(tensor.cpu()) for tensor in params_path])
     reduce_dict = {'optim_path': optim_path_matrix}
@@ -58,33 +55,24 @@ def dim_reduce(params_path, reduction_method, seed=43):
 
 
 class LossGrid:
-    """The loss grid class that holds the values of 2D slice from the loss landscape."""
 
     def __init__(
             self,
-            optim_path,
-            model,
-            cc, tc, cs, ts,
-            path_2d,
-            directions,
-            device,
-            res=RES,
+            optim_path: list,
+            model: GeneratorModel,
+            cc: torch.Tensor, tc: torch.Tensor, cs: torch.Tensor, ts: torch.Tensor,
+            path_2d: np.ndarray,
+            directions: np.ndarray,
+            device: str,
+            res: int = 30,
+            margin: float = .3,
     ):
-        """Init a loss grid object.
-
-        Args:
-            optim_path: The full-dimensional flattened parameters during training.
-            model: The model for loss evaluation.
-            path_2d: The list of 2D coordinates.
-            directions: The 2D directions/axes.
-            res (optional): Resolution of the grid. Defaults to RES.
-        """
         self.path_2d = path_2d
         self.optim_point = optim_path[-1]
         self.optim_point_2d = path_2d[-1]
         self.device = device
 
-        alpha = self._compute_stepsize(res)
+        alpha = self._compute_stepsize(res, margin)
         model.to(device)
 
         # Build the loss grid
@@ -173,10 +161,17 @@ class LossGrid:
         y = j * alpha + self.optim_point_2d[1]
         return x, y
 
-    def _compute_stepsize(self, res):
+    def _compute_stepsize(self, res, margin):
+        """
+        Compute the step size. This is calculated to span at least
+        the distance of the optimization path, plus a margin.
+        :param res: Number of steps on either side of optimization path.
+        :param margin: Margin outside of optimization path in the plane.
+        :return: Stepsize for plane directions.
+        """
         dist_2d = self.path_2d[-1] - self.path_2d[0]
         dist = (dist_2d[0] ** 2 + dist_2d[1] ** 2) ** 0.5
-        return dist * (1 + MARGIN) / res
+        return dist * (1 + margin) / res
 
 
 if __name__ == '__main__':
@@ -229,7 +224,7 @@ if __name__ == '__main__':
     trainer.fit(experiment, datamodule=data)
 
     if trainer.global_rank == 0:
-        reduced_dict = dim_reduce(experiment.optim_path, 'pca', seed=43)
+        reduced_dict = dim_reduce(experiment.optim_path, 'pca')
         path_2d = reduced_dict["path_2d"]
         directions = reduced_dict["reduced_dirs"]
 
@@ -246,6 +241,8 @@ if __name__ == '__main__':
             path_2d,
             directions,
             device,
+            res=30,
+            margin=.3,
         )
 
         plt.figure('Loss Landscape')
@@ -258,9 +255,12 @@ if __name__ == '__main__':
         scaled_grid = loss_grid.grid.flatten() - loss_grid.grid.min()
         scaled_grid /= scaled_grid.max()
 
+        path_interp = RegularGridInterpolator((loss_grid.coords[0], loss_grid.coords[1]), loss_grid.grid)
+        zs = path_interp(path_2d, method='cubic')
+
         fig = go.Figure(data=[
             go.Mesh3d(x=xx.flatten(), y=yy.flatten(), z=loss_grid.grid.flatten(),
-                      alphahull=-1, colorscale='Agsunset',
-                      intensity=scaled_grid)])
+                      alphahull=-1, colorscale='Turbo',
+                      intensity=scaled_grid), go.Scatter3d(x=path_2d[:, 0], y=path_2d[:, 1], z=zs)])
         fig.show()
         plt.show()

@@ -192,8 +192,8 @@ class GeneratorModel(LightningModule):
         ortho_loss = max(torch.tensor(0), 2 * ortho_loss - 1)
 
         # Use sidelobe and orthogonality as regularization params for target loss
-        loss = torch.sqrt(target_loss**2 + sidelobe_loss**2 + ortho_loss**2)
-        # loss = torch.sqrt(target_loss * (1 + sidelobe_loss + ortho_loss))
+        # loss = torch.sqrt(target_loss**2 + sidelobe_loss**2 + ortho_loss**2)
+        loss = torch.sqrt(torch.abs(target_loss * (1 + sidelobe_loss + ortho_loss)))
 
         return {'loss': loss, 'target_loss': target_loss,
                 'sidelobe_loss': sidelobe_loss, 'ortho_loss': ortho_loss}
