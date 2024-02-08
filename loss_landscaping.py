@@ -23,7 +23,7 @@ pio.renderers.default = 'browser'
 RES = 30
 # Controls the margin from the optim starting point to the edge of the graph.
 # The value is a multiplier on the distance between the optim start and end
-MARGIN = 0.3
+MARGIN = 0.9
 
 
 def dim_reduce(params_path, reduction_method, seed=43):
@@ -78,7 +78,6 @@ class LossGrid:
             path_2d: The list of 2D coordinates.
             directions: The 2D directions/axes.
             res (optional): Resolution of the grid. Defaults to RES.
-            tqdm_disable (optional): Whether to disable progress bar. Defaults to False.
         """
         self.path_2d = path_2d
         self.optim_point = optim_path[-1]
@@ -261,11 +260,7 @@ if __name__ == '__main__':
 
         fig = go.Figure(data=[
             go.Mesh3d(x=xx.flatten(), y=yy.flatten(), z=loss_grid.grid.flatten(),
-                      alphahull=-1, colorscale=[[0, 'gold'],
-                                                [.5,
-                                                 'mediumturquoise'],
-                                                [1,
-                                                 'magenta']],
+                      alphahull=-1, colorscale='Agsunset',
                       intensity=scaled_grid)])
         fig.show()
         plt.show()

@@ -97,7 +97,7 @@ if __name__ == '__main__':
     logger = loggers.TensorBoardLogger(config['train_params']['log_dir'],
                                        name="WaveModel")
     trainer = Trainer(logger=logger, max_epochs=config['train_params']['max_epochs'],
-                      log_every_n_steps=config['exp_params']['log_epoch'],
+                      log_every_n_steps=config['exp_params']['log_epoch'], devices=1,
                       strategy='ddp', gradient_clip_val=.5, callbacks=
                       [EarlyStopping(monitor='loss', patience=config['wave_exp_params']['patience'],
                                      check_finite=True), StochasticWeightAveraging(swa_lrs=1e-2)])
@@ -116,7 +116,7 @@ if __name__ == '__main__':
             cs = cs.to(device)
             ts = ts.to(device)
 
-            waves = wave_mdl.getWaveform(cc, tc, nr).cpu().data.numpy()
+            waves = wave_mdl.getWaveform(cc, tc, [nr]).cpu().data.numpy()
             print('Loaded waveforms...')
 
             clutter = cs.data.numpy()
@@ -165,7 +165,7 @@ if __name__ == '__main__':
             plt.legend(['Waveform 1', 'Waveform 2', 'Cross Correlation', 'Linear Chirp'])
             plt.xlabel('Lag')
 
-            waves = wave_mdl.getWaveform(cc, tc, nr, scale=True).cpu().data.numpy()
+            waves = wave_mdl.getWaveform(cc, tc, [nr], scale=True).cpu().data.numpy()
 
             plt.figure('Time Series')
             wave1 = waves.copy()

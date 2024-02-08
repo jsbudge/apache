@@ -192,8 +192,8 @@ class GeneratorModel(LightningModule):
         ortho_loss = max(torch.tensor(0), 2 * ortho_loss - 1)
 
         # Use sidelobe and orthogonality as regularization params for target loss
-        # loss = torch.sqrt(target_loss**2 + sidelobe_loss**2 + ortho_loss**2)
-        loss = torch.sqrt(target_loss * (1 + sidelobe_loss + ortho_loss))
+        loss = torch.sqrt(target_loss**2 + sidelobe_loss**2 + ortho_loss**2)
+        # loss = torch.sqrt(target_loss * (1 + sidelobe_loss + ortho_loss))
 
         return {'loss': loss, 'target_loss': target_loss,
                 'sidelobe_loss': sidelobe_loss, 'ortho_loss': ortho_loss}
@@ -239,7 +239,7 @@ class GeneratorModel(LightningModule):
             for name, param in self.named_parameters()
         ]
 
-    def getWaveform(self, cc: Tensor = None, tc: Tensor = None, pulse_length: int = 1, nn_output: Tensor = None,
+    def getWaveform(self, cc: Tensor = None, tc: Tensor = None, pulse_length: [int, list] = 1, nn_output: Tensor = None,
                     use_window: bool = False, scale: bool = False) -> Tensor:
         """
         Given a clutter and target spectrum, produces a waveform FFT.

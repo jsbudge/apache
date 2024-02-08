@@ -22,10 +22,8 @@ class VAExperiment(pl.LightningModule):
         self.params = params
         self.curr_device = None
         self.hold_graph = False
-        try:
+        if 'retain_first_backpass' in params:
             self.hold_graph = self.params['retain_first_backpass']
-        except:
-            pass
 
     def forward(self, input: Tensor, **kwargs) -> Tensor:
         return self.model(input, **kwargs)
@@ -82,7 +80,7 @@ class VAExperiment(pl.LightningModule):
                               normalize=True,
                               nrow=12)
 
-            try:
+            with contextlib.suppress(Warning):
                 samples = self.model.sample(144,
                                             self.curr_device,
                                             labels=test_label)
@@ -95,27 +93,21 @@ class VAExperiment(pl.LightningModule):
                                                f"{self.logger.name}_Epoch_{self.current_epoch}.png"),
                                   normalize=True,
                                   nrow=12)
-            except Warning:
-                pass
 
     def configure_optimizers(self):
 
-        optims = []
         scheds = []
 
         optimizer = optim.Adam(self.model.parameters(),
                                lr=self.params['LR'],
                                weight_decay=self.params['weight_decay'])
-        optims.append(optimizer)
+        optims = [optimizer]
         # Check if more than 1 optimizer is required (Used for adversarial training)
-        try:
+        with contextlib.suppress(Exception):
             if self.params['LR_2'] is not None:
                 optimizer2 = optim.Adam(getattr(self.model, self.params['submodel']).parameters(),
                                         lr=self.params['LR_2'])
                 optims.append(optimizer2)
-        except:
-            pass
-
         try:
             if self.params['scheduler_gamma'] is not None:
                 scheduler = optim.lr_scheduler.ExponentialLR(optims[0],
@@ -123,93 +115,13 @@ class VAExperiment(pl.LightningModule):
                 scheds.append(scheduler)
 
                 # Check if another scheduler is required for the second optimizer
-                try:
+                with contextlib.suppress(Exception):
                     if self.params['scheduler_gamma_2'] is not None:
                         scheduler2 = optim.lr_scheduler.ExponentialLR(optims[1],
                                                                       gamma=self.params['scheduler_gamma_2'])
                         scheds.append(scheduler2)
-                except:
-                    pass
                 return optims, scheds
-        except:
-            return optims
-
-
-class AExperiment(pl.LightningModule):
-
-    def __init__(self,
-                 vae_model: pl.LightningModule,
-                 params: dict) -> None:
-        super(AExperiment, self).__init__()
-
-        self.model = vae_model
-        self.params = params
-        self.curr_device = None
-        self.hold_graph = False
-        try:
-            self.hold_graph = self.params['retain_first_backpass']
-        except:
-            pass
-
-    def forward(self, input: Tensor, **kwargs) -> Tensor:
-        return self.model(input, **kwargs)
-
-    def training_step(self, batch, batch_idx, optimizer_idx=0):
-        real_img, labels = batch
-        self.curr_device = real_img.device
-
-        results = self.forward(real_img, labels=labels)
-        train_loss = self.model.loss_function(*results)
-
-        self.log_dict({key: val.item() for key, val in train_loss.items()}, sync_dist=True)
-
-        return train_loss['loss']
-
-    def validation_step(self, batch, batch_idx, optimizer_idx=0):
-        real_img, labels = batch
-        self.curr_device = real_img.device
-
-        results = self.forward(real_img, labels=labels)
-        val_loss = self.model.loss_function(*results,
-                                            optimizer_idx=optimizer_idx,
-                                            batch_idx=batch_idx)
-
-        self.log_dict({f"val_{key}": val.item() for key, val in val_loss.items()}, sync_dist=True)
-
-    def configure_optimizers(self):
-
-        optims = []
-        scheds = []
-
-        optimizer = optim.Adam(self.model.parameters(),
-                               lr=self.params['LR'],
-                               weight_decay=self.params['weight_decay'])
-        optims.append(optimizer)
-        # Check if more than 1 optimizer is required (Used for adversarial training)
-        try:
-            if self.params['LR_2'] is not None:
-                optimizer2 = optim.Adam(getattr(self.model, self.params['submodel']).parameters(),
-                                        lr=self.params['LR_2'])
-                optims.append(optimizer2)
-        except:
-            pass
-
-        try:
-            if self.params['scheduler_gamma'] is not None:
-                scheduler = optim.lr_scheduler.ExponentialLR(optims[0],
-                                                             gamma=self.params['scheduler_gamma'])
-                scheds.append(scheduler)
-
-                # Check if another scheduler is required for the second optimizer
-                try:
-                    if self.params['scheduler_gamma_2'] is not None:
-                        scheduler2 = optim.lr_scheduler.ExponentialLR(optims[1],
-                                                                      gamma=self.params['scheduler_gamma_2'])
-                        scheds.append(scheduler2)
-                except:
-                    pass
-                return optims, scheds
-        except:
+        except Exception:
             return optims
 
 

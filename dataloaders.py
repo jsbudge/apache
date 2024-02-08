@@ -112,8 +112,9 @@ class RCSDataset(Dataset):
 
 
 class WaveDataset(Dataset):
-    def __init__(self, root_dir, vae_model, fft_sz, transform=None, spec_transform=None, split=32, single_example=False,
-                 device='cpu', min_pulse_length=1, max_pulse_length=2):
+    def __init__(self, root_dir: str, vae_model, fft_sz: int, transform=None, spec_transform=None, split: int = 32,
+                 single_example: bool = False, device: str = 'cpu', min_pulse_length: int = 1,
+                 max_pulse_length: int = 2, mu: float = 0., var: float = 1.):
         assert Path(root_dir).is_dir()
 
         clutter_cov_files = glob(f'{root_dir}/clutter_*.cov')
@@ -136,9 +137,15 @@ class WaveDataset(Dataset):
             ccdata = np.concatenate([ccdata, tmp_cdata[ccs]])
             csdata = np.concatenate([csdata, np.fromfile(clutter_spec_files[i], dtype=np.float32).reshape(
                 (-1, fft_sz, 2))[ccs]])
+
+        # Scale the data to get unit variance (this preserves phase, not magnitude)
         ccdata = ccdata[:split, ...]
-        csdata = csdata[:split, ...]
+        ccdata = (ccdata - mu) / var
         tcdata = tcdata[:split, ...]
+        tcdata = (tcdata - mu) / var
+
+        # Spectrum doesn't need normalization as that occurs during training
+        csdata = csdata[:split, ...]
         tsdata = tsdata[:split, ...]
         ccdata = ccdata.swapaxes(1, 3)
         tcdata = tcdata.swapaxes(1, 3)
@@ -296,16 +303,18 @@ class WaveDataModule(LightningDataModule):
         self.max_pulse_length = max_pulse_length
         self.device = device
         self.fft_sz = fft_sz
+        self.mu = mu
+        self.var = var
 
     def setup(self, stage: Optional[str] = None) -> None:
         self.train_dataset = WaveDataset(self.data_dir, self.vae_model, self.fft_sz, split=self.train_split,
                                          single_example=self.single_example, min_pulse_length=self.min_pulse_length,
                                          max_pulse_length=self.max_pulse_length,
-                                         device=self.device)
+                                         device=self.device, mu=self.mu, var=self.var)
 
         self.val_dataset = WaveDataset(self.data_dir, self.vae_model, self.fft_sz, split=self.val_split,
                                        single_example=self.single_example, min_pulse_length=self.min_pulse_length,
-                                       max_pulse_length=self.max_pulse_length, device=self.device)
+                                       max_pulse_length=self.max_pulse_length, device=self.device, mu=self.mu, var=self.var)
 
     def train_dataloader(self) -> DataLoader:
         return DataLoader(

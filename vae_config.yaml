@@ -15,16 +15,6 @@ apache_params:
   az_min_bw: .0130899
   el_min_bw: .034906
 
-perf_params:
-  dismount_slant_range_min: 500
-  dismount_slant_range_max: 15000
-  vehicle_slant_range_min: 500
-  vehicle_slant_range_max: 25000
-  alt_min: 30.48
-  alt_max: 1524.
-  az_min_bw: .0130899
-  el_min_bw: .034906
-
 settings:
   cpi_len: 32
   batch_sz: 128
@@ -48,13 +38,15 @@ dataset_params:
   fft_sz: 4096
   num_workers: 0
   pin_memory: False
-  train_split: 128
+  train_split: 10000
   val_split: 128
   single_example: False
-  mu: 0.
-  var: 1.
+  # These values are taken from a sampling of data
+  mu: 0.023397775
+  var: 0.15680195
   noise_level: .1
 
+# This is for setting up training of autoencoder
 exp_params:
   LR: 0.0005
   weight_decay: 0.0
@@ -65,6 +57,7 @@ exp_params:
   model_type: WAE_MMD
   is_tuning: False
 
+# For training of wavemodel
 wave_exp_params:
   LR: 0.0000001
   weight_decay: 0.08
@@ -76,6 +69,7 @@ wave_exp_params:
   loss_landscape: False
   patience: 15
 
+# This refers to the autoencoder compression params
 model_params:
   in_channels: 2
   latent_dim: 50
@@ -87,9 +81,4 @@ model_params:
 
 train_params:
   log_dir: ./logs
-  max_epochs: 300
-
-compression_params:
-  in_channels: 2
-  latent_dim: 4
-  hidden_dims: 256
+  max_epochs: 30

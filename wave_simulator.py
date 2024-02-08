@@ -126,7 +126,7 @@ else:
     full_scan = int(sim_settings['az_bw'] / sim_settings['scan_rate'] * sim_settings['prf'])
     # Get parameters for the Apache specs
     req_slant_range = sim_settings['standoff_range']
-    req_alt = wave_config['perf_params']['alt_max']
+    req_alt = wave_config['apache_params']['alt_max']
     ground_range = np.sqrt(req_slant_range ** 2 - req_alt ** 2)
     req_dep_ang = np.arccos(req_alt / req_slant_range) + sim_settings['el_bw'] * DTR * 9
     ngpssam = int(sim_settings['collect_duration'] * GPS_UPDATE_RATE_HZ)
