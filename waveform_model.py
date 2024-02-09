@@ -44,7 +44,7 @@ class GeneratorModel(LightningModule):
         self.fft_sz = fft_sz
         self.stft_win_sz = stft_win_sz
         self.hop = stft_win_sz // 4
-        self.bin_bw = 52
+        self.bin_bw = 192
         self.clutter_latent_size = clutter_latent_size
         self.target_latent_size = target_latent_size
 
@@ -69,7 +69,7 @@ class GeneratorModel(LightningModule):
 
         # LSTM layer to expand the network output to the correct size for pulse length
         self.prev_stft_stack = nn.Sequential(
-            nn.LSTM(stack_output_sz, stack_output_sz, num_layers=1, batch_first=True),
+            nn.LSTM(stack_output_sz, stack_output_sz, num_layers=4, batch_first=True),
         )
 
         # Output is Nb x Nchan x stft_win_sz x n_frames
@@ -84,30 +84,49 @@ class GeneratorModel(LightningModule):
             nn.LeakyReLU(),
             nn.Conv2d(channel_sz, channel_sz, 3, 1, 1),
             nn.LeakyReLU(),
+            nn.BatchNorm2d(channel_sz),
             nn.ConvTranspose2d(channel_sz, channel_sz, kernel_size=(4, 3), stride=(2, 1), padding=1),
             nn.LeakyReLU(),
             nn.ConvTranspose2d(channel_sz, channel_sz, kernel_size=(4, 3), stride=(2, 1), padding=1),
             nn.LeakyReLU(),
-            STFTAttention(channel_sz),
+            # STFTAttention(channel_sz),
         )
         # self.backbone.apply(init_weights)
 
         self.deep_layers = nn.ModuleList()
         self.deep_layers.extend(
             nn.Sequential(
+                nn.Conv2d(channel_sz, channel_sz, nl * 2 + 3, 1, nl + 1),
+                nn.LeakyReLU(),
+                nn.Conv2d(channel_sz, channel_sz, nl * 2 + 3, 1, nl + 1),
+                nn.LeakyReLU(),
+                nn.Conv2d(channel_sz, channel_sz, nl * 2 + 3, 1, nl + 1),
+                nn.LeakyReLU(),
+                nn.Conv2d(channel_sz, channel_sz, nl * 2 + 3, 1, nl + 1),
+                nn.LeakyReLU(),
                 nn.BatchNorm2d(channel_sz),
-                nn.Conv2d(channel_sz, channel_sz, nl * 2 + 3, 1, nl + 1),
-                nn.LeakyReLU(),
-                nn.Conv2d(channel_sz, channel_sz, nl * 2 + 3, 1, nl + 1),
-                nn.LeakyReLU(),
-                nn.Conv2d(channel_sz, channel_sz, nl * 2 + 3, 1, nl + 1),
-                nn.LeakyReLU(),
-                nn.Conv2d(channel_sz, channel_sz, nl * 2 + 3, 1, nl + 1),
-                nn.LeakyReLU(),
             )
             for nl in range(15, -1, -3)
         )
         for d in self.deep_layers:
+            d.apply(init_weights)
+
+        self.att_layers = nn.ModuleList()
+        self.att_layers.extend(
+            nn.Sequential(
+                nn.Conv2d(channel_sz, channel_sz, nl * 2 + 3, 1, nl + 1),
+                nn.LeakyReLU(),
+                nn.Conv2d(channel_sz, channel_sz, nl * 2 + 3, 1, nl + 1),
+                nn.LeakyReLU(),
+                nn.Conv2d(channel_sz, channel_sz, nl * 2 + 3, 1, nl + 1),
+                nn.LeakyReLU(),
+                nn.BatchNorm2d(channel_sz),
+                nn.Conv2d(channel_sz, channel_sz, nl * 2 + 3, 1, nl + 1),
+                nn.Sigmoid(),
+            )
+            for nl in range(15, -1, -3)
+        )
+        for d in self.att_layers:
             d.apply(init_weights)
 
         self.final = nn.Sequential(
@@ -117,6 +136,8 @@ class GeneratorModel(LightningModule):
         self.final.apply(init_weights)
 
         self.stack_output_sz = stack_output_sz
+
+        self.gamma = nn.Parameter(torch.tensor(1., device=self.device))
 
     def forward(self, clutter: Tensor, target: Tensor, pulse_length: [int]) -> Tensor:
         # Use only the first pulse_length because it gives batch_size random numbers as part of the dataloader
@@ -132,8 +153,8 @@ class GeneratorModel(LightningModule):
         lstm_stack = self.prev_stft_stack(ct_stack)[0]
         x = self.backbone(lstm_stack.reshape(-1, 1, self.stack_output_sz, n_frames))
         # x0 = self.backbone(ct_stack)
-        for d in self.deep_layers:
-            x = torch.add(x, d(x))
+        for d, a in zip(self.deep_layers, self.att_layers):
+            x = d(x) + self.gamma * a(x)
         return self.final(x)
 
     def loss_function(self, *args, **kwargs) -> dict:
@@ -189,11 +210,11 @@ class GeneratorModel(LightningModule):
 
         # Apply hinge loss to sidelobes
         sidelobe_loss = max(torch.tensor(0), 2 * sidelobe_loss - 1)
-        ortho_loss = max(torch.tensor(0), 2 * ortho_loss - 1)
+        ortho_loss = max(torch.tensor(0), ortho_loss - .3)
 
         # Use sidelobe and orthogonality as regularization params for target loss
-        # loss = torch.sqrt(target_loss**2 + sidelobe_loss**2 + ortho_loss**2)
-        loss = torch.sqrt(torch.abs(target_loss * (1 + sidelobe_loss + ortho_loss)))
+        loss = torch.sqrt(target_loss**2 + sidelobe_loss**2 + ortho_loss**2)
+        # loss = torch.sqrt(torch.abs(target_loss * (1 + sidelobe_loss + ortho_loss)))
 
         return {'loss': loss, 'target_loss': target_loss,
                 'sidelobe_loss': sidelobe_loss, 'ortho_loss': ortho_loss}
@@ -205,6 +226,12 @@ class GeneratorModel(LightningModule):
                          'clutter_latent_size': self.clutter_latent_size,
                          'target_latent_size': self.target_latent_size, 'n_ants': self.n_ants,
                          'state_file': f'{fpath}/{model_name}_wave_model.state'}, f)
+
+    def getWindow(self, bin_bw):
+        win_func = torch.zeros(self.stft_win_sz, device=self.device)
+        win_func[:bin_bw // 2] = torch.windows.hann(bin_bw, device=self.device)[-bin_bw // 2:]
+        win_func[-bin_bw // 2:] = torch.windows.hann(bin_bw, device=self.device)[:bin_bw // 2]
+        return win_func
 
     def get_flat_params(self):
         """Get flattened and concatenated params of the model."""
@@ -268,10 +295,9 @@ class GeneratorModel(LightningModule):
 
             # Apply a window if wanted for actual simulation
             if use_window:
-                win_func = torch.zeros(self.stft_win_sz, device=self.device)
-                win_func[:self.bin_bw // 2] = torch.windows.hann(self.bin_bw, device=self.device)[-self.bin_bw // 2:]
-                win_func[-self.bin_bw // 2:] = torch.windows.hann(self.bin_bw, device=self.device)[:self.bin_bw // 2]
-                g1 = torch.fft.fft(torch.istft(complex_stft, stft_win, hop_length=self.hop, window=win_func,
+                g1 = torch.fft.fft(torch.istft(complex_stft * self.getWindow(self.bin_bw)[None, :, None],
+                                               stft_win, hop_length=self.hop,
+                                               window=torch.ones(self.stft_win_sz, device=self.device),
                                                return_complex=True, center=False), self.fft_sz, dim=-1)
             else:
                 # This is for training purposes

@@ -116,12 +116,12 @@ if __name__ == '__main__':
             cs = cs.to(device)
             ts = ts.to(device)
 
-            waves = wave_mdl.getWaveform(cc, tc, [nr]).cpu().data.numpy()
+            waves = wave_mdl.getWaveform(cc, tc, [nr], use_window=True).cpu().data.numpy()
             print('Loaded waveforms...')
 
-            clutter = cs.data.numpy()
+            clutter = cs.cpu().data.numpy()
             clutter = normalize(clutter[:, :, 0] + 1j * clutter[:, :, 1])
-            targets = ts.data.numpy()
+            targets = ts.cpu().data.numpy()
             targets = normalize(targets[:, :, 0] + 1j * targets[:, :, 1])
             print('Loaded clutter and target data...')
 
@@ -165,7 +165,7 @@ if __name__ == '__main__':
             plt.legend(['Waveform 1', 'Waveform 2', 'Cross Correlation', 'Linear Chirp'])
             plt.xlabel('Lag')
 
-            waves = wave_mdl.getWaveform(cc, tc, [nr], scale=True).cpu().data.numpy()
+            waves = wave_mdl.getWaveform(cc, tc, [nr], use_window=True, scale=True).cpu().data.numpy()
 
             plt.figure('Time Series')
             wave1 = waves.copy()
@@ -185,7 +185,7 @@ if __name__ == '__main__':
 
             plt.show()
 
-        if trainer.is_global_zero:
+        if trainer.is_global_zero and config['wave_exp_params']['save_model']:
             try:
                 wave_mdl.save('./model')
                 print('Model saved to disk.')
