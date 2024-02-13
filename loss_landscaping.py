@@ -242,7 +242,7 @@ if __name__ == '__main__':
             directions,
             device,
             res=30,
-            margin=.5,
+            margin=1.,
         )
 
         plt.figure('Loss Landscape')
@@ -255,7 +255,8 @@ if __name__ == '__main__':
         scaled_grid = loss_grid.grid.flatten() - loss_grid.grid.min()
         scaled_grid /= scaled_grid.max()
 
-        path_interp = RegularGridInterpolator((loss_grid.coords[0], loss_grid.coords[1]), loss_grid.grid, bounds_error=False, fill_value=0)
+        path_interp = RegularGridInterpolator((loss_grid.coords[0], loss_grid.coords[1]), loss_grid.grid,
+                                              bounds_error=False, fill_value=0)
         zs = path_interp(path_2d, method='cubic')
 
         fig = go.Figure(data=[

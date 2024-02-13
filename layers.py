@@ -163,3 +163,21 @@ class STFTAttention(LightningModule):
         beta = self.value(F.softmax(torch.bmm(g.transpose(1, 2), f), dim=1).unsqueeze(1))
         o = self.gamma * beta + x
         return o.contiguous()
+
+
+class LSTMAttention(nn.Module):
+    def __init__(self):
+        super(LSTMAttention, self).__init__()
+
+    def forward(self, encoder_outputs, decoder_hidden):
+        # encoder_outputs: (batch_size, seq_len, hidden_dim)
+        # decoder_hidden: (batch_size, hidden_dim)
+
+        # Calculate the attention scores.
+        scores = torch.bmm(encoder_outputs, decoder_hidden.unsqueeze(2)).squeeze(2)  # (batch_size, seq_len)
+
+        attn_weights = F.softmax(scores, dim=1)  # (batch_size, seq_len)
+
+        context_vector = torch.bmm(attn_weights.unsqueeze(1), encoder_outputs).squeeze(1)  # (batch_size, hidden_dim)
+
+        return context_vector, attn_weights

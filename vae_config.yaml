@@ -22,6 +22,7 @@ settings:
   bandwidth: 400000000.
   stft_win_sz: 256
   plp: .5
+  warm_start: True
 
 generate_data_settings:
   iterations: 10
@@ -39,7 +40,7 @@ dataset_params:
   num_workers: 0
   pin_memory: False
   train_split: 12800
-  val_split: 128
+  val_split: 32
   single_example: False
   # These values are taken from a sampling of data
   mu: 0.023397775
@@ -66,6 +67,18 @@ wave_exp_params:
   log_epoch: 10
   is_tuning: False
   save_model: True
+  loss_landscape: False
+  patience: 15
+
+# For training of rcs model
+rcs_exp_params:
+  LR: 0.00001
+  weight_decay: 0.08
+  scheduler_gamma: 0.95
+  kld_weight: .39
+  log_epoch: 10
+  is_tuning: False
+  save_model: False
   loss_landscape: False
   patience: 15
 

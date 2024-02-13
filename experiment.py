@@ -199,15 +199,15 @@ class RCSExperiment(pl.LightningModule):
         with contextlib.suppress(Exception):
             self.hold_graph = self.params['retain_first_backpass']
 
-    def forward(self, optical_data: Tensor, sar_data: Tensor, pose_data: Tensor) -> Tensor:
-        return self.model(optical_data, sar_data, pose_data)
+    def forward(self, optical_data: Tensor, pose_data: Tensor) -> Tensor:
+        return self.model(optical_data, pose_data)
 
     def training_step(self, batch, batch_idx):
         opt_img, sar_img, pose = batch
         self.curr_device = opt_img.device
         self.automatic_optimization = True
 
-        results = self.forward(opt_img, sar_img, pose)
+        results = self.forward(opt_img, pose)
         train_loss = self.model.loss_function(results, sar_img)
 
         self.log_dict({key: val.item() for key, val in train_loss.items()}, sync_dist=True)
@@ -219,7 +219,7 @@ class RCSExperiment(pl.LightningModule):
         self.curr_device = opt_img.device
         self.automatic_optimization = True
 
-        results = self.forward(opt_img, sar_img, pose)
+        results = self.forward(opt_img, pose)
         val_loss = self.model.loss_function(results, sar_img)
 
         self.log_dict({f"val_{key}": val.item() for key, val in val_loss.items()}, sync_dist=True)

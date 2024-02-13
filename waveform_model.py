@@ -7,7 +7,7 @@ from pytorch_lightning import LightningModule
 from torch.nn import functional as F
 from numpy import log2, ceil
 from torchvision import transforms
-from layers import RichConvTranspose2d, RichConv2d, Linear2d, SelfAttention, STFTAttention
+from layers import RichConvTranspose2d, RichConv2d, Linear2d, SelfAttention, LSTMAttention
 
 Tensor = TypeVar('torch.tensor')
 
@@ -62,99 +62,94 @@ class GeneratorModel(LightningModule):
             nn.LeakyReLU(),
         )
 
-        self.comb_stack = nn.Sequential(
-            nn.Linear(stack_output_sz * 2, stack_output_sz),
-            nn.LeakyReLU(),
-        )
-
-        # LSTM layer to expand the network output to the correct size for pulse length
-        self.prev_stft_stack = nn.Sequential(
-            nn.LSTM(stack_output_sz, stack_output_sz, num_layers=4, batch_first=True),
-        )
-
         # Output is Nb x Nchan x stft_win_sz x n_frames
         self.backbone = nn.Sequential(
-            nn.Conv2d(1, channel_sz, stack_output_sz // 2 + 1, 1, stack_output_sz // 4),
-            nn.LeakyReLU(),
+            nn.Conv2d(1, channel_sz, stack_output_sz // 4 + 1, 1, stack_output_sz // 8,
+                      padding_mode='reflect'),
+            nn.Tanh(),
             nn.Conv2d(channel_sz, channel_sz, 9, 1, 4),
-            nn.LeakyReLU(),
+            nn.Tanh(),
+            nn.Conv2d(channel_sz, channel_sz, 5, 1, 2),
+            nn.Tanh(),
             nn.Conv2d(channel_sz, channel_sz, 3, 1, 1),
-            nn.LeakyReLU(),
-            nn.Conv2d(channel_sz, channel_sz, 3, 1, 1),
-            nn.LeakyReLU(),
-            nn.Conv2d(channel_sz, channel_sz, 3, 1, 1),
-            nn.LeakyReLU(),
+            nn.Tanh(),
             nn.BatchNorm2d(channel_sz),
-            nn.ConvTranspose2d(channel_sz, channel_sz, kernel_size=(4, 3), stride=(2, 1), padding=1),
-            nn.LeakyReLU(),
-            nn.ConvTranspose2d(channel_sz, channel_sz, kernel_size=(4, 3), stride=(2, 1), padding=1),
-            nn.LeakyReLU(),
-            # STFTAttention(channel_sz),
+            nn.Conv2d(channel_sz, 1, 1, 1, 0),
+            nn.Tanh(),
+
         )
-        # self.backbone.apply(init_weights)
+        self.backbone.apply(init_weights)
 
         self.deep_layers = nn.ModuleList()
         self.deep_layers.extend(
             nn.Sequential(
+                nn.Conv2d(1, channel_sz, nl * 2 + 3, 1, nl + 1),
+                nn.Tanh(),
                 nn.Conv2d(channel_sz, channel_sz, nl * 2 + 3, 1, nl + 1),
-                nn.LeakyReLU(),
+                nn.Tanh(),
                 nn.Conv2d(channel_sz, channel_sz, nl * 2 + 3, 1, nl + 1),
-                nn.LeakyReLU(),
+                nn.Tanh(),
                 nn.Conv2d(channel_sz, channel_sz, nl * 2 + 3, 1, nl + 1),
-                nn.LeakyReLU(),
-                nn.Conv2d(channel_sz, channel_sz, nl * 2 + 3, 1, nl + 1),
-                nn.LeakyReLU(),
+                nn.Tanh(),
                 nn.BatchNorm2d(channel_sz),
+                nn.Conv2d(channel_sz, 1, 1, 1, 0),
+                nn.Tanh(),
             )
             for nl in range(15, -1, -3)
         )
         for d in self.deep_layers:
             d.apply(init_weights)
 
-        self.att_layers = nn.ModuleList()
-        self.att_layers.extend(
-            nn.Sequential(
-                nn.Conv2d(channel_sz, channel_sz, nl * 2 + 3, 1, nl + 1),
-                nn.LeakyReLU(),
-                nn.Conv2d(channel_sz, channel_sz, nl * 2 + 3, 1, nl + 1),
-                nn.LeakyReLU(),
-                nn.Conv2d(channel_sz, channel_sz, nl * 2 + 3, 1, nl + 1),
-                nn.LeakyReLU(),
-                nn.BatchNorm2d(channel_sz),
-                nn.Conv2d(channel_sz, channel_sz, nl * 2 + 3, 1, nl + 1),
-                nn.Sigmoid(),
-            )
-            for nl in range(15, -1, -3)
+        # LSTM layers to expand the network output to the correct size for pulse length
+        self.lstm_layers = nn.ModuleList()
+        self.lstm_layers.extend(
+            nn.LSTM(stack_output_sz, stack_output_sz, batch_first=True)
+            for _ in range(len(self.deep_layers))
         )
-        for d in self.att_layers:
-            d.apply(init_weights)
+
+        self.rnn_layers = nn.ModuleList()
+        self.rnn_layers.extend(
+            nn.LSTM(stack_output_sz * 2, stack_output_sz, batch_first=True)
+            for _ in range(len(self.deep_layers))
+        )
 
         self.final = nn.Sequential(
+            nn.ConvTranspose2d(1, channel_sz, kernel_size=(4, 3), stride=(2, 1), padding=1),
+            nn.Tanh(),
+            nn.ConvTranspose2d(channel_sz, channel_sz, kernel_size=(4, 3), stride=(2, 1), padding=1),
+            nn.Tanh(),
+            nn.Conv2d(channel_sz, channel_sz, 3, 1, 1),
+            nn.Tanh(),
+            nn.Conv2d(channel_sz, channel_sz, 3, 1, 1),
+            nn.Tanh(),
+            nn.Conv2d(channel_sz, channel_sz, 3, 1, 1),
+            nn.Tanh(),
             nn.BatchNorm2d(channel_sz),
-            nn.Conv2d(channel_sz, n_ants * 2, 3, 1, 1),
+            nn.Conv2d(channel_sz, n_ants * 2, 1, 1, 0),
         )
         self.final.apply(init_weights)
 
-        self.stack_output_sz = stack_output_sz
+        self.attention = LSTMAttention()
 
-        self.gamma = nn.Parameter(torch.tensor(1., device=self.device))
+        self.stack_output_sz = stack_output_sz
 
     def forward(self, clutter: Tensor, target: Tensor, pulse_length: [int]) -> Tensor:
         # Use only the first pulse_length because it gives batch_size random numbers as part of the dataloader
         n_frames = 1 + (pulse_length[0] - self.stft_win_sz) // self.hop
 
         # Combine clutter and target features and synthesize combined ones
-        ct_stack = torch.concat([self.clutter_stack(clutter), self.target_stack(target)])
-        ct_stack = self.comb_stack(ct_stack.view(-1, self.stack_output_sz * 2))
-        ct_stack = ct_stack.view(-1, 1, self.stack_output_sz)
+        ct_stack = self.clutter_stack(clutter).unsqueeze(1)
+        t_stack = self.target_stack(target).unsqueeze(1)
 
         # Concatenate the number of STFT windows we'll need and pass them through an LSTM
         ct_stack = torch.concat([ct_stack for _ in range(n_frames)], dim=1)
-        lstm_stack = self.prev_stft_stack(ct_stack)[0]
-        x = self.backbone(lstm_stack.reshape(-1, 1, self.stack_output_sz, n_frames))
-        # x0 = self.backbone(ct_stack)
-        for d, a in zip(self.deep_layers, self.att_layers):
-            x = d(x) + self.gamma * a(x)
+        x = self.backbone(ct_stack.reshape(-1, 1, self.stack_output_sz, n_frames))
+        for d, l, r in zip(self.deep_layers, self.lstm_layers, self.rnn_layers):
+            x = d(x).view(-1, n_frames, self.stack_output_sz)
+            lstm_x, (hidden, cell) = l(x)
+            ctxt, attn_weights = self.attention(lstm_x, hidden[-1])
+            x = r(torch.concat([t_stack, ctxt.unsqueeze(1)], dim=2))[0]
+            x = torch.concat([x for _ in range(n_frames)], dim=1).reshape(-1, 1, self.stack_output_sz, n_frames)
         return self.final(x)
 
     def loss_function(self, *args, **kwargs) -> dict:
@@ -189,7 +184,9 @@ class GeneratorModel(LightningModule):
         # Run losses for each channel
         for n in range(n_ants):
             g1 = gen_waveform[:, n, ...]
-            sidelobe_func = 10 * torch.log(torch.abs(torch.fft.ifft(g1 * g1.conj(), dim=1)) / 10)
+            slf = torch.abs(torch.fft.ifft(g1 * g1.conj(), dim=1))
+            slf[slf == 0] = 1e-9
+            sidelobe_func = 10 * torch.log(slf / 10)
 
             # This is orthogonality losses, so we need a persistent value across the for loop
             if n > 0:
@@ -209,12 +206,12 @@ class GeneratorModel(LightningModule):
             gn = g1.conj()  # Conjugate of current g1 for orthogonality loss on next loop
 
         # Apply hinge loss to sidelobes
-        sidelobe_loss = max(torch.tensor(0), 2 * sidelobe_loss - 1)
-        ortho_loss = max(torch.tensor(0), ortho_loss - .3)
+        sidelobe_loss = (sidelobe_loss - .3)**2
+        ortho_loss = (ortho_loss - .3)**2
 
         # Use sidelobe and orthogonality as regularization params for target loss
-        loss = torch.sqrt(target_loss**2 + sidelobe_loss**2 + ortho_loss**2)
-        # loss = torch.sqrt(torch.abs(target_loss * (1 + sidelobe_loss + ortho_loss)))
+        # loss = torch.sqrt(target_loss**2 + sidelobe_loss**2 + ortho_loss**2)
+        loss = torch.sqrt(torch.abs(target_loss * (1 + sidelobe_loss + ortho_loss)))
 
         return {'loss': loss, 'target_loss': target_loss,
                 'sidelobe_loss': sidelobe_loss, 'ortho_loss': ortho_loss}
@@ -315,46 +312,53 @@ class GeneratorModel(LightningModule):
 
 class RCSModel(LightningModule):
     def __init__(self,
-                 fft_sz: int,
-                 n_ants: int,
                  ) -> None:
         super(RCSModel, self).__init__()
 
-        self.fft_sz = fft_sz
-        self.n_ants = n_ants
+        nchan = 64
 
         self.optical_stack = nn.Sequential(
-            nn.Conv2d(3, 32, 4, 2, 1),
+            nn.Conv2d(3, nchan, 33, 1, 16, padding_mode='reflect'),
             nn.LeakyReLU(),
-            nn.Conv2d(32, 16, 4, 2, 1),
+            nn.Conv2d(nchan, nchan, 3, 1, 1),
             nn.LeakyReLU(),
-        )
-
-        self.sar_stack = nn.Sequential(
-            nn.Conv2d(1, 32, 4, 2, 1),
+            nn.Conv2d(nchan, nchan, 3, 1, 1),
             nn.LeakyReLU(),
-            nn.Conv2d(32, 16, 4, 2, 1),
-            nn.LeakyReLU(),
+            nn.BatchNorm2d(nchan),
         )
 
         self.pose_stack = nn.Sequential(
-            nn.Linear(7, 9),
+            nn.Linear(7, 64),
+            nn.LeakyReLU(),
+        )
+
+        self.pose_inflate = nn.Sequential(
+            nn.ConvTranspose2d(1, 1, 8, 33, 2, dilation=4),
             nn.LeakyReLU(),
         )
 
         self.comb_stack = nn.Sequential(
-            nn.ConvTranspose2d(32, 32, 4, 2, 1),
+            nn.Conv2d(nchan + 1, nchan, 9, 1, 4),
             nn.LeakyReLU(),
-            nn.ConvTranspose2d(32, 1, 4, 2, 1),
+            nn.Conv2d(nchan, nchan, 3, 1, 1),
+            nn.LeakyReLU(),
+            nn.Conv2d(nchan, nchan, 3, 1, 1),
+            nn.LeakyReLU(),
+            nn.BatchNorm2d(nchan),
+            nn.Conv2d(nchan, nchan, 3, 1, 1),
+            nn.LeakyReLU(),
+            nn.Conv2d(nchan, nchan, 3, 1, 1),
+            nn.LeakyReLU(),
+            nn.Conv2d(nchan, 1, 1, 1, 0),
             nn.Sigmoid(),
         )
 
         self.loss = nn.MSELoss()
 
-    def forward(self, opt_data: Tensor, sar_data: Tensor, pose_data: Tensor) -> Tensor:
-        x = torch.stack([self.optical_stack(opt_data), self.sar_stack(sar_data)], dim=1)
-        x = torch.convolution(x, self.pose_stack(pose_data).view(-1, 1, 3, 3), bias=None, stride=[1, 1], padding=[1, 1],
-                              output_padding=[0, 0], transposed=False, dilation=[1, 1], groups=1)
+    def forward(self, opt_data: Tensor, pose_data: Tensor) -> Tensor:
+        w = self.pose_stack(pose_data)
+        w = self.pose_inflate(w.view(-1, 1, 8, 8))
+        x = torch.concat((self.optical_stack(opt_data), w), dim=1)
         return self.comb_stack(x)
 
     def loss_function(self, *args, **kwargs) -> dict:
