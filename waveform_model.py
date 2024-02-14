@@ -44,12 +44,12 @@ class GeneratorModel(LightningModule):
         self.fft_sz = fft_sz
         self.stft_win_sz = stft_win_sz
         self.hop = stft_win_sz // 4
-        self.bin_bw = 192
+        self.bin_bw = 52
         self.clutter_latent_size = clutter_latent_size
         self.target_latent_size = target_latent_size
 
         stack_output_sz = self.stft_win_sz // 4
-        channel_sz = 16
+        channel_sz = 64
 
         # Both the clutter and target stack standardize the output for any latent size
         self.clutter_stack = nn.Sequential(
@@ -64,8 +64,7 @@ class GeneratorModel(LightningModule):
 
         # Output is Nb x Nchan x stft_win_sz x n_frames
         self.backbone = nn.Sequential(
-            nn.Conv2d(1, channel_sz, stack_output_sz // 4 + 1, 1, stack_output_sz // 8,
-                      padding_mode='reflect'),
+            nn.Conv2d(1, channel_sz, 1, 1, 0),
             nn.Tanh(),
             nn.Conv2d(channel_sz, channel_sz, 9, 1, 4),
             nn.Tanh(),
@@ -74,7 +73,7 @@ class GeneratorModel(LightningModule):
             nn.Conv2d(channel_sz, channel_sz, 3, 1, 1),
             nn.Tanh(),
             nn.BatchNorm2d(channel_sz),
-            nn.Conv2d(channel_sz, 1, 1, 1, 0),
+            nn.Conv2d(channel_sz, channel_sz, 1, 1, 0),
             nn.Tanh(),
 
         )
@@ -83,7 +82,7 @@ class GeneratorModel(LightningModule):
         self.deep_layers = nn.ModuleList()
         self.deep_layers.extend(
             nn.Sequential(
-                nn.Conv2d(1, channel_sz, nl * 2 + 3, 1, nl + 1),
+                nn.Conv2d(channel_sz, channel_sz, nl * 2 + 3, 1, nl + 1),
                 nn.Tanh(),
                 nn.Conv2d(channel_sz, channel_sz, nl * 2 + 3, 1, nl + 1),
                 nn.Tanh(),
@@ -92,8 +91,6 @@ class GeneratorModel(LightningModule):
                 nn.Conv2d(channel_sz, channel_sz, nl * 2 + 3, 1, nl + 1),
                 nn.Tanh(),
                 nn.BatchNorm2d(channel_sz),
-                nn.Conv2d(channel_sz, 1, 1, 1, 0),
-                nn.Tanh(),
             )
             for nl in range(15, -1, -3)
         )
@@ -101,26 +98,18 @@ class GeneratorModel(LightningModule):
             d.apply(init_weights)
 
         # LSTM layers to expand the network output to the correct size for pulse length
-        self.lstm_layers = nn.ModuleList()
-        self.lstm_layers.extend(
-            nn.LSTM(stack_output_sz, stack_output_sz, batch_first=True)
-            for _ in range(len(self.deep_layers))
-        )
+        self.lstm_layers = nn.LSTM(stack_output_sz, stack_output_sz, num_layers=2, batch_first=True)
 
-        self.rnn_layers = nn.ModuleList()
-        self.rnn_layers.extend(
-            nn.LSTM(stack_output_sz * 2, stack_output_sz, batch_first=True)
-            for _ in range(len(self.deep_layers))
-        )
+        self.rnn_layers = nn.LSTM(stack_output_sz * 2, stack_output_sz, num_layers=2, batch_first=True)
 
         self.final = nn.Sequential(
-            nn.ConvTranspose2d(1, channel_sz, kernel_size=(4, 3), stride=(2, 1), padding=1),
+            nn.ConvTranspose2d(channel_sz, channel_sz, kernel_size=(4, 3), stride=(2, 1), padding=1),
             nn.Tanh(),
             nn.ConvTranspose2d(channel_sz, channel_sz, kernel_size=(4, 3), stride=(2, 1), padding=1),
             nn.Tanh(),
-            nn.Conv2d(channel_sz, channel_sz, 3, 1, 1),
+            nn.Conv2d(channel_sz, channel_sz, 5, 1, 2),
             nn.Tanh(),
-            nn.Conv2d(channel_sz, channel_sz, 3, 1, 1),
+            nn.Conv2d(channel_sz, channel_sz, 5, 1, 2),
             nn.Tanh(),
             nn.Conv2d(channel_sz, channel_sz, 3, 1, 1),
             nn.Tanh(),
@@ -138,18 +127,23 @@ class GeneratorModel(LightningModule):
         n_frames = 1 + (pulse_length[0] - self.stft_win_sz) // self.hop
 
         # Combine clutter and target features and synthesize combined ones
-        ct_stack = self.clutter_stack(clutter).unsqueeze(1)
+        x = self.clutter_stack(clutter).unsqueeze(1)
         t_stack = self.target_stack(target).unsqueeze(1)
 
+        lstm_x, (hidden, cell) = self.lstm_layers(x)
+        ctxt, attn_weights = self.attention(lstm_x, hidden[-1])
+
+        x = self.rnn_layers(torch.concat([t_stack, ctxt.unsqueeze(1)], dim=2))[0]
+
         # Concatenate the number of STFT windows we'll need and pass them through an LSTM
-        ct_stack = torch.concat([ct_stack for _ in range(n_frames)], dim=1)
-        x = self.backbone(ct_stack.reshape(-1, 1, self.stack_output_sz, n_frames))
-        for d, l, r in zip(self.deep_layers, self.lstm_layers, self.rnn_layers):
-            x = d(x).view(-1, n_frames, self.stack_output_sz)
-            lstm_x, (hidden, cell) = l(x)
+        for _ in range(n_frames - 1):
+            lstm_x, (hidden, cell) = self.lstm_layers(x)
             ctxt, attn_weights = self.attention(lstm_x, hidden[-1])
-            x = r(torch.concat([t_stack, ctxt.unsqueeze(1)], dim=2))[0]
-            x = torch.concat([x for _ in range(n_frames)], dim=1).reshape(-1, 1, self.stack_output_sz, n_frames)
+            x = torch.concat((x, self.rnn_layers(
+                torch.concat([t_stack, ctxt.unsqueeze(1)], dim=2))[0]), dim=1)
+        x = self.backbone(x.reshape(-1, 1, self.stack_output_sz, n_frames))
+        for d in self.deep_layers:
+            x = d(x)
         return self.final(x)
 
     def loss_function(self, *args, **kwargs) -> dict:
@@ -195,7 +189,6 @@ class GeneratorModel(LightningModule):
             # Power in the leftover signal for both clutter and target
             gen_psd = g1 * g1.conj()
             left_sig_c = torch.abs(gen_psd - clutter_psd)
-            # left_sig_c[torch.abs(clutter_psd) < 1e-9] = 1.
 
             # The scaling here sets clutter and target losses to be between 0 and 1
             target_loss += torch.sum(torch.abs(left_sig_c - left_sig_tc)) / gen_waveform.shape[0] / 2.
@@ -206,8 +199,8 @@ class GeneratorModel(LightningModule):
             gn = g1.conj()  # Conjugate of current g1 for orthogonality loss on next loop
 
         # Apply hinge loss to sidelobes
-        sidelobe_loss = (sidelobe_loss - .3)**2
-        ortho_loss = (ortho_loss - .3)**2
+        sidelobe_loss = (sidelobe_loss - .1)**2
+        ortho_loss = (ortho_loss - .1)**2
 
         # Use sidelobe and orthogonality as regularization params for target loss
         # loss = torch.sqrt(target_loss**2 + sidelobe_loss**2 + ortho_loss**2)
@@ -315,14 +308,16 @@ class RCSModel(LightningModule):
                  ) -> None:
         super(RCSModel, self).__init__()
 
-        nchan = 64
+        nchan = 32
 
         self.optical_stack = nn.Sequential(
-            nn.Conv2d(3, nchan, 33, 1, 16, padding_mode='reflect'),
+            nn.Conv2d(3, nchan, 129, 1, 64),
+            nn.LeakyReLU(),
+            nn.Conv2d(nchan, nchan, 65, 1, 32),
             nn.LeakyReLU(),
             nn.Conv2d(nchan, nchan, 3, 1, 1),
             nn.LeakyReLU(),
-            nn.Conv2d(nchan, nchan, 3, 1, 1),
+            nn.Conv2d(nchan, nchan, 1, 1, 0),
             nn.LeakyReLU(),
             nn.BatchNorm2d(nchan),
         )
@@ -333,22 +328,21 @@ class RCSModel(LightningModule):
         )
 
         self.pose_inflate = nn.Sequential(
-            nn.ConvTranspose2d(1, 1, 8, 33, 2, dilation=4),
+            nn.ConvTranspose2d(1, 1, 4, 2, 1),
+            nn.ConvTranspose2d(1, 1, 4, 2, 1),
+            nn.ConvTranspose2d(1, 1, 4, 2, 1),
+            nn.ConvTranspose2d(1, 1, 4, 2, 1),
+            nn.ConvTranspose2d(1, 1, 4, 2, 1),
             nn.LeakyReLU(),
         )
 
         self.comb_stack = nn.Sequential(
-            nn.Conv2d(nchan + 1, nchan, 9, 1, 4),
-            nn.LeakyReLU(),
+            nn.Conv2d(nchan + 1, nchan, 3, 1, 1),
+            nn.Tanh(),
             nn.Conv2d(nchan, nchan, 3, 1, 1),
-            nn.LeakyReLU(),
+            nn.Tanh(),
             nn.Conv2d(nchan, nchan, 3, 1, 1),
-            nn.LeakyReLU(),
-            nn.BatchNorm2d(nchan),
-            nn.Conv2d(nchan, nchan, 3, 1, 1),
-            nn.LeakyReLU(),
-            nn.Conv2d(nchan, nchan, 3, 1, 1),
-            nn.LeakyReLU(),
+            nn.Tanh(),
             nn.Conv2d(nchan, 1, 1, 1, 0),
             nn.Sigmoid(),
         )
@@ -359,7 +353,7 @@ class RCSModel(LightningModule):
         w = self.pose_stack(pose_data)
         w = self.pose_inflate(w.view(-1, 1, 8, 8))
         x = torch.concat((self.optical_stack(opt_data), w), dim=1)
-        return self.comb_stack(x)
+        return self.comb_stack(x).swapaxes(2, 3)
 
     def loss_function(self, *args, **kwargs) -> dict:
         return {'loss': self.loss(args[0], args[1])}

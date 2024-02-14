@@ -5,6 +5,7 @@ from torch import optim
 from models import BaseVAE
 from typing import TypeVar
 import pytorch_lightning as pl
+from pathlib import Path
 import torchvision.utils as vutils
 
 # from torch import tensor as Tensor
@@ -210,7 +211,7 @@ class RCSExperiment(pl.LightningModule):
         results = self.forward(opt_img, pose)
         train_loss = self.model.loss_function(results, sar_img)
 
-        self.log_dict({key: val.item() for key, val in train_loss.items()}, sync_dist=True)
+        self.log_dict({key: val.item() for key, val in train_loss.items()}, sync_dist=True, prog_bar=True)
 
         return train_loss['loss']
 
@@ -222,7 +223,47 @@ class RCSExperiment(pl.LightningModule):
         results = self.forward(opt_img, pose)
         val_loss = self.model.loss_function(results, sar_img)
 
-        self.log_dict({f"val_{key}": val.item() for key, val in val_loss.items()}, sync_dist=True)
+        self.log_dict({f"val_{key}": val.item() for key, val in val_loss.items()}, sync_dist=True, prog_bar=True)
+
+    def on_validation_end(self) -> None:
+        if self.params['output_images']:
+            self.sample_images()
+        if self.trainer.is_global_zero and not self.params['is_tuning']:
+            torch.save(self.model.state_dict(), './model/rcs_model.state')
+            print('Model saved to disk.')
+
+    def on_fit_start(self) -> None:
+        # Make sure the reconstruction paths are there if we're outputting images
+        if self.params['output_images'] and self.trainer.is_global_zero:
+            Path(f'{self.logger.log_dir}/Reconstructions').mkdir(parents=True, exist_ok=True)
+            Path(f'{self.logger.log_dir}/Samples').mkdir(parents=True, exist_ok=True)
+
+    def sample_images(self):
+        # Get sample reconstruction image
+        opt_img, sar_img, pose = next(iter(self.trainer.datamodule.test_dataloader()))
+        opt_img = opt_img.to(self.curr_device)
+        pose = pose.to(self.curr_device)
+
+        if self.current_epoch % self.params['log_epoch'] == 0:
+            recons = self.model(opt_img, pose)
+            # A little finagling to get our 1-channel data into a 3-channel image format
+            recons = recons.repeat(1, 3, 1, 1)
+            vutils.save_image(recons.data,
+                              os.path.join(self.logger.log_dir,
+                                           "Reconstructions",
+                                           f"recons_{self.logger.name}_Epoch_{self.current_epoch}.png"),
+                              normalize=True,
+                              nrow=12)
+
+            with contextlib.suppress(Warning):
+                # A little finagling to get our 1-channel data into a 3-channel image format
+                samples = sar_img.repeat(1, 3, 1, 1)
+                vutils.save_image(samples.data,
+                                  os.path.join(self.logger.log_dir,
+                                               "Samples",
+                                               f"{self.logger.name}_Epoch_{self.current_epoch}.png"),
+                                  normalize=True,
+                                  nrow=12)
 
     def configure_optimizers(self):
         optimizer = optim.Adam(self.model.parameters(),

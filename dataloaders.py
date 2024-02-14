@@ -10,6 +10,7 @@ from torchvision import transforms
 from pathlib import Path
 import numpy as np
 from multiprocessing import cpu_count
+from scipy.ndimage import sobel
 
 from models import BaseVAE
 
@@ -109,7 +110,7 @@ class RCSDataset(Dataset):
                                dtype=np.float32).reshape((-1, 1, 256, 256)))
         param_data = np.fromfile('/home/jeff/repo/apache/data/params.dat', dtype=np.float32).reshape((-1, 7))
         self.optical_data = torch.tensor(optical_data)
-        self.sar_data = torch.tensor(sar_data / sar_data.min())
+        self.sar_data = torch.tensor(1 - sar_data / sar_data.min())
         self.param_data = torch.tensor(param_data)
 
         if split:

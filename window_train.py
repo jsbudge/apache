@@ -23,6 +23,7 @@ m_to_ft = 3.2808
 
 if __name__ == '__main__':
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    torch.set_float32_matmul_precision('medium')
     # torch.cuda.empty_cache()
 
     seed_everything(43, workers=True)
@@ -35,7 +36,7 @@ if __name__ == '__main__':
 
     print('Setting up data generator...')
     win_mdl = RCSModel()
-    win_mdl.load_state_dict(torch.load('./model/rcs_model.state'))
+    # win_mdl.load_state_dict(torch.load('./model/rcs_model.state'))
 
     data = RCSModule(device=device, **config["dataset_params"])
     data.setup()
@@ -68,7 +69,7 @@ if __name__ == '__main__':
         plt.figure('NN output')
         for n in range(windows.shape[0]):
             plt.subplot(grid_sz, grid_sz, n + 1)
-            plt.imshow(windows[n, 0, ...].T)
+            plt.imshow(windows[n, 0, ...])
             plt.axis('off')
         plt.figure('Original SAR data')
         for n in range(windows.shape[0]):
@@ -78,7 +79,7 @@ if __name__ == '__main__':
         plt.figure('Google Map output')
         for n in range(windows.shape[0]):
             plt.subplot(grid_sz, grid_sz, n + 1)
-            plt.imshow(inp[n, ...].cpu().data.numpy().swapaxes(0, 2))
+            plt.imshow(inp[n, :3, ...].cpu().data.numpy().swapaxes(0, 2))
             plt.axis('off')
 
     if trainer.is_global_zero:

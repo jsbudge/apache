@@ -57,7 +57,7 @@ if __name__ == '__main__':
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     # torch.cuda.empty_cache()
 
-    seed_everything(133, workers=True)
+    seed_everything(123, workers=True)
 
     with open('./vae_config.yaml', 'r') as file:
         try:
@@ -121,7 +121,7 @@ if __name__ == '__main__':
             cs = cs.to(device)
             ts = ts.to(device)
 
-            waves = wave_mdl.getWaveform(cc, tc, [nr], use_window=True).cpu().data.numpy()
+            waves = wave_mdl.getWaveform(cc, tc, [nr]).cpu().data.numpy()
             print('Loaded waveforms...')
 
             clutter = cs.cpu().data.numpy()
@@ -170,7 +170,7 @@ if __name__ == '__main__':
             plt.legend(['Waveform 1', 'Waveform 2', 'Cross Correlation', 'Linear Chirp'])
             plt.xlabel('Lag')
 
-            waves = wave_mdl.getWaveform(cc, tc, [nr], use_window=True, scale=True).cpu().data.numpy()
+            waves = wave_mdl.getWaveform(cc, tc, [nr], scale=True).cpu().data.numpy()
 
             plt.figure('Time Series')
             wave1 = waves.copy()
