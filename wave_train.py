@@ -102,7 +102,7 @@ if __name__ == '__main__':
     logger = loggers.TensorBoardLogger(config['train_params']['log_dir'],
                                        name="WaveModel")
     trainer = Trainer(logger=logger, max_epochs=config['train_params']['max_epochs'],
-                      log_every_n_steps=config['exp_params']['log_epoch'],
+                      log_every_n_steps=config['exp_params']['log_epoch'], devices=1,
                       strategy='ddp', gradient_clip_val=.5, callbacks=
                       [EarlyStopping(monitor='loss', patience=config['wave_exp_params']['patience'],
                                      check_finite=True), StochasticWeightAveraging(swa_lrs=1e-2)])

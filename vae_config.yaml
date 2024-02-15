@@ -39,13 +39,13 @@ dataset_params:
   fft_sz: 4096
   num_workers: 0
   pin_memory: False
-  train_split: 1280
-  val_split: 32
+  train_split: 30000
+  val_split: 128
   single_example: False
   # These values are taken from a sampling of data
-  mu: 0.023397775
-  var: 0.15680195
-  noise_level: .1
+  mu: 0. # 0.023397775
+  var: 1. # 0.15680195
+  noise_level: 0.
 
 # This is for setting up training of autoencoder
 exp_params:
@@ -54,8 +54,11 @@ exp_params:
   scheduler_gamma: 0.95
   kld_weight: .34
   log_epoch: 10
+  save_model: False
+  loss_landscape: False
   output_images: False
   model_type: WAE_MMD
+  patience: 15
   is_tuning: False
 
 # For training of wavemodel
@@ -66,9 +69,9 @@ wave_exp_params:
   kld_weight: .39
   log_epoch: 10
   is_tuning: False
-  save_model: True
+  save_model: False
   loss_landscape: False
-  patience: 15
+  patience: 50
 
 # For training of rcs model
 rcs_exp_params:
@@ -88,6 +91,7 @@ model_params:
   in_channels: 2
   latent_dim: 50
   max_capacity: 25
+  channel_sz: 64
   capacity_max_iter: 10000
   reg_weight: 7140.  # MMD weight
   kernel_type: 'rbf'
@@ -95,4 +99,4 @@ model_params:
 
 train_params:
   log_dir: ./logs
-  max_epochs: 150
+  max_epochs: 30

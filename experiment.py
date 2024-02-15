@@ -43,6 +43,12 @@ class VAExperiment(pl.LightningModule):
 
         return train_loss['loss']
 
+    def on_fit_start(self) -> None:
+        # Make sure the reconstruction paths are there if we're outputting images
+        if self.params['output_images'] and self.trainer.is_global_zero:
+            Path(f'{self.logger.log_dir}/Reconstructions').mkdir(parents=True, exist_ok=True)
+            Path(f'{self.logger.log_dir}/Samples').mkdir(parents=True, exist_ok=True)
+
     def validation_step(self, batch, batch_idx, optimizer_idx=0):
         real_img, labels = batch
         self.curr_device = real_img.device

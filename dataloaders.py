@@ -41,7 +41,7 @@ def transformCovData(vae_model, device, root_dir, mu, var):
 
 class CovarianceDataset(Dataset):
 
-    def __init__(self, root_dir, transform=None, split=1., single_example=False, mu=0., var=1., noise_level=0.):
+    def __init__(self, root_dir, transform=None, split: int = 32, single_example=False, mu=0., var=1., noise_level=0.):
         if Path(root_dir).is_dir():
             clutter_files = glob(f'{root_dir}/clutter_*.cov')
             self.data = np.concatenate([np.fromfile(c,
@@ -49,9 +49,7 @@ class CovarianceDataset(Dataset):
         else:
             self.data = np.fromfile(root_dir, dtype=np.float32).reshape((-1, 32, 32, 2))
         # Do split
-        if split < 1:
-            self.data = self.data[np.random.choice(np.arange(self.data.shape[0]),
-                                                   int(self.data.shape[0] * split)), ...]
+        self.data = self.data[np.random.choice(np.arange(self.data.shape[0]), split), ...]
         if single_example:
             self.data[1:, ...] = self.data[0, ...]
         if transform is not None:
@@ -294,8 +292,8 @@ class CovDataModule(LightningDataModule):
             val_batch_size: int = 8,
             num_workers: int = 0,
             pin_memory: bool = False,
-            train_split: float = .7,
-            val_split: float = .3,
+            train_split: int = 32,
+            val_split: int = 32,
             single_example: bool = False,
             mu: float = 0.,
             var: float = 1.,
@@ -309,7 +307,7 @@ class CovDataModule(LightningDataModule):
         self.data_dir = data_path
         self.train_batch_size = train_batch_size
         self.val_batch_size = val_batch_size
-        self.num_workers = num_workers
+        self.num_workers = cpu_count() // 2
         self.pin_memory = pin_memory
         self.train_split = train_split
         self.val_split = val_split

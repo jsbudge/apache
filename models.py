@@ -1,5 +1,6 @@
+import contextlib
 from typing import List, Any, TypeVar
-from layers import RichConv2d, RichConvTranspose2d, SelfAttention
+from layers import RichConv2d, RichConvTranspose2d, SelfAttention, AttentionConv
 import torch
 from torch import nn
 from torch.nn import functional as F
@@ -15,9 +16,10 @@ def calc_conv_size(inp_sz, kernel_sz, stride, padding):
 
 
 def init_weights(m):
-    if isinstance(m, (nn.Conv2d, nn.ConvTranspose2d)):
-        torch.nn.init.xavier_normal_(m.weight)
-        m.bias.data.fill_(0.01)
+    if isinstance(m, (nn.Conv1d, nn.ConvTranspose1d, nn.Conv2d, nn.ConvTranspose2d)):
+        with contextlib.suppress(AttributeError):
+            torch.nn.init.xavier_normal_(m.weight)
+            m.bias.data.fill_(0.01)
 
 
 class BaseVAE(LightningModule):
@@ -496,7 +498,7 @@ class WAE_MMD(BaseVAE):
     def __init__(self,
                  in_channels: int,
                  latent_dim: int,
-                 hidden_dims: List = None,
+                 channel_sz: int = 32,
                  reg_weight: int = 100,
                  kernel_type: str = 'imq',
                  latent_var: float = 2.,
@@ -508,72 +510,64 @@ class WAE_MMD(BaseVAE):
         self.kernel_type = kernel_type
         self.z_var = latent_var
 
-        layer_params = [8, 4, 2]
-        if hidden_dims is None:
-            hidden_dims = [64, 64, 64]
-        self.final_sz = hidden_dims[-1]
-        initial_channels = in_channels + 0
+        self.final_sz = channel_sz
 
         # Encoder
         modules = [
             nn.Sequential(
-                nn.Conv2d(in_channels, hidden_dims[0], 4, 2, 1),
+                nn.Conv2d(in_channels, channel_sz, 3, 1, 1),
                 nn.LeakyReLU(),
-                nn.Conv2d(hidden_dims[0], hidden_dims[0], 15, 1, 7),
+                nn.Conv2d(channel_sz, channel_sz, 3, 1, 1),
                 nn.LeakyReLU(),
-                nn.BatchNorm2d(hidden_dims[0]),
+                nn.Conv2d(channel_sz, channel_sz, 4, 2, 1),
+                nn.LeakyReLU(),
+                nn.BatchNorm2d(channel_sz),
             )
         ]
-        for h_dim, l_params in zip(hidden_dims, layer_params):
-            modules.append(
-                nn.Sequential(
-                    nn.Conv2d(h_dim, h_dim, 4, 2, 1),
-                    nn.LeakyReLU(),
-                    nn.BatchNorm2d(h_dim),
-                    SelfAttention(h_dim),
-                )
+        modules.extend(
+            nn.Sequential(
+                AttentionConv(channel_sz, channel_sz, 4, 2, 1, channel_sz // 4),
+                nn.Tanh(),
+                nn.Conv2d(channel_sz, channel_sz, 4, 2, 1),
+                nn.LeakyReLU(),
             )
-            in_channels = h_dim
+            for _ in range(3)
+        )
+        modules.append(nn.BatchNorm2d(channel_sz))
 
         self.encoder = nn.Sequential(*modules)
         self.encoder.apply(init_weights)
-        self.fc_z = nn.Linear(hidden_dims[-1] * 4, latent_dim)
+        self.fc_z = nn.Linear(channel_sz * 4, latent_dim)
 
         # Decoder
-        self.decoder_input = nn.Linear(latent_dim, hidden_dims[-1] * 4)
-
-        hidden_dims.reverse()
-        layer_params.reverse()
-        modules = []
+        self.decoder_input = nn.Linear(latent_dim, channel_sz * 4)
+        modules = [nn.Sequential(
+            nn.ConvTranspose2d(channel_sz * 2, channel_sz, 3, 1, 1),
+            nn.LeakyReLU(),
+        )]
 
         modules.extend(
             nn.Sequential(
-                nn.ConvTranspose2d(
-                    hidden_dims[i + 1], hidden_dims[i + 1], 4, 2, 1
-                ),
+                AttentionConv(channel_sz, channel_sz, 3, 1, 1, channel_sz // 4),
                 nn.LeakyReLU(),
-                nn.BatchNorm2d(hidden_dims[i + 1]),
-                SelfAttention(hidden_dims[i + 1]),
+                nn.ConvTranspose2d(channel_sz, channel_sz, 4, 2, 1),
+                nn.LeakyReLU(),
             )
-            for i in range(len(hidden_dims) - 1)
+            for _ in range(3)
         )
 
         modules.append(nn.Sequential(
-            nn.ConvTranspose2d(hidden_dims[-1], hidden_dims[-1], 4, 2, 1),
-            nn.ConvTranspose2d(hidden_dims[-1], hidden_dims[-1], 3, 1, 1),
+            nn.ConvTranspose2d(channel_sz, channel_sz, 4, 2, 1),
             nn.LeakyReLU(),
-            nn.ConvTranspose2d(hidden_dims[-1], hidden_dims[-1], 15, 1, 7),
+            nn.ConvTranspose2d(channel_sz, channel_sz, 3, 1, 1),
             nn.LeakyReLU(),
-            nn.BatchNorm2d(hidden_dims[-1]),
+            nn.ConvTranspose2d(channel_sz, channel_sz, 3, 1, 1),
+            nn.Tanh(),
+            nn.Conv2d(channel_sz, out_channels=in_channels, kernel_size=1, stride=1, padding=0),
+            nn.Tanh(),
         ))
         self.decoder = nn.Sequential(*modules)
         self.decoder.apply(init_weights)
-
-        self.final_layer = nn.Sequential(
-            nn.ConvTranspose2d(hidden_dims[-1], hidden_dims[-1], 4, 2, 1),
-            nn.Conv2d(hidden_dims[-1], out_channels=initial_channels,
-                      kernel_size=3, padding=1),
-        )
 
     def encode(self, input: Tensor) -> Tensor:
         """
@@ -585,36 +579,38 @@ class WAE_MMD(BaseVAE):
         result = self.encoder(input)
         result = torch.flatten(result, start_dim=1)
 
-        # Split the result into mu and var components
-        # of the latent Gaussian distribution
-        z = self.fc_z(result)
-        return z
+        return self.fc_z(result)
 
     def decode(self, z: Tensor) -> Tensor:
         result = self.decoder_input(z)
         result = result.view(-1, self.final_sz, 2, 2)
+
+        # Get symmetric features
+        r_comp = torch.complex(result[:, :, 0, :], result[:, :, 1, :])
+        result = torch.einsum('abcd,abef->abcf', r_comp.view(-1, self.final_sz, 2, 1), r_comp.view(-1, self.final_sz, 1, 2))
+
+        # This re-stacks the complex features into real/imaginary pairs
+        x = result.real.unsqueeze(2)
+        y = result.imag.unsqueeze(2)
+        result = torch.concat([x, y], 2).reshape(-1, self.final_sz * 2, 2, 2)
         result = self.decoder(result)
-        result = self.final_layer(result)
         return result
 
-    def forward(self, input: Tensor, **kwargs) -> List[Tensor]:
-        z = self.encode(input)
-        return [self.decode(z), input, z]
+    def forward(self, inp: Tensor, **kwargs) -> List[Tensor]:
+        z = self.encode(inp)
+        return [self.decode(z), inp, z]
 
     def loss_function(self,
                       *args,
                       **kwargs) -> dict:
-        recons = args[0]
-        input = args[1]
-        z = args[2]
 
-        batch_size = input.size(0)
+        batch_size = args[1].size(0)
         bias_corr = batch_size * (batch_size - 1)
         reg_weight = self.reg_weight / bias_corr
 
-        recons_loss = F.mse_loss(recons, input)
+        recons_loss = F.mse_loss(args[0], args[1])
 
-        mmd_loss = self.compute_mmd(z, reg_weight)
+        mmd_loss = self.compute_mmd(args[2], reg_weight)
 
         loss = recons_loss + mmd_loss
         return {'loss': loss, 'Reconstruction_Loss': recons_loss, 'MMD': mmd_loss}
@@ -660,8 +656,7 @@ class WAE_MMD(BaseVAE):
         z_dim = x2.size(-1)
         sigma = 2. * z_dim * self.z_var
 
-        result = torch.exp(-((x1 - x2).pow(2).mean(-1) / sigma))
-        return result
+        return torch.exp(-((x1 - x2).pow(2).mean(-1) / sigma))
 
     def compute_inv_mult_quad(self,
                               x1: Tensor,
@@ -681,10 +676,7 @@ class WAE_MMD(BaseVAE):
         C = 2 * z_dim * self.z_var
         kernel = C / (eps + C + (x1 - x2).pow(2).sum(dim=-1))
 
-        # Exclude diagonal elements
-        result = kernel.sum() - kernel.diag().sum()
-
-        return result
+        return kernel.sum() - kernel.diag().sum()
 
     def compute_mmd(self, z: Tensor, reg_weight: float) -> Tensor:
         # Sample from prior (Gaussian) distribution
@@ -694,10 +686,11 @@ class WAE_MMD(BaseVAE):
         z__kernel = self.compute_kernel(z, z)
         priorz_z__kernel = self.compute_kernel(prior_z, z)
 
-        mmd = reg_weight * prior_z__kernel.mean() + \
-              reg_weight * z__kernel.mean() - \
-              2 * reg_weight * priorz_z__kernel.mean()
-        return mmd
+        return (
+            reg_weight * prior_z__kernel.mean()
+            + reg_weight * z__kernel.mean()
+            - 2 * reg_weight * priorz_z__kernel.mean()
+        )
 
     def sample(self,
                num_samples: int,
@@ -714,8 +707,7 @@ class WAE_MMD(BaseVAE):
 
         z = z.to(current_device)
 
-        samples = self.decode(z)
-        return samples
+        return self.decode(z)
 
     def generate(self, x: Tensor, **kwargs) -> Tensor:
         """
@@ -725,89 +717,3 @@ class WAE_MMD(BaseVAE):
         """
 
         return self.forward(x)[0]
-
-
-class ConvAE(LightningModule):
-    num_iter = 0  # Global static variable to keep track of iterations
-
-    def __init__(self,
-                 in_channels: int,
-                 latent_dim: int,
-                 hidden_dims: List = None,
-                 **kwargs) -> None:
-        super(ConvAE, self).__init__()
-
-        self.latent_dim = latent_dim
-
-        modules = []
-        # Kernel size, stride, padding
-        layer_params = [16, 8, 4]
-        if hidden_dims is None:
-            hidden_dims = [128, 128, 128]
-        else:
-            hidden_dims = [hidden_dims for _ in layer_params]
-        initial_channels = in_channels + 0
-
-        # Build Encoder
-        for h_dim, l_params in zip(hidden_dims, layer_params):
-            modules.append(
-                RichConv2d(in_channels, h_dim, l_params)
-            )
-            in_channels = h_dim
-        modules.append(nn.Conv2d(in_channels, 1, 1))
-
-        self.encoder = nn.Sequential(*modules)
-
-        # Build Decoder
-        modules = [nn.Conv2d(1, hidden_dims[0], 1)]
-
-        hidden_dims.reverse()
-        layer_params.reverse()
-
-        for i in range(len(hidden_dims) - 1):
-            modules.append(
-                RichConvTranspose2d(hidden_dims[i], hidden_dims[i + 1], layer_params[i])
-            )
-
-        self.decoder = nn.Sequential(*modules)
-
-        self.final_layer = nn.Sequential(
-            nn.ConvTranspose2d(hidden_dims[-1],
-                               hidden_dims[-1],
-                               kernel_size=4,
-                               stride=2,
-                               padding=1,
-                               output_padding=1),
-            nn.BatchNorm2d(hidden_dims[-1]),
-            nn.LeakyReLU(),
-            nn.Conv2d(hidden_dims[-1], out_channels=initial_channels,
-                      kernel_size=4, padding=1))
-
-    def encode(self, input: Tensor) -> List[Tensor]:
-        """
-        Encodes the input by passing through the encoder network
-        and returns the latent codes.
-        :param input: (Tensor) Input tensor to encoder [N x C x H x W]
-        :return: (Tensor) List of latent codes
-        """
-        result = self.encoder(input)
-
-        return result
-
-    def decode(self, z: Tensor) -> Tensor:
-        result = self.decoder(z)
-        result = self.final_layer(result)
-        return result
-
-    def forward(self, input: Tensor, **kwargs) -> Tensor:
-        z = self.decode(self.encode(input))
-        return [input, z]
-
-    def loss_function(self, *args, **kwargs) -> dict:
-        self.num_iter += 1
-        recons = args[0]
-        input = args[1]
-
-        loss = F.mse_loss(recons, input)
-
-        return {'loss': loss}
