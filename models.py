@@ -82,7 +82,6 @@ class BetaVAE(BaseVAE):
             *list(kwargs.keys())
         )
 
-        modules = []
         # Kernel size, stride, padding
         layer_params = [8, 4, 2]
         if hidden_dims is None:
@@ -90,16 +89,16 @@ class BetaVAE(BaseVAE):
         self.final_sz = hidden_dims[-1]
         initial_channels = in_channels + 0
 
-        # Build Encoder
-        modules.append(nn.Sequential(
-            RichConv2d(in_channels, hidden_dims[0], 16),
-            nn.Conv2d(hidden_dims[0], hidden_dims[0], 3, 1, 1),
-            nn.LeakyReLU(),
-            nn.Conv2d(hidden_dims[0], hidden_dims[0], 3, 1, 1),
-            nn.LeakyReLU(),
-            nn.BatchNorm2d(hidden_dims[0]),
-        )
-        )
+        modules = [
+            nn.Sequential(
+                RichConv2d(in_channels, hidden_dims[0], 16),
+                nn.Conv2d(hidden_dims[0], hidden_dims[0], 3, 1, 1),
+                nn.LeakyReLU(),
+                nn.Conv2d(hidden_dims[0], hidden_dims[0], 3, 1, 1),
+                nn.LeakyReLU(),
+                nn.BatchNorm2d(hidden_dims[0]),
+            )
+        ]
         for h_dim, l_params in zip(hidden_dims, layer_params):
             modules.append(
                 nn.Sequential(
@@ -542,15 +541,15 @@ class WAE_MMD(BaseVAE):
         # Decoder
         self.decoder_input = nn.Linear(latent_dim, channel_sz * 4)
         modules = [nn.Sequential(
-            nn.ConvTranspose2d(channel_sz * 2, channel_sz, 3, 1, 1),
+            nn.ConvTranspose2d(channel_sz * 2, channel_sz, 1, 1, 0),
             nn.LeakyReLU(),
         )]
 
         modules.extend(
             nn.Sequential(
-                AttentionConv(channel_sz, channel_sz, 3, 1, 1, channel_sz // 4),
-                nn.LeakyReLU(),
                 nn.ConvTranspose2d(channel_sz, channel_sz, 4, 2, 1),
+                nn.LeakyReLU(),
+                AttentionConv(channel_sz, channel_sz, 3, 1, 1, channel_sz // 4),
                 nn.LeakyReLU(),
             )
             for _ in range(3)
@@ -587,7 +586,8 @@ class WAE_MMD(BaseVAE):
 
         # Get symmetric features
         r_comp = torch.complex(result[:, :, 0, :], result[:, :, 1, :])
-        result = torch.einsum('abcd,abef->abcf', r_comp.view(-1, self.final_sz, 2, 1), r_comp.view(-1, self.final_sz, 1, 2))
+        result = torch.einsum('abcd,abef->abcf', r_comp.view(-1, self.final_sz, 2, 1),
+                              r_comp.view(-1, self.final_sz, 1, 2))
 
         # This re-stacks the complex features into real/imaginary pairs
         x = result.real.unsqueeze(2)
@@ -666,7 +666,7 @@ class WAE_MMD(BaseVAE):
         Computes the Inverse Multi-Quadratics Kernel between x1 and x2,
         given by
 
-                k(x_1, x_2) = \sum \frac{C}{C + \|x_1 - x_2 \|^2}
+                k(x_1, x_2) = C / (C + abs(x_1 - x_2)**2)
         :param x1: (Tensor)
         :param x2: (Tensor)
         :param eps: (Float)
@@ -687,9 +687,9 @@ class WAE_MMD(BaseVAE):
         priorz_z__kernel = self.compute_kernel(prior_z, z)
 
         return (
-            reg_weight * prior_z__kernel.mean()
-            + reg_weight * z__kernel.mean()
-            - 2 * reg_weight * priorz_z__kernel.mean()
+                reg_weight * prior_z__kernel.mean()
+                + reg_weight * z__kernel.mean()
+                - 2 * reg_weight * priorz_z__kernel.mean()
         )
 
     def sample(self,

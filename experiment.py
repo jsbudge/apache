@@ -48,6 +48,8 @@ class VAExperiment(pl.LightningModule):
         if self.params['output_images'] and self.trainer.is_global_zero:
             Path(f'{self.logger.log_dir}/Reconstructions').mkdir(parents=True, exist_ok=True)
             Path(f'{self.logger.log_dir}/Samples').mkdir(parents=True, exist_ok=True)
+        if self.trainer.is_global_zero:
+            self.logger.log_graph(self, self.model.example_input_array)
 
     def validation_step(self, batch, batch_idx, optimizer_idx=0):
         real_img, labels = batch

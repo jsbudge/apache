@@ -12,7 +12,7 @@ import numpy as np
 from multiprocessing import cpu_count
 from scipy.ndimage import sobel
 
-from models import BaseVAE
+from models import BaseVAE, InfoVAE, WAE_MMD, BetaVAE
 
 
 def transformCovData(vae_model, device, root_dir, mu, var):
@@ -493,10 +493,20 @@ class RCSModule(LightningDataModule):
 
 
 if __name__ == '__main__':
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
     with open('./vae_config.yaml', 'r') as file:
         try:
-            config = yaml.safe_load(file)
+            param_dict = yaml.safe_load(file)
         except yaml.YAMLError as exc:
             print(exc)
-    data = WaveDataset(**config['dataset_params'])
-    data.setup()
+
+    if param_dict['exp_params']['model_type'] == 'InfoVAE':
+        model = InfoVAE(**param_dict['model_params'])
+    elif param_dict['exp_params']['model_type'] == 'WAE_MMD':
+        model = WAE_MMD(**param_dict['model_params'])
+    else:
+        model = BetaVAE(**param_dict['model_params'])
+    print('Setting up model...')
+    model.load_state_dict(torch.load('./model/inference_model.state'))
+    transformCovData(model, device, param_dict['dataset_params']['data_path'], param_dict['dataset_params']['mu'],
+                     param_dict['dataset_params']['var'])

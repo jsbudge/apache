@@ -39,7 +39,7 @@ dataset_params:
   fft_sz: 4096
   num_workers: 0
   pin_memory: False
-  train_split: 30000
+  train_split: 8000
   val_split: 128
   single_example: False
   # These values are taken from a sampling of data
@@ -63,13 +63,13 @@ exp_params:
 
 # For training of wavemodel
 wave_exp_params:
-  LR: 0.0000001
+  LR: 0.00000001
   weight_decay: 0.08
   scheduler_gamma: 0.95
   kld_weight: .39
   log_epoch: 10
   is_tuning: False
-  save_model: False
+  save_model: True
   loss_landscape: False
   patience: 50
 
@@ -99,4 +99,4 @@ model_params:
 
 train_params:
   log_dir: ./logs
-  max_epochs: 30
+  max_epochs: 1500

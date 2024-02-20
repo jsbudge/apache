@@ -1,15 +1,14 @@
 import contextlib
 import pickle
-from typing import List, Any, TypeVar
+from typing import Optional, Union, Tuple, Dict
+
 import torch
-from torch import nn
+from torch import nn, Tensor
 from pytorch_lightning import LightningModule
-from torch.nn import functional as F
+from torch.nn import functional as nn_func
 from numpy import log2, ceil
 from torchvision import transforms
-from layers import RichConvTranspose2d, RichConv2d, Linear2d, SelfAttention, LSTMAttention, AttentionConv
-
-Tensor = TypeVar('torch.tensor')
+from layers import LSTMAttention, AttentionConv
 
 
 def getTrainTransforms(var):
@@ -49,7 +48,7 @@ class GeneratorModel(LightningModule):
         self.target_latent_size = target_latent_size
 
         stack_output_sz = self.stft_win_sz // 4
-        channel_sz = 72
+        channel_sz = 32
 
         # Both the clutter and target stack standardize the output for any latent size
         self.clutter_stack = nn.Sequential(
@@ -62,29 +61,39 @@ class GeneratorModel(LightningModule):
             nn.LeakyReLU(),
         )
 
-        # Output is Nb x Nchan x stft_win_sz x n_frames
-        self.backbone = nn.Sequential(
+        self.init_layer = nn.Sequential(
             nn.Conv2d(1, channel_sz, 1, 1, 0),
-            nn.Tanh(),
-            nn.Conv2d(channel_sz, channel_sz, 3, 1, 1),
-            nn.Tanh(),
-            AttentionConv(channel_sz, channel_sz, 3, 1, 1, channel_sz // 4),
-            nn.Tanh(),
+            nn.LeakyReLU(),
         )
-        self.backbone.apply(init_weights)
+
+        # Output is Nb x Nchan x stack_output_sz x n_frames
+        self.backbone = nn.ModuleList()
+        self.backbone.extend(
+            nn.Sequential(
+                nn.Conv2d(channel_sz, channel_sz, nl * 2 + 3, 1, nl + 1),
+                nn.Tanh(),
+                AttentionConv(channel_sz, channel_sz, 3, 1, 1, channel_sz // 4),
+                nn.Tanh(),
+                nn.Conv2d(channel_sz, channel_sz, nl * 2 + 3, 1, nl + 1),
+                nn.Tanh(),
+            )
+            for nl in range(9, 1, -2)
+        )
+        for d in self.backbone:
+            d.apply(init_weights)
 
         self.deep_layers = nn.ModuleList()
         self.deep_layers.extend(
             nn.Sequential(
-                nn.Conv2d(channel_sz, channel_sz, nl * 2 + 3, 1, nl + 1),
-                nn.Tanh(),
-                nn.Conv2d(channel_sz, channel_sz, nl * 2 + 3, 1, nl + 1),
-                nn.Tanh(),
-                nn.Conv2d(channel_sz, channel_sz, nl * 2 + 3, 1, nl + 1),
-                nn.Tanh(),
                 nn.BatchNorm2d(channel_sz),
+                nn.Conv2d(channel_sz, channel_sz, 3, 1, 1),
+                nn.Tanh(),
+                nn.Conv2d(channel_sz, channel_sz, 3, 1, 1),
+                nn.Tanh(),
+                nn.Conv2d(channel_sz, channel_sz, 3, 1, 1),
+                nn.Tanh(),
             )
-            for nl in range(15, -1, -3)
+            for _ in self.backbone
         )
         for d in self.deep_layers:
             d.apply(init_weights)
@@ -107,30 +116,52 @@ class GeneratorModel(LightningModule):
 
         self.stack_output_sz = stack_output_sz
 
-    def forward(self, clutter: Tensor, target: Tensor, pulse_length: [int]) -> Tensor:
+        mask_select = (stft_win_sz - self.bin_bw) // 2
+        self.bandwidth_mask = torch.zeros((1, 1, stft_win_sz, 1), dtype=torch.bool)
+        self.bandwidth_mask[0, 0, mask_select:-mask_select, 0] = 1.
+
+        self.example_input_array = (torch.zeros((1, clutter_latent_size)), torch.zeros((1, target_latent_size)),
+                                    torch.tensor([1250]))
+
+    def forward(self, clutter: torch.tensor, target: torch.tensor, pulse_length: [int]) -> torch.tensor:
         # Use only the first pulse_length because it gives batch_size random numbers as part of the dataloader
         n_frames = 1 + (pulse_length[0] - self.stft_win_sz) // self.hop
 
-        # Combine clutter and target features and synthesize combined ones
+        # Get clutter and target features, for LSTM input
         x = self.clutter_stack(clutter).unsqueeze(1)
         t_stack = self.target_stack(target).unsqueeze(1)
 
+        # No-attention LSTM for attention input
         lstm_x, (hidden, cell) = self.lstm_layers(x)
         ctxt, attn_weights = self.attention(lstm_x, hidden[-1])
 
+        # LSTM with attention from previous LSTM
         x = self.rnn_layers(torch.concat([t_stack, ctxt.unsqueeze(1)], dim=2))[0]
 
-        # Concatenate the number of STFT windows we'll need and pass them through an LSTM
+        # Pass them through the LSTMs, one at a time, building up the number of frames we need for a pulse
         for _ in range(n_frames - 1):
             lstm_x, (hidden, cell) = self.lstm_layers(x)
             ctxt, attn_weights = self.attention(lstm_x, hidden[-1])
             x = torch.concat((x, self.rnn_layers(
                 torch.concat([t_stack, ctxt.unsqueeze(1)], dim=2))[0]), dim=1)
         x = x.reshape(-1, 1, self.stack_output_sz, n_frames)
-        x = self.backbone(x)
-        for d in self.deep_layers:
-            x = d(x) + x
-        return self.final(x)
+
+        # Init layer to get the right number of channels
+        x = self.init_layer(x)
+
+        # Get feedforward connections from backbone
+        outputs = []
+        for b in self.backbone:
+            x = b(x)
+            outputs.append(x)
+
+        # Reverse outputs for correct structure
+        # outputs.reverse()
+
+        # Combine with deep layers
+        for op, d in zip(outputs, self.deep_layers):
+            x = d(x) + op
+        return torch.masked_select(self.final(x), self.bandwidth_mask.to(self.device))
 
     def loss_function(self, *args, **kwargs) -> dict:
         # These values are set here purely for debugging purposes
@@ -138,7 +169,7 @@ class GeneratorModel(LightningModule):
         n_ants = self.n_ants
 
         # Initialize losses to zero and place on correct device
-        sidelobe_loss = torch.tensor(0., device=dev)
+        sidelobe_loss = torch.tensor(0., device=dev, requires_grad=False)
         target_loss = torch.tensor(0., device=dev)
         # ortho_loss = torch.tensor(0., device=dev)
 
@@ -167,6 +198,8 @@ class GeneratorModel(LightningModule):
             slf = torch.abs(torch.fft.ifft(g1 * g1.conj(), dim=1))
             slf[slf == 0] = 1e-9
             sidelobe_func = 10 * torch.log(slf / 10)
+            sll = nn_func.max_pool1d_with_indices(sidelobe_func, 65, 1,
+                                                  padding=32)[0].unique(dim=1).detach()[:, 1]
 
             # This is orthogonality losses, so we need a persistent value across the for loop
             # if n > 0:
@@ -180,7 +213,6 @@ class GeneratorModel(LightningModule):
             target_loss += torch.sum(torch.abs(left_sig_c - left_sig_tc)) / gen_waveform.shape[0] / 2.
 
             # Get the ISLR for this waveform
-            sll = torch.mean(sidelobe_func[:, 7:-7], dim=1)
             sidelobe_loss += torch.sum(sidelobe_func[:, 0] / sll) / (self.n_ants * sidelobe_func.shape[0])
             # gn = g1.conj()  # Conjugate of current g1 for orthogonality loss on next loop
 
@@ -189,7 +221,7 @@ class GeneratorModel(LightningModule):
 
         # Use sidelobe and orthogonality as regularization params for target loss
         # loss = torch.sqrt(target_loss**2 + sidelobe_loss**2 + ortho_loss**2)
-        loss = torch.abs(target_loss)**2
+        loss = torch.sqrt(torch.abs(target_loss * (1. + sidelobe_loss)))
 
         return {'loss': loss, 'target_loss': target_loss,
                 'sidelobe_loss': sidelobe_loss}
@@ -241,6 +273,9 @@ class GeneratorModel(LightningModule):
             for name, param in self.named_parameters()
         ]
 
+    def example_input_array(self) -> Optional[Union[Tensor, Tuple, Dict]]:
+        return self.example_input_array
+
     def getWaveform(self, cc: Tensor = None, tc: Tensor = None, pulse_length: [int, list] = 1, nn_output: Tensor = None,
                     use_window: bool = False, scale: bool = False) -> Tensor:
         """
@@ -261,12 +296,16 @@ class GeneratorModel(LightningModule):
         if scale:
             new_fft_sz = int(2 ** (ceil(log2(pulse_length))))
             gen_waveform = torch.zeros((full_stft.shape[0], self.n_ants, new_fft_sz), dtype=torch.complex64,
-                                       device=self.device)
+                                       device=self.device, requires_grad=False)
         else:
             gen_waveform = torch.zeros((full_stft.shape[0], self.n_ants, self.fft_sz), dtype=torch.complex64,
-                                       device=self.device)
+                                       device=self.device, requires_grad=False)
         for n in range(n_ants):
-            complex_stft = torch.complex(full_stft[:, n, :, :], full_stft[:, n + 1, :, :])
+            complex_output = torch.complex(full_stft[:, n, :, :], full_stft[:, n + 1, :, :])
+            complex_stft = torch.zeros((full_stft.shape[0], self.stft_win_sz, full_stft.shape[3]),
+                                       dtype=torch.complex64)
+            complex_stft[:, :full_stft.shape[2] // 2, :] = complex_output[:, -full_stft.shape[2] // 2:, :]
+            complex_stft[:, -full_stft.shape[2] // 2:, :] = complex_output[:, :full_stft.shape[2] // 2, :]
 
             # Apply a window if wanted for actual simulation
             if use_window:
@@ -279,12 +318,12 @@ class GeneratorModel(LightningModule):
                 g1 = torch.fft.fft(torch.istft(complex_stft, stft_win, hop_length=self.hop,
                                                window=torch.ones(self.stft_win_sz, device=self.device),
                                                return_complex=True), self.fft_sz, dim=-1)
-            g1 = g1 / torch.sqrt(torch.sum(g1 * torch.conj(g1), dim=1))[:, None]  # Unit energy calculation
             if scale:
-                gen_waveform[:, n, :self.fft_sz // 2] = g1[:, :self.fft_sz // 2]
-                gen_waveform[:, n, -self.fft_sz // 2:] = g1[:, -self.fft_sz // 2:]
+                g1 = torch.fft.fft(g1, new_fft_sz, dim=-1)
             else:
-                gen_waveform[:, n, ...] = g1
+                g1 = torch.fft.fft(g1, self.fft_sz, dim=-1)
+            g1 = g1 / torch.sqrt(torch.sum(g1 * torch.conj(g1), dim=1))[:, None]  # Unit energy calculation
+            gen_waveform[:, n, ...] = g1
         return gen_waveform
 
 
@@ -334,7 +373,7 @@ class RCSModel(LightningModule):
 
         self.loss = nn.MSELoss()
 
-    def forward(self, opt_data: Tensor, pose_data: Tensor) -> Tensor:
+    def forward(self, opt_data: torch.tensor, pose_data: torch.tensor) -> torch.tensor:
         w = self.pose_stack(pose_data)
         w = self.pose_inflate(w.view(-1, 1, 8, 8))
         x = torch.concat((self.optical_stack(opt_data), w), dim=1)

@@ -13,6 +13,7 @@ from dataloaders import WaveDataModule
 from experiment import GeneratorExperiment
 from models import BetaVAE, InfoVAE, WAE_MMD
 from waveform_model import GeneratorModel, init_weights
+from os import listdir
 
 # pio.renderers.default = 'svg'
 pio.renderers.default = 'browser'
@@ -69,6 +70,7 @@ if __name__ == '__main__':
     nr = 5000  # int((config['perf_params']['vehicle_slant_range_min'] * 2 / c0 - 1 / TAC) * fs)
 
     print('Setting up wavemodel...')
+    warm_start = False
     if config['settings']['warm_start']:
         print('Wavemodel loaded from save state.')
         try:
@@ -76,8 +78,9 @@ if __name__ == '__main__':
                 generator_params = pickle.load(f)
             wave_mdl = GeneratorModel(**generator_params)
             wave_mdl.load_state_dict(torch.load(generator_params['state_file']))
-        except RuntimeError:
-            print('Wavemodel save file does not match current structure. Re-running with new structure.')
+            warm_start = True
+        except RuntimeError as e:
+            print(f'Wavemodel save file does not match current structure. Re-running with new structure.\n{e}')
             wave_mdl = GeneratorModel(fft_sz=fft_len,
                                       stft_win_sz=config['settings']['stft_win_sz'],
                                       clutter_latent_size=config['model_params']['latent_dim'],
@@ -99,13 +102,23 @@ if __name__ == '__main__':
 
     print('Setting up experiment...')
     experiment = GeneratorExperiment(wave_mdl, config['wave_exp_params'])
-    logger = loggers.TensorBoardLogger(config['train_params']['log_dir'],
-                                       name="WaveModel")
+
+    if warm_start:
+        name = 'WaveModel'
+        # Find the latest version and append to that
+        mnum = max(int(n.split('_')[-1]) for n in listdir(f"{config['train_params']['log_dir']}/{name}"))
+        logger = loggers.TensorBoardLogger(config['train_params']['log_dir'],
+                                           name="WaveModel", version=mnum, log_graph=True)
+    else:
+        logger = loggers.TensorBoardLogger(config['train_params']['log_dir'],
+                                           name="WaveModel", log_graph=True)
+    # logger.experiment.add_graph(wave_mdl, wave_mdl.example_input_array)
     trainer = Trainer(logger=logger, max_epochs=config['train_params']['max_epochs'],
                       log_every_n_steps=config['exp_params']['log_epoch'], devices=1,
                       strategy='ddp', gradient_clip_val=.5, callbacks=
                       [EarlyStopping(monitor='loss', patience=config['wave_exp_params']['patience'],
-                                     check_finite=True), StochasticWeightAveraging(swa_lrs=1e-2)])
+                                     check_finite=True),
+                       StochasticWeightAveraging(swa_lrs=config['wave_exp_params']['LR'])])
 
     print("======= Training =======")
     trainer.fit(experiment, datamodule=data)
