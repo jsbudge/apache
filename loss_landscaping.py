@@ -84,7 +84,7 @@ class LossGrid:
                     w_ij = torch.tensor(i[x, y] * directions[0] + j[x, y] * directions[1] +
                                         self.optim_point.cpu().data.numpy(), device=self.device)
                     model.init_from_flat_params(w_ij)
-                    y_pred = model(cc, tc, [2600])
+                    y_pred = model(cc, tc, [2600], 400e6)
                     losses[x, y] = model.loss_function(y_pred, cs, ts)['loss']
                     pbar.update(1)
 
@@ -187,28 +187,38 @@ if __name__ == '__main__':
     wave_config['dataset_params']['max_pulse_length'] = 5000
     wave_config['dataset_params']['min_pulse_length'] = wave_config['settings']['stft_win_sz'] + 64
 
-    print('Setting up model...')
-    if wave_config['exp_params']['model_type'] == 'InfoVAE':
-        vae_mdl = InfoVAE(**wave_config['model_params'])
-    elif wave_config['exp_params']['model_type'] == 'WAE_MMD':
-        vae_mdl = WAE_MMD(**wave_config['model_params'])
-    else:
-        vae_mdl = BetaVAE(**wave_config['model_params'])
-    vae_mdl.load_state_dict(torch.load('./model/inference_model.state'))
-    vae_mdl.eval()  # Set to inference mode
-
     print('Setting up dataloader...')
-    data = WaveDataModule(vae_model=vae_mdl, device=device, **wave_config["dataset_params"])
+    data = WaveDataModule(latent_dim=wave_config['model_params']['latent_dim'], device=device,
+                          **wave_config["dataset_params"])
     data.setup()
-
-    vae_mdl.to('cpu')
 
     with open('./model/current_model_params.pic', 'rb') as f:
         generator_params = pickle.load(f)
 
+    fft_len = wave_config['generate_data_settings']['fft_sz']
+    nr = 5000  # int((config['perf_params']['vehicle_slant_range_min'] * 2 / c0 - 1 / TAC) * fs)
     print('Setting up wavemodel...')
-    wave_mdl = GeneratorModel(**generator_params)
-    wave_mdl.load_state_dict(torch.load(generator_params['state_file']))
+    warm_start = False
+    if wave_config['settings']['warm_start']:
+        print('Wavemodel loaded from save state.')
+        try:
+            with open('./model/current_model_params.pic', 'rb') as f:
+                generator_params = pickle.load(f)
+            wave_mdl = GeneratorModel(**generator_params)
+            wave_mdl.load_state_dict(torch.load(generator_params['state_file']))
+            warm_start = True
+        except RuntimeError as e:
+            print(f'Wavemodel save file does not match current structure. Re-running with new structure.\n{e}')
+            wave_mdl = GeneratorModel(fft_sz=fft_len,
+                                      stft_win_sz=wave_config['settings']['stft_win_sz'],
+                                      clutter_latent_size=wave_config['model_params']['latent_dim'],
+                                      target_latent_size=wave_config['model_params']['latent_dim'], n_ants=2)
+    else:
+        print('Initializing new wavemodel...')
+        wave_mdl = GeneratorModel(fft_sz=fft_len,
+                                  stft_win_sz=wave_config['settings']['stft_win_sz'],
+                                  clutter_latent_size=wave_config['model_params']['latent_dim'],
+                                  target_latent_size=wave_config['model_params']['latent_dim'], n_ants=2)
 
     wave_config['wave_exp_params']['loss_landscape'] = True
     experiment = GeneratorExperiment(wave_mdl, wave_config['wave_exp_params'])
@@ -218,7 +228,7 @@ if __name__ == '__main__':
                       log_every_n_steps=wave_config['exp_params']['log_epoch'], devices=1,
                       strategy='ddp', gradient_clip_val=.5, callbacks=
                       [EarlyStopping(monitor='loss', patience=wave_config['wave_exp_params']['patience'],
-                                     check_finite=True), StochasticWeightAveraging(swa_lrs=1e-2)])
+                                     check_finite=True), StochasticWeightAveraging(swa_lrs=wave_config['wave_exp_params']['LR'])])
 
     print("======= Training =======")
     trainer.fit(experiment, datamodule=data)
@@ -241,7 +251,7 @@ if __name__ == '__main__':
             path_2d,
             directions,
             device,
-            res=30,
+            res=50,
             margin=1.,
         )
 
@@ -252,8 +262,16 @@ if __name__ == '__main__':
         plt.plot(loss_grid.path_2d[:, 0], loss_grid.path_2d[:, 1])
 
         xx, yy = np.meshgrid(loss_grid.coords[0], loss_grid.coords[1])
-        scaled_grid = loss_grid.grid.flatten() - loss_grid.grid.min()
-        scaled_grid /= scaled_grid.max()
+        grid_min = loss_grid.grid.min()
+        scaled_grid = loss_grid.grid.flatten() - grid_min
+        grid_max = scaled_grid.max()
+        scaled_grid /= grid_max
+
+        optim_x, optim_y = np.where(loss_grid.grid == grid_min)
+        landscape_optim = torch.tensor(loss_grid.coords[0][optim_x[0]] * directions[0] +
+                           loss_grid.coords[1][optim_y[0]] * directions[1] + loss_grid.optim_point.cpu().data.numpy())
+        wave_mdl.init_from_flat_params(landscape_optim)
+        wave_mdl.save('./model')
 
         path_interp = RegularGridInterpolator((loss_grid.coords[0], loss_grid.coords[1]), loss_grid.grid,
                                               bounds_error=False, fill_value=0)

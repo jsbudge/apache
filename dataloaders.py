@@ -31,12 +31,31 @@ def transformCovData(vae_model, device, root_dir, mu, var):
 
     with open(f'{root_dir}/clutter.enc', 'ab') as f:
         for i in range(0, ccdata.shape[0], 64):
-            ed = vae_model.encode(torch.tensor(ccdata[i:i + 64]).to(device)).detach().cpu().data.numpy().astype(np.float32)
+            ed = vae_model.encode(torch.tensor(ccdata[i:i + 64]).to(device)).detach().cpu().data.numpy().astype(
+                np.float32)
             ed.tofile(f)
     with open(f'{root_dir}/target.enc', 'ab') as f:
         for i in range(0, tcdata.shape[0], 64):
-            ed = vae_model.encode(torch.tensor(tcdata[i:i + 64]).to(device)).detach().cpu().data.numpy().astype(np.float32)
+            ed = vae_model.encode(torch.tensor(tcdata[i:i + 64]).to(device)).detach().cpu().data.numpy().astype(
+                np.float32)
             ed.tofile(f)
+
+
+class STFTDataset(Dataset):
+    def __init__(self, n_channels, n_ants, start_sz, end_sz, width_min, width_max):
+        self.n_channels = n_channels
+        self.n_ants = n_ants
+        self.start_sz = start_sz
+        self.end_sz = end_sz
+        self.width = (width_min, width_max)
+
+        self.data = np.random.normal(0, 1, (2048, n_channels, width_max, start_sz))
+
+    def __len__(self):
+        return 2048
+
+    def __getitem__(self, idx):
+        pass
 
 
 class CovarianceDataset(Dataset):
@@ -105,7 +124,7 @@ class RCSDataset(Dataset):
         optical_data = np.fromfile('/home/jeff/repo/apache/data/ge_img.dat',
                                    dtype=np.float32).reshape((-1, 256, 256, 3)).swapaxes(1, 3)
         sar_data = 10 * np.log(np.fromfile('/home/jeff/repo/apache/data/sar_img.dat',
-                               dtype=np.float32).reshape((-1, 1, 256, 256)))
+                                           dtype=np.float32).reshape((-1, 1, 256, 256)))
         param_data = np.fromfile('/home/jeff/repo/apache/data/params.dat', dtype=np.float32).reshape((-1, 7))
         self.optical_data = torch.tensor(optical_data)
         self.sar_data = torch.tensor(1 - sar_data / sar_data.min())
@@ -284,27 +303,22 @@ class WaveDataset(Dataset):
         return self.csdata.shape[0]
 
 
-class CovDataModule(LightningDataModule):
+class BaseModule(LightningDataModule):
     def __init__(
             self,
-            data_path: str,
             train_batch_size: int = 8,
             val_batch_size: int = 8,
-            num_workers: int = 0,
             pin_memory: bool = False,
-            train_split: int = 32,
+            train_split: int = 1024,
             val_split: int = 32,
             single_example: bool = False,
-            mu: float = 0.,
-            var: float = 1.,
-            noise_level: float = 0.,
+            device: str = 'cpu',
             **kwargs,
     ):
         super().__init__()
 
         self.val_dataset = None
         self.train_dataset = None
-        self.data_dir = data_path
         self.train_batch_size = train_batch_size
         self.val_batch_size = val_batch_size
         self.num_workers = cpu_count() // 2
@@ -312,18 +326,10 @@ class CovDataModule(LightningDataModule):
         self.train_split = train_split
         self.val_split = val_split
         self.single_example = single_example
-        self.mu = mu
-        self.var = var
-        self.noise_level = noise_level
+        self.device = device
 
     def setup(self, stage: Optional[str] = None) -> None:
-        self.train_dataset = CovarianceDataset(self.data_dir, split=self.train_split,
-                                               single_example=self.single_example, mu=self.mu, var=self.var,
-                                               noise_level=self.noise_level)
-
-        self.val_dataset = CovarianceDataset(self.data_dir, split=self.val_split,
-                                             single_example=self.single_example, mu=self.mu, var=self.var,
-                                             noise_level=self.noise_level)
+        pass
 
     def train_dataloader(self) -> DataLoader:
         return DataLoader(
@@ -346,21 +352,52 @@ class CovDataModule(LightningDataModule):
     def test_dataloader(self) -> Union[DataLoader, List[DataLoader]]:
         return DataLoader(
             self.val_dataset,
-            batch_size=144,
+            batch_size=self.val_batch_size,
             num_workers=self.num_workers,
             shuffle=True,
             pin_memory=self.pin_memory,
         )
 
 
-class WaveDataModule(LightningDataModule):
+class CovDataModule(BaseModule):
+    def __init__(
+            self,
+            data_path: str,
+            train_batch_size: int = 8,
+            val_batch_size: int = 8,
+            pin_memory: bool = False,
+            train_split: int = 32,
+            val_split: int = 32,
+            single_example: bool = False,
+            mu: float = 0.,
+            var: float = 1.,
+            noise_level: float = 0.,
+            **kwargs,
+    ):
+        super().__init__(train_batch_size, val_batch_size, pin_memory, train_split, val_split, single_example, device)
+
+        self.data_dir = data_path
+        self.mu = mu
+        self.var = var
+        self.noise_level = noise_level
+
+    def setup(self, stage: Optional[str] = None) -> None:
+        self.train_dataset = CovarianceDataset(self.data_dir, split=self.train_split,
+                                               single_example=self.single_example, mu=self.mu, var=self.var,
+                                               noise_level=self.noise_level)
+
+        self.val_dataset = CovarianceDataset(self.data_dir, split=self.val_split,
+                                             single_example=self.single_example, mu=self.mu, var=self.var,
+                                             noise_level=self.noise_level)
+
+
+class WaveDataModule(BaseModule):
     def __init__(
             self,
             data_path: str,
             latent_dim: int = 50,
             train_batch_size: int = 8,
             val_batch_size: int = 8,
-            num_workers: int = 0,
             pin_memory: bool = False,
             train_split: int = 1024,
             val_split: int = 32,
@@ -373,19 +410,10 @@ class WaveDataModule(LightningDataModule):
             max_pulse_length: int = 2,
             **kwargs,
     ):
-        super().__init__()
+        super().__init__(train_batch_size, val_batch_size, pin_memory, train_split, val_split, single_example, device)
 
-        self.val_dataset = None
         self.latent_dim = latent_dim
-        self.train_dataset = None
         self.data_dir = data_path
-        self.train_batch_size = train_batch_size
-        self.val_batch_size = val_batch_size
-        self.num_workers = cpu_count() // 2
-        self.pin_memory = pin_memory
-        self.train_split = train_split
-        self.val_split = val_split
-        self.single_example = single_example
         self.min_pulse_length = min_pulse_length
         self.max_pulse_length = max_pulse_length
         self.device = device
@@ -403,41 +431,13 @@ class WaveDataModule(LightningDataModule):
                                        single_example=self.single_example, min_pulse_length=self.min_pulse_length,
                                        max_pulse_length=self.max_pulse_length, device=self.device)
 
-    def train_dataloader(self) -> DataLoader:
-        return DataLoader(
-            self.train_dataset,
-            batch_size=self.train_batch_size,
-            num_workers=self.num_workers,
-            shuffle=True,
-            pin_memory=self.pin_memory,
-        )
 
-    def val_dataloader(self) -> Union[DataLoader, List[DataLoader]]:
-        return DataLoader(
-            self.val_dataset,
-            batch_size=self.val_batch_size,
-            num_workers=self.num_workers,
-            shuffle=False,
-            pin_memory=self.pin_memory,
-        )
-
-    def test_dataloader(self) -> Union[DataLoader, List[DataLoader]]:
-        return DataLoader(
-            self.val_dataset,
-            batch_size=144,
-            num_workers=self.num_workers,
-            shuffle=True,
-            pin_memory=self.pin_memory,
-        )
-
-
-class RCSModule(LightningDataModule):
+class RCSModule(BaseModule):
     def __init__(
             self,
             dataset_size: int = 256,
             train_batch_size: int = 8,
             val_batch_size: int = 8,
-            num_workers: int = 0,
             pin_memory: bool = False,
             train_split: int = 1024,
             val_split: int = 32,
@@ -445,51 +445,43 @@ class RCSModule(LightningDataModule):
             device: str = 'cpu',
             **kwargs,
     ):
-        super().__init__()
+        super().__init__(train_batch_size, val_batch_size, pin_memory, train_split, val_split, single_example, device)
 
-        self.val_dataset = None
-        self.train_dataset = None
-        self.train_batch_size = train_batch_size
-        self.val_batch_size = val_batch_size
-        self.num_workers = cpu_count() // 2
-        self.pin_memory = pin_memory
-        self.train_split = train_split
-        self.val_split = val_split
-        self.single_example = single_example
-        self.device = device
         self.dataset_size = dataset_size
 
     def setup(self, stage: Optional[str] = None) -> None:
         self.train_dataset = RCSDataset(split=self.train_split)
-
         self.val_dataset = RCSDataset(split=self.val_split)
 
-    def train_dataloader(self) -> DataLoader:
-        return DataLoader(
-            self.train_dataset,
-            batch_size=self.train_batch_size,
-            num_workers=self.num_workers,
-            shuffle=True,
-            pin_memory=self.pin_memory,
-        )
 
-    def val_dataloader(self) -> Union[DataLoader, List[DataLoader]]:
-        return DataLoader(
-            self.val_dataset,
-            batch_size=self.val_batch_size,
-            num_workers=self.num_workers,
-            shuffle=False,
-            pin_memory=self.pin_memory,
-        )
+class STFTModule(BaseModule):
+    def __init__(
+            self,
+            n_channels, n_ants, start_sz, end_sz, width_min, width_max,
+            dataset_size: int = 256,
+            train_batch_size: int = 8,
+            val_batch_size: int = 8,
+            pin_memory: bool = False,
+            train_split: int = 1024,
+            val_split: int = 32,
+            single_example: bool = False,
+            device: str = 'cpu',
+            **kwargs,
+    ):
+        super().__init__(train_batch_size, val_batch_size, pin_memory, train_split, val_split, single_example, device)
 
-    def test_dataloader(self) -> Union[DataLoader, List[DataLoader]]:
-        return DataLoader(
-            self.val_dataset,
-            batch_size=144,
-            num_workers=self.num_workers,
-            shuffle=True,
-            pin_memory=self.pin_memory,
-        )
+        self.dataset_size = dataset_size
+        self.params = (n_channels, n_ants, start_sz, end_sz, width_min, width_max)
+        self.n_channels = n_channels
+        self.n_ants = n_ants
+        self.start_sz = start_sz
+        self.end_sz = end_sz
+        self.width_min = width_min
+        self.width_max = width_max
+
+    def setup(self, stage: Optional[str] = None) -> None:
+        self.train_dataset = STFTDataset(*self.params)
+        self.val_dataset = STFTDataset(*self.params)
 
 
 if __name__ == '__main__':

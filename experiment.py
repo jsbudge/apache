@@ -1,15 +1,12 @@
 import contextlib
 import os
 import torch
-from torch import optim
+from torch import optim, Tensor
 from models import BaseVAE
 from typing import TypeVar
 import pytorch_lightning as pl
 from pathlib import Path
 import torchvision.utils as vutils
-
-# from torch import tensor as Tensor
-Tensor = TypeVar('torch.tensor')
 
 
 class VAExperiment(pl.LightningModule):
@@ -48,7 +45,7 @@ class VAExperiment(pl.LightningModule):
         if self.params['output_images'] and self.trainer.is_global_zero:
             Path(f'{self.logger.log_dir}/Reconstructions').mkdir(parents=True, exist_ok=True)
             Path(f'{self.logger.log_dir}/Samples').mkdir(parents=True, exist_ok=True)
-        if self.trainer.is_global_zero:
+        if self.trainer.is_global_zero and self.logger:
             self.logger.log_graph(self, self.model.example_input_array)
 
     def validation_step(self, batch, batch_idx, optimizer_idx=0):
@@ -149,8 +146,8 @@ class GeneratorExperiment(pl.LightningModule):
         if 'retain_first_backpass' in self.params:
             self.hold_graph = self.params['retain_first_backpass']
 
-    def forward(self, clutter: Tensor, target: Tensor, pulse_length: int) -> Tensor:
-        return self.model(clutter, target, pulse_length)
+    def forward(self, clutter: Tensor, target: Tensor, pulse_length: int, bandwidth: float) -> Tensor:
+        return self.model(clutter, target, pulse_length, bandwidth)
 
     def training_step(self, batch, batch_idx):
         train_loss = self.train_val_get(batch, batch_idx)
@@ -187,8 +184,8 @@ class GeneratorExperiment(pl.LightningModule):
         self.curr_device = clutter_cov.device
         self.automatic_optimization = True
 
-        results = self.forward(clutter_cov, target_cov, pulse_length=pulse_length)
-        train_loss = self.model.loss_function(results, clutter_spec, target_spec)
+        results = self.forward(clutter_cov, target_cov, pulse_length=pulse_length, bandwidth=self.params['bandwidth'])
+        train_loss = self.model.loss_function(results, clutter_spec, target_spec, self.params['bandwidth'])
 
         self.log_dict({key: val.item() for key, val in train_loss.items()}, sync_dist=True, prog_bar=True)
         return train_loss

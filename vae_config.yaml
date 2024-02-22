@@ -23,6 +23,7 @@ settings:
   stft_win_sz: 256
   plp: .5
   warm_start: True
+  n_ants: 2
 
 generate_data_settings:
   iterations: 10
@@ -63,15 +64,16 @@ exp_params:
 
 # For training of wavemodel
 wave_exp_params:
-  LR: 0.00000001
+  LR: 0.0000001
   weight_decay: 0.08
   scheduler_gamma: 0.95
   kld_weight: .39
   log_epoch: 10
   is_tuning: False
-  save_model: True
+  save_model: False
   loss_landscape: False
   patience: 50
+  bandwidth: 400000000.
 
 # For training of rcs model
 rcs_exp_params:
@@ -99,4 +101,4 @@ model_params:
 
 train_params:
   log_dir: ./logs
-  max_epochs: 1500
+  max_epochs: 30

@@ -226,3 +226,40 @@ class AttentionConv(nn.Module):
         out = torch.einsum('bnchwk,bnchwk -> bnchw', out, v_out).view(batch, -1, height, width)
 
         return out
+
+
+class BandwidthAttention(LightningModule):
+
+    def __init__(self):
+        super(BandwidthAttention, self).__init__()
+
+    def forward(self, x, bin_bw):
+        window = torch.zeros((x.shape[0], x.shape[2]), device=self.device)
+        window[:, :bin_bw // 2] = 1.
+        window[:, -bin_bw // 2:] = 1.
+        return window
+
+
+class BandwidthEncoder(LightningModule):
+    def __init__(self, fs, nbins):
+        super(BandwidthEncoder, self).__init__()
+        self.fs = fs
+        self.nbins = nbins
+
+    def forward(self, x, bandwidth):
+        encoder = torch.zeros((x.shape[0], self.nbins), device=self.device)
+        encoder[:, int(bandwidth / self.fs * self.nbins)] = 1
+        return encoder
+
+
+class MMExpand(LightningModule):
+
+    def __init__(self, channels):
+        super(MMExpand, self).__init__()
+        self.channels = nn.Parameter(torch.ones(1, 1, channels, device=self.device))
+
+    def forward(self, x, nframes):
+        y = torch.ones((1, nframes, 1), device=self.device) * self.channels
+        return x * y
+
+

@@ -106,15 +106,19 @@ if __name__ == '__main__':
     if warm_start:
         name = 'WaveModel'
         # Find the latest version and append to that
-        mnum = max(int(n.split('_')[-1]) for n in listdir(f"{config['train_params']['log_dir']}/{name}"))
-        logger = loggers.TensorBoardLogger(config['train_params']['log_dir'],
-                                           name="WaveModel", version=mnum, log_graph=True)
+        try:
+            mnum = max(int(n.split('_')[-1]) for n in listdir(f"{config['train_params']['log_dir']}/{name}"))
+            logger = loggers.TensorBoardLogger(config['train_params']['log_dir'],
+                                               name="WaveModel", version=mnum, log_graph=True)
+        except ValueError:
+            logger = loggers.TensorBoardLogger(config['train_params']['log_dir'],
+                                               name="WaveModel", log_graph=True)
     else:
         logger = loggers.TensorBoardLogger(config['train_params']['log_dir'],
                                            name="WaveModel", log_graph=True)
     # logger.experiment.add_graph(wave_mdl, wave_mdl.example_input_array)
     trainer = Trainer(logger=logger, max_epochs=config['train_params']['max_epochs'],
-                      log_every_n_steps=config['exp_params']['log_epoch'], devices=1,
+                      log_every_n_steps=config['exp_params']['log_epoch'],
                       strategy='ddp', gradient_clip_val=.5, callbacks=
                       [EarlyStopping(monitor='loss', patience=config['wave_exp_params']['patience'],
                                      check_finite=True),
@@ -134,7 +138,7 @@ if __name__ == '__main__':
             cs = cs.to(device)
             ts = ts.to(device)
 
-            waves = wave_mdl.getWaveform(cc, tc, [nr]).cpu().data.numpy()
+            waves = wave_mdl.getWaveform(cc, tc, [nr], config['settings']['bandwidth']).cpu().data.numpy()
             print('Loaded waveforms...')
 
             clutter = cs.cpu().data.numpy()
@@ -183,7 +187,8 @@ if __name__ == '__main__':
             plt.legend(['Waveform 1', 'Waveform 2', 'Cross Correlation', 'Linear Chirp'])
             plt.xlabel('Lag')
 
-            waves = wave_mdl.getWaveform(cc, tc, [nr], scale=True).cpu().data.numpy()
+            waves = wave_mdl.getWaveform(cc, tc, [nr], bandwidth=config['settings']['bandwidth'],
+                                         scale=True).cpu().data.numpy()
 
             plt.figure('Time Series')
             wave1 = waves.copy()
