@@ -182,8 +182,9 @@ class GeneratorExperiment(pl.LightningModule):
         clutter_cov, target_cov, clutter_spec, target_spec, pulse_length = batch
         self.automatic_optimization = True
 
-        results = self.forward(clutter_cov, target_cov, pulse_length=pulse_length, bandwidth=self.params['bandwidth'])
-        train_loss = self.model.loss_function(results, clutter_spec, target_spec, self.params['bandwidth'])
+        bandwidth = torch.ones(clutter_cov.shape[0], 1, device=self.device) * self.params['bandwidth']
+        results = self.forward(clutter_cov, target_cov, pulse_length=pulse_length, bandwidth=bandwidth)
+        train_loss = self.model.loss_function(results, clutter_spec, target_spec)
 
         self.log_dict({key: val.item() for key, val in train_loss.items()}, sync_dist=True, prog_bar=True)
         return train_loss

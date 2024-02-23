@@ -71,8 +71,79 @@ class FlatModule(LightningModule):
         ]
 
 
+class WindowModule(LightningModule):
+    def __init__(self, fs, stft_win_sz, channel_sz, params, **kwargs) -> None:
+        super(WindowModule, self).__init__()
+        self.fs = fs
+        self.stft_win_sz = stft_win_sz
+        self.params = params
+        self.channel_sz = channel_sz
+
+        self.bencode = BandwidthEncoder(fs, stft_win_sz)
+        self.encoder = nn.Sequential(
+            nn.Linear(stft_win_sz, stft_win_sz),
+            nn.LeakyReLU(),
+        )
+
+        self.conv_layers = nn.Sequential(
+            nn.Conv1d(1, channel_sz, 3, stride=1, padding=1),
+            nn.Tanh(),
+            nn.Conv1d(channel_sz, channel_sz, 21, stride=1, padding=10),
+            nn.Tanh(),
+            nn.Conv1d(channel_sz, 1, 1, 1, 0),
+            nn.Tanh(),
+        )
+        self.conv_layers.apply(init_weights)
+
+        self.full = nn.Sequential(
+            nn.Linear(stft_win_sz, stft_win_sz),
+            nn.Sigmoid(),
+        )
+
+        self.loss = nn.MSELoss()
+
+    def forward(self, bandwidth):
+        if isinstance(bandwidth, float):
+            x = self.bencode(1, bandwidth)
+        else:
+            x = self.bencode(len(bandwidth), bandwidth)
+        x = self.encoder(x)
+        x = self.conv_layers(x.view(-1, 1, self.stft_win_sz))
+        x = self.full(x.squeeze(1))
+        return x
+
+    def training_step(self, batch, batch_idx):
+        x, y = batch
+        y_pred = self.forward(x)
+        loss = self.loss(y_pred, y)
+        self.log_dict({'train_loss': loss}, prog_bar=True, sync_dist=True)
+        return loss
+
+    def validation_step(self, batch, batch_idx) -> STEP_OUTPUT:
+        x, y = batch
+        y_pred = self.forward(x)
+        loss = self.loss(y_pred, y)
+        self.log_dict({'val_loss': loss}, prog_bar=True, sync_dist=True)
+        return loss
+
+    def configure_optimizers(self) -> OptimizerLRScheduler:
+        optims = [optim.Adam(self.parameters(), lr=self.params['LR'], weight_decay=self.params['weight_decay'])]
+        if 'scheduler_gamma' not in self.params:
+            return optims
+        scheds = [optim.lr_scheduler.ExponentialLR(optims[0], gamma=self.params['scheduler_gamma'])]
+        return optims, scheds
+
+    def save(self, fpath):
+        torch.save(self.state_dict(), f'{fpath}.state')
+        with open(f'{fpath}.pic', 'wb') as f:
+            pickle.dump({'fs': self.fs, 'stft_win_sz': self.stft_win_sz,
+                         'params': self.params, 'channel_sz': self.channel_sz,
+                         'state_file': f'{fpath}.state'}, f)
+
+
 class GeneratorModel(FlatModule):
     def __init__(self,
+                 window_model: WindowModule,
                  fft_sz: int,
                  stft_win_sz: int,
                  clutter_latent_size: int,
@@ -80,7 +151,7 @@ class GeneratorModel(FlatModule):
                  n_ants: int,
                  activation: str = 'leaky',
                  fs: float = 2e9,
-                 channel_sz: int = 24,
+                 channel_sz: int = 32,
                  **kwargs,
                  ) -> None:
         super(GeneratorModel, self).__init__()
@@ -93,6 +164,8 @@ class GeneratorModel(FlatModule):
         self.clutter_latent_size = clutter_latent_size
         self.target_latent_size = target_latent_size
         self.fs = fs
+        self.window_module = window_model
+        self.window_module.requires_grad_(False)
 
         stack_output_sz = self.stft_win_sz // 4
 
@@ -140,13 +213,13 @@ class GeneratorModel(FlatModule):
 
         self.norms = nn.ModuleList()
         self.norms.extend(
-            nn.BatchNorm2d(channel_sz)
+            nn.LocalResponseNorm(channel_sz)
             for _ in self.backbone
         )
 
         self.init_layer = nn.Sequential(
             nn.Conv2d(2, channel_sz, 1, 1, 0),
-            nn.LeakyReLU(),
+            nn.Tanhshrink(),
         )
 
         self.final = nn.Sequential(
@@ -166,9 +239,10 @@ class GeneratorModel(FlatModule):
                                     torch.tensor([1250]), torch.tensor(400e6))
 
     def forward(self, clutter: torch.tensor, target: torch.tensor,
-                pulse_length: [int], bandwidth: float) -> torch.tensor:
+                pulse_length: [int], bandwidth: Tensor) -> torch.tensor:
         # Use only the first pulse_length because it gives batch_size random numbers as part of the dataloader
         n_frames = 1 + (pulse_length[0] - self.stft_win_sz) // self.hop
+        win = self.window_module(bandwidth)
 
         # Get clutter and target features, for LSTM input
         x = self.clutter_stack(clutter).unsqueeze(1)
@@ -192,7 +266,7 @@ class GeneratorModel(FlatModule):
         for op, d, bn in zip(outputs, self.deep_layers, self.norms):
             x = bn(d(x) + op)
         x = self.final(x)
-        return x.swapaxes(2, 3)
+        return x.swapaxes(2, 3) * win.view(-1, 1, self.stft_win_sz, 1)
 
     def loss_function(self, *args, **kwargs) -> dict:
         # These values are set here purely for debugging purposes
@@ -325,65 +399,6 @@ class GeneratorModel(FlatModule):
             g1 = g1 / torch.sqrt(torch.sum(g1 * torch.conj(g1), dim=1))[:, None]  # Unit energy calculation
             gen_waveform[:, n, ...] = g1
         return gen_waveform
-
-
-class WindowModule(LightningModule):
-    def __init__(self, fs, stft_win_sz, channel_sz, params) -> None:
-        super(WindowModule, self).__init__()
-        self.fs = fs
-        self.stft_win_sz = stft_win_sz
-        self.params = params
-
-        self.bencode = BandwidthEncoder(fs, stft_win_sz)
-        self.encoder = nn.Sequential(
-            nn.Linear(stft_win_sz, stft_win_sz),
-            nn.LeakyReLU(),
-        )
-
-        self.conv_layers = nn.Sequential(
-            nn.Conv1d(1, channel_sz, 3, stride=1, padding=1),
-            nn.Tanh(),
-            nn.Conv1d(channel_sz, channel_sz, 21, stride=1, padding=10),
-            nn.Tanh(),
-            nn.Conv1d(channel_sz, 1, 1, 1, 0),
-            nn.Tanh(),
-        )
-        self.conv_layers.apply(init_weights)
-
-        self.full = nn.Sequential(
-            nn.Linear(stft_win_sz, stft_win_sz),
-            nn.Sigmoid(),
-        )
-
-        self.loss = nn.MSELoss()
-
-    def forward(self, bandwidth):
-        x = self.bencode(len(bandwidth), bandwidth)
-        x = self.encoder(x)
-        x = self.conv_layers(x.view(-1, 1, self.stft_win_sz))
-        x = self.full(x.squeeze(1))
-        return x
-
-    def training_step(self, batch, batch_idx):
-        x, y = batch
-        y_pred = self.forward(x)
-        loss = self.loss(y_pred, y)
-        self.log_dict({'train_loss': loss}, prog_bar=True, sync_dist=True)
-        return loss
-
-    def validation_step(self, batch, batch_idx) -> STEP_OUTPUT:
-        x, y = batch
-        y_pred = self.forward(x)
-        loss = self.loss(y_pred, y)
-        self.log_dict({'val_loss': loss}, prog_bar=True, sync_dist=True)
-        return loss
-
-    def configure_optimizers(self) -> OptimizerLRScheduler:
-        optims = [optim.Adam(self.parameters(), lr=self.params['LR'], weight_decay=self.params['weight_decay'])]
-        if 'scheduler_gamma' not in self.params:
-            return optims
-        scheds = [optim.lr_scheduler.ExponentialLR(optims[0], gamma=self.params['scheduler_gamma'])]
-        return optims, scheds
 
 
 class RCSModel(FlatModule):
