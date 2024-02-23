@@ -9,10 +9,10 @@ import torch
 from pytorch_lightning import Trainer, loggers, seed_everything
 from pytorch_lightning.callbacks import EarlyStopping, StochasticWeightAveraging
 import yaml
-from dataloaders import WaveDataModule
+from dataloaders import WaveDataModule, STFTModule
 from experiment import GeneratorExperiment
 from models import BetaVAE, InfoVAE, WAE_MMD
-from waveform_model import GeneratorModel, init_weights
+from waveform_model import GeneratorModel, init_weights, WindowModule
 from os import listdir
 
 # pio.renderers.default = 'svg'
@@ -58,7 +58,7 @@ if __name__ == '__main__':
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     # torch.cuda.empty_cache()
 
-    seed_everything(123, workers=True)
+    seed_everything(np.random.randint(1, 2048), workers=True)
 
     with open('./vae_config.yaml', 'r') as file:
         try:
@@ -69,6 +69,24 @@ if __name__ == '__main__':
     fft_len = config['generate_data_settings']['fft_sz']
     nr = 5000  # int((config['perf_params']['vehicle_slant_range_min'] * 2 / c0 - 1 / TAC) * fs)
 
+    head = WindowModule(fs,
+                        config['settings']['stft_win_sz'], 32,
+                        {'LR': 1e-1, 'weight_decay': .01, 'scheduler_gamma': .98})
+    head.to(device)
+
+    data = STFTModule(fs, config['settings']['stft_win_sz'], 250e6, 1e9, **config['dataset_params'])
+    data.setup()
+    trainer = Trainer(max_epochs=200,
+                      log_every_n_steps=config['exp_params']['log_epoch'],
+                      strategy='ddp', callbacks=
+                      [StochasticWeightAveraging(swa_lrs=1e-3)])
+    trainer.fit(head, datamodule=data)
+
+    bw, win = next(iter(data.val_dataset))
+
+    gen_win = head(bw)
+
+    '''
     print('Setting up wavemodel...')
     warm_start = False
     if config['settings']['warm_start']:
@@ -118,7 +136,7 @@ if __name__ == '__main__':
                                            name="WaveModel", log_graph=True)
     # logger.experiment.add_graph(wave_mdl, wave_mdl.example_input_array)
     trainer = Trainer(logger=logger, max_epochs=config['train_params']['max_epochs'],
-                      log_every_n_steps=config['exp_params']['log_epoch'],
+                      log_every_n_steps=config['exp_params']['log_epoch'], devices=1,
                       strategy='ddp', gradient_clip_val=.5, callbacks=
                       [EarlyStopping(monitor='loss', patience=config['wave_exp_params']['patience'],
                                      check_finite=True),
@@ -213,4 +231,4 @@ if __name__ == '__main__':
                 wave_mdl.save('./model')
                 print('Model saved to disk.')
             except Exception as e:
-                print(f'Model not saved: {e}')
+                print(f'Model not saved: {e}')'''

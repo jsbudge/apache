@@ -140,7 +140,6 @@ class GeneratorExperiment(pl.LightningModule):
 
         self.model = wave_model
         self.params = params
-        self.curr_device = None
         self.hold_graph = False
         self.optim_path = []
         if 'retain_first_backpass' in self.params:
@@ -181,7 +180,6 @@ class GeneratorExperiment(pl.LightningModule):
 
     def train_val_get(self, batch, batch_idx):
         clutter_cov, target_cov, clutter_spec, target_spec, pulse_length = batch
-        self.curr_device = clutter_cov.device
         self.automatic_optimization = True
 
         results = self.forward(clutter_cov, target_cov, pulse_length=pulse_length, bandwidth=self.params['bandwidth'])
@@ -200,7 +198,6 @@ class RCSExperiment(pl.LightningModule):
 
         self.model = vae_model
         self.params = params
-        self.curr_device = None
         self.hold_graph = False
         with contextlib.suppress(Exception):
             self.hold_graph = self.params['retain_first_backpass']
@@ -210,7 +207,6 @@ class RCSExperiment(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         opt_img, sar_img, pose = batch
-        self.curr_device = opt_img.device
         self.automatic_optimization = True
 
         results = self.forward(opt_img, pose)
@@ -222,7 +218,6 @@ class RCSExperiment(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx, optimizer_idx=0):
         opt_img, sar_img, pose = batch
-        self.curr_device = opt_img.device
         self.automatic_optimization = True
 
         results = self.forward(opt_img, pose)

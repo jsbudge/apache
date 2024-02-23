@@ -129,6 +129,7 @@ class SelfAttention(LightningModule):
     This is taken from a Medium article that references Self-Attention Generative Adversarial Networks:
     https://arxiv.org/pdf/1805.08318.pdf
     '''
+
     def __init__(self, n_channels, *args: Any, **kwargs: Any):
         super().__init__(*args, **kwargs)
         self.query = nn.Conv1d(n_channels, n_channels // 8, kernel_size=1, bias=False)
@@ -151,6 +152,7 @@ class STFTAttention(LightningModule):
     This is taken from a Medium article that references Self-Attention Generative Adversarial Networks:
     https://arxiv.org/pdf/1805.08318.pdf
     '''
+
     def __init__(self, n_channels, *args: Any, **kwargs: Any):
         super().__init__(*args, **kwargs)
         self.query = nn.Conv1d(n_channels, n_channels, kernel_size=1, bias=False)
@@ -246,9 +248,10 @@ class BandwidthEncoder(LightningModule):
         self.fs = fs
         self.nbins = nbins
 
-    def forward(self, x, bandwidth):
-        encoder = torch.zeros((x.shape[0], self.nbins), device=self.device)
-        encoder[:, int(bandwidth / self.fs * self.nbins)] = 1
+    def forward(self, batch, bandwidth):
+        encoder = torch.zeros((batch, self.nbins), device=self.device)
+        encoder[torch.arange(0, batch, 1, device=self.device),
+        torch.floor((bandwidth / self.fs * self.nbins)).type(torch.int)] = 1.
         return encoder
 
 
@@ -261,5 +264,3 @@ class MMExpand(LightningModule):
     def forward(self, x, nframes):
         y = torch.ones((1, nframes, 1), device=self.device) * self.channels
         return x * y
-
-

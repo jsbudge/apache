@@ -35,8 +35,8 @@ generate_data_settings:
 
 dataset_params:
   data_path: /data6/Jeff/vae_training_data
-  train_batch_size: 32
-  val_batch_size: 32
+  train_batch_size: 128
+  val_batch_size: 128
   fft_sz: 4096
   num_workers: 0
   pin_memory: False
@@ -64,9 +64,9 @@ exp_params:
 
 # For training of wavemodel
 wave_exp_params:
-  LR: 0.0000001
-  weight_decay: 0.08
-  scheduler_gamma: 0.95
+  LR: 0.00005
+  weight_decay: 0.78
+  scheduler_gamma: 0.33
   kld_weight: .39
   log_epoch: 10
   is_tuning: False

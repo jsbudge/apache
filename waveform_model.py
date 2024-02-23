@@ -3,6 +3,7 @@ import pickle
 from typing import Optional, Union, Tuple, Dict
 import torch
 import yaml
+from lightning_fabric import seed_everything
 from pytorch_lightning.callbacks import EarlyStopping, StochasticWeightAveraging
 from pytorch_lightning.utilities.types import STEP_OUTPUT, OptimizerLRScheduler
 from torch import nn, Tensor, optim
@@ -79,7 +80,7 @@ class GeneratorModel(FlatModule):
                  n_ants: int,
                  activation: str = 'leaky',
                  fs: float = 2e9,
-                 channel_sz: int = 32,
+                 channel_sz: int = 24,
                  **kwargs,
                  ) -> None:
         super(GeneratorModel, self).__init__()
@@ -149,15 +150,14 @@ class GeneratorModel(FlatModule):
         )
 
         self.final = nn.Sequential(
-            nn.ConvTranspose2d(channel_sz, channel_sz, kernel_size=(4, 3), stride=(2, 1), padding=1),
+            nn.ConvTranspose2d(channel_sz, channel_sz, kernel_size=(3, 4), stride=(1, 2), padding=1),
             nn.Tanh(),
-            nn.ConvTranspose2d(channel_sz, channel_sz, kernel_size=(4, 3), stride=(2, 1), padding=1),
+            nn.ConvTranspose2d(channel_sz, channel_sz, kernel_size=(3, 4), stride=(1, 2), padding=1),
             nn.Tanh(),
             nn.Conv2d(channel_sz, n_ants * 2, 1, 1, 0),
         )
         self.final.apply(init_weights)
 
-        self.bandwidth_onehot = BandwidthEncoder(fs, stack_output_sz)
         self.expand = MMExpand(stack_output_sz)
 
         self.stack_output_sz = stack_output_sz
@@ -175,7 +175,7 @@ class GeneratorModel(FlatModule):
         t_stack = self.target_stack(target).unsqueeze(1)
 
         x = torch.concat([self.expand(x, n_frames).unsqueeze(1), self.expand(t_stack, n_frames).unsqueeze(1)],
-                         dim=1).reshape(-1, 2, self.stack_output_sz, n_frames)
+                         dim=1).reshape(-1, 2, n_frames, self.stack_output_sz)
 
         x = self.init_layer(x)
 
@@ -191,7 +191,8 @@ class GeneratorModel(FlatModule):
         # Combine with deep layers
         for op, d, bn in zip(outputs, self.deep_layers, self.norms):
             x = bn(d(x) + op)
-        return self.final(x)
+        x = self.final(x)
+        return x.swapaxes(2, 3)
 
     def loss_function(self, *args, **kwargs) -> dict:
         # These values are set here purely for debugging purposes
@@ -326,26 +327,41 @@ class GeneratorModel(FlatModule):
         return gen_waveform
 
 
-class WaveformExpansionHead(LightningModule):
-    def __init__(self, n_ants, fft_sz, stft_win_sz, channel_sz, params) -> None:
-        super(WaveformExpansionHead, self).__init__()
-        self.n_ants = n_ants
-        self.fft_sz = fft_sz
+class WindowModule(LightningModule):
+    def __init__(self, fs, stft_win_sz, channel_sz, params) -> None:
+        super(WindowModule, self).__init__()
+        self.fs = fs
         self.stft_win_sz = stft_win_sz
         self.params = params
-        self.final = nn.Sequential(
-            nn.ConvTranspose2d(channel_sz, channel_sz, kernel_size=(4, 3), stride=(2, 1), padding=1),
-            nn.Tanh(),
-            nn.ConvTranspose2d(channel_sz, channel_sz, kernel_size=(4, 3), stride=(2, 1), padding=1),
-            nn.Tanh(),
-            nn.Conv2d(channel_sz, n_ants * 2, 1, 1, 0),
+
+        self.bencode = BandwidthEncoder(fs, stft_win_sz)
+        self.encoder = nn.Sequential(
+            nn.Linear(stft_win_sz, stft_win_sz),
+            nn.LeakyReLU(),
         )
-        self.final.apply(init_weights)
+
+        self.conv_layers = nn.Sequential(
+            nn.Conv1d(1, channel_sz, 3, stride=1, padding=1),
+            nn.Tanh(),
+            nn.Conv1d(channel_sz, channel_sz, 21, stride=1, padding=10),
+            nn.Tanh(),
+            nn.Conv1d(channel_sz, 1, 1, 1, 0),
+            nn.Tanh(),
+        )
+        self.conv_layers.apply(init_weights)
+
+        self.full = nn.Sequential(
+            nn.Linear(stft_win_sz, stft_win_sz),
+            nn.Sigmoid(),
+        )
 
         self.loss = nn.MSELoss()
 
-    def forward(self, x):
-        x = self.final(x)
+    def forward(self, bandwidth):
+        x = self.bencode(len(bandwidth), bandwidth)
+        x = self.encoder(x)
+        x = self.conv_layers(x.view(-1, 1, self.stft_win_sz))
+        x = self.full(x.squeeze(1))
         return x
 
     def training_step(self, batch, batch_idx):
@@ -424,24 +440,3 @@ class RCSModel(FlatModule):
 
     def loss_function(self, *args, **kwargs) -> dict:
         return {'loss': self.loss(args[0], args[1])}
-
-
-if __name__ == '__main__':
-    with open('./vae_config.yaml', 'r') as file:
-        try:
-            config = yaml.safe_load(file)
-        except yaml.YAMLError as exc:
-            print(exc)
-    head = WaveformExpansionHead(config['settings']['n_ants'], config['generate_data_settings']['fft_sz'],
-                                 config['settings']['stft_win_sz'], 32,
-                                 {'LR': 1e-7, 'weight_decay': .01, 'scheduler_gamma': .95})
-
-    data = STFTModule(32, config['settings']['n_ants'], config['settings']['stft_win_sz'] // 4,
-                      config['settings']['stft_win_sz'], 10, 56, **config['dataset_params'])
-    data.setup()
-    trainer = Trainer(max_epochs=config['train_params']['max_epochs'],
-                      log_every_n_steps=config['exp_params']['log_epoch'],
-                      strategy='ddp', gradient_clip_val=.5, callbacks=
-                      [EarlyStopping(monitor='loss', patience=config['wave_exp_params']['patience'],
-                                     check_finite=True),
-                       StochasticWeightAveraging(swa_lrs=1e-7)])

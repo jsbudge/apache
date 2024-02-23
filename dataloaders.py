@@ -11,6 +11,7 @@ from pathlib import Path
 import numpy as np
 from multiprocessing import cpu_count
 from scipy.ndimage import sobel
+from scipy.signal.windows import taylor
 
 from models import BaseVAE, InfoVAE, WAE_MMD, BetaVAE
 
@@ -42,20 +43,27 @@ def transformCovData(vae_model, device, root_dir, mu, var):
 
 
 class STFTDataset(Dataset):
-    def __init__(self, n_channels, n_ants, start_sz, end_sz, width_min, width_max):
-        self.n_channels = n_channels
-        self.n_ants = n_ants
-        self.start_sz = start_sz
-        self.end_sz = end_sz
-        self.width = (width_min, width_max)
+    def __init__(self, bwidth_min, bwidth_max, fs, nbins):
+        self.width = (bwidth_min, bwidth_max)
 
-        self.data = np.random.normal(0, 1, (2048, n_channels, width_max, start_sz))
+        self.data = np.random.uniform(bwidth_min, bwidth_max, (2048, 1))
+        win_sz = (self.data / fs * nbins).astype(int)
+        win_sz[win_sz % 2 != 0] += 1
+        self.labels = np.zeros((2048, nbins))
+
+        for n in range(2048):
+            twin = taylor(win_sz[n][0], 15, 60)
+            self.labels[n, :win_sz[n][0] // 2] = twin[-win_sz[n][0] // 2:]
+            self.labels[n, -win_sz[n][0] // 2:] = twin[:win_sz[n][0] // 2]
+
+        self.data = torch.tensor(self.data, dtype=torch.float32)
+        self.labels = torch.tensor(self.labels, dtype=torch.float32)
 
     def __len__(self):
         return 2048
 
     def __getitem__(self, idx):
-        pass
+        return self.data[idx], self.labels[idx]
 
 
 class CovarianceDataset(Dataset):
@@ -457,7 +465,7 @@ class RCSModule(BaseModule):
 class STFTModule(BaseModule):
     def __init__(
             self,
-            n_channels, n_ants, start_sz, end_sz, width_min, width_max,
+            fs, end_sz, width_min, width_max,
             dataset_size: int = 256,
             train_batch_size: int = 8,
             val_batch_size: int = 8,
@@ -471,10 +479,7 @@ class STFTModule(BaseModule):
         super().__init__(train_batch_size, val_batch_size, pin_memory, train_split, val_split, single_example, device)
 
         self.dataset_size = dataset_size
-        self.params = (n_channels, n_ants, start_sz, end_sz, width_min, width_max)
-        self.n_channels = n_channels
-        self.n_ants = n_ants
-        self.start_sz = start_sz
+        self.params = (width_min, width_max, fs, end_sz)
         self.end_sz = end_sz
         self.width_min = width_min
         self.width_max = width_max
