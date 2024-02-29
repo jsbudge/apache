@@ -22,7 +22,7 @@ settings:
   bandwidth: 400000000.
   stft_win_sz: 256
   plp: .5
-  warm_start: True
+  warm_start: False
   n_ants: 2
 
 generate_data_settings:
@@ -42,7 +42,7 @@ dataset_params:
   pin_memory: False
   train_split: 8000
   val_split: 128
-  single_example: False
+  single_example: True
   # These values are taken from a sampling of data
   mu: 0. # 0.023397775
   var: 1. # 0.15680195
@@ -65,13 +65,13 @@ exp_params:
 # For training of wavemodel
 wave_exp_params:
   window_path: ./model/wmdl
-  LR: 0.00005
-  weight_decay: 0.78
-  scheduler_gamma: 0.33
+  LR: 0.0001
+  weight_decay: 0.01
+  scheduler_gamma: 0.6
   kld_weight: .39
   log_epoch: 10
   is_tuning: False
-  save_model: True
+  save_model: False
   loss_landscape: False
   patience: 50
   bandwidth: 400000000.
@@ -102,4 +102,4 @@ model_params:
 
 train_params:
   log_dir: ./logs
-  max_epochs: 6
+  max_epochs: 1

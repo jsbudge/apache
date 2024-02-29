@@ -9,11 +9,13 @@ from pytorch_lightning.utilities.types import STEP_OUTPUT, OptimizerLRScheduler
 from torch import nn, Tensor, optim
 from pytorch_lightning import LightningModule, Trainer
 from torch.nn import functional as nn_func
+from torchaudio.functional import inverse_spectrogram
 from numpy import log2, ceil
 from torchvision import transforms
+from scipy.signal import istft
 
 from dataloaders import STFTModule
-from layers import LSTMAttention, AttentionConv, BandwidthEncoder, MMExpand
+from layers import LSTMAttention, AttentionConv, BandwidthEncoder, MMExpand, Windower
 
 
 def getTrainTransforms(var):
@@ -143,7 +145,6 @@ class WindowModule(LightningModule):
 
 class GeneratorModel(FlatModule):
     def __init__(self,
-                 window_model: WindowModule,
                  fft_sz: int,
                  stft_win_sz: int,
                  clutter_latent_size: int,
@@ -151,7 +152,7 @@ class GeneratorModel(FlatModule):
                  n_ants: int,
                  activation: str = 'leaky',
                  fs: float = 2e9,
-                 channel_sz: int = 32,
+                 channel_sz: int = 4,
                  **kwargs,
                  ) -> None:
         super(GeneratorModel, self).__init__()
@@ -159,25 +160,20 @@ class GeneratorModel(FlatModule):
         self.n_ants = n_ants
         self.fft_sz = fft_sz
         self.stft_win_sz = stft_win_sz
-        self.hop = stft_win_sz // 4
-        self.bin_bw = 52
+        self.hop = self.stft_win_sz // 2
         self.clutter_latent_size = clutter_latent_size
         self.target_latent_size = target_latent_size
         self.fs = fs
-        self.window_module = window_model
-        self.window_module.requires_grad_(False)
 
-        stack_output_sz = self.stft_win_sz // 4
+        stack_output_sz = self.stft_win_sz
 
         # Both the clutter and target stack standardize the output for any latent size
         self.clutter_stack = nn.Sequential(
-            nn.Linear(clutter_latent_size, stack_output_sz),
-            nn.LeakyReLU(),
+            nn.Linear(clutter_latent_size, stack_output_sz * 2),
         )
 
         self.target_stack = nn.Sequential(
-            nn.Linear(target_latent_size, stack_output_sz),
-            nn.LeakyReLU(),
+            nn.Linear(target_latent_size, stack_output_sz * 2),
         )
 
         # Output is Nb x Nchan x stack_output_sz x n_frames
@@ -191,7 +187,7 @@ class GeneratorModel(FlatModule):
                 nn.Conv2d(channel_sz, channel_sz, nl * 2 + 3, 1, nl + 1),
                 nn.Tanh(),
             )
-            for nl in range(9, 1, -2)
+            for nl in range(3, 1, -2)
         )
         for d in self.backbone:
             d.apply(init_weights)
@@ -217,21 +213,19 @@ class GeneratorModel(FlatModule):
             for _ in self.backbone
         )
 
-        self.init_layer = nn.Sequential(
-            nn.Conv2d(2, channel_sz, 1, 1, 0),
-            nn.Tanhshrink(),
+        self.init_backbone = nn.Sequential(
+            nn.Conv2d(2, channel_sz, 3, 1, 1),
+            nn.Tanh(),
         )
 
+        # self.transformer = nn.Transformer(stack_output_sz, dim_feedforward=1024, batch_first=True)
+
         self.final = nn.Sequential(
-            nn.ConvTranspose2d(channel_sz, channel_sz, kernel_size=(3, 4), stride=(1, 2), padding=1),
-            nn.Tanh(),
-            nn.ConvTranspose2d(channel_sz, channel_sz, kernel_size=(3, 4), stride=(1, 2), padding=1),
-            nn.Tanh(),
             nn.Conv2d(channel_sz, n_ants * 2, 1, 1, 0),
         )
         self.final.apply(init_weights)
 
-        self.expand = MMExpand(stack_output_sz)
+        self.expand = MMExpand(2, stack_output_sz, self.hop, self.stft_win_sz)
 
         self.stack_output_sz = stack_output_sz
 
@@ -242,16 +236,20 @@ class GeneratorModel(FlatModule):
                 pulse_length: [int], bandwidth: Tensor) -> torch.tensor:
         # Use only the first pulse_length because it gives batch_size random numbers as part of the dataloader
         n_frames = 1 + (pulse_length[0] - self.stft_win_sz) // self.hop
-        win = self.window_module(bandwidth)
+        bin_bw = int((bandwidth[0] / self.fs) * self.stft_win_sz)
+        bin_bw += 1 if bin_bw % 2 != 0 else 0
 
         # Get clutter and target features, for LSTM input
-        x = self.clutter_stack(clutter).unsqueeze(1)
-        t_stack = self.target_stack(target).unsqueeze(1)
+        c_stack = self.clutter_stack(clutter).view(-1, 2, self.stack_output_sz)
+        t_stack = self.target_stack(target).view(-1, 2, self.stack_output_sz)
 
-        x = torch.concat([self.expand(x, n_frames).unsqueeze(1), self.expand(t_stack, n_frames).unsqueeze(1)],
-                         dim=1).reshape(-1, 2, n_frames, self.stack_output_sz)
+        # Shape is (batch, channels (2), nframes, stft_win_sz) after this operation
+        x = torch.concat([self.expand(c_stack, n_frames), self.expand(t_stack, n_frames)],
+                         dim=1)
 
-        x = self.init_layer(x)
+        # x = self.init_layer(x)
+        # x = self.transformer(self.expand(c_stack, n_frames), self.expand(t_stack, n_frames))
+        x = self.init_backbone(x)
 
         # Get feedforward connections from backbone
         outputs = []
@@ -262,11 +260,21 @@ class GeneratorModel(FlatModule):
         # Reverse outputs for correct structure
         # outputs.reverse()
 
-        # Combine with deep layers
+        # Combine with deep layers and normalize the output of each combination
         for op, d, bn in zip(outputs, self.deep_layers, self.norms):
             x = bn(d(x) + op)
-        x = self.final(x)
-        return x.swapaxes(2, 3) * win.view(-1, 1, self.stft_win_sz, 1)
+
+        # Interpolate to correct bandwidth
+        # x = nn_func.interpolate(x, size=(n_frames, bin_bw), mode='bicubic')
+        x = self.final(x)#  * torch.windows.kaiser(bin_bw, device=self.device)[None, None, None, :]
+
+        # x = nn_func.interpolate(x, (n_frames, self.stft_win_sz), mode='bilinear')
+
+        # Zero-pad to get to stft_win_sz
+        # pad_sz = (self.stft_win_sz - bin_bw) // 2
+        # x = torch.fft.fftshift(nn_func.pad(x, (pad_sz, pad_sz, 0, 0)), dim=3)
+
+        return x.swapaxes(2, 3)
 
     def loss_function(self, *args, **kwargs) -> dict:
         # These values are set here purely for debugging purposes
@@ -353,10 +361,11 @@ class GeneratorModel(FlatModule):
         return self.example_input_array
 
     def getWaveform(self, cc: Tensor = None, tc: Tensor = None, pulse_length: [int, list] = 1,
-                    bandwidth: float = 400e6, nn_output: Tensor = None,
+                    bandwidth: Tensor = 400e6, nn_output: Tensor = None,
                     use_window: bool = False, scale: bool = False) -> Tensor:
         """
         Given a clutter and target spectrum, produces a waveform FFT.
+        :param bandwidth: Desired bandwidth of waveform.
         :param scale: If True, scales the output FFT so that it is at least pulse_length long on IFFT.
         :param pulse_length: Length of pulse in samples.
         :param use_window: if True, applies a window to the finished waveform. Set to False for training.
@@ -369,7 +378,12 @@ class GeneratorModel(FlatModule):
         stft_win = self.stft_win_sz
 
         # Get the STFT either from the clutter, target, and pulse length or directly from the neural net
-        full_stft = self.forward(cc, tc, pulse_length, bandwidth) if nn_output is None else nn_output
+        full_stft = self.forward(cc, tc, pulse_length, [bandwidth]) if nn_output is None else nn_output
+        bin_bw = int(bandwidth / self.fs * self.stft_win_sz)
+        bin_bw += 1 if bin_bw % 2 != 0 else 0
+        # win = torch.ones(self.stft_win_sz, device=self.device)
+        # win = torch.fft.ifft(win)
+        win = torch.windows.hann(self.stft_win_sz, device=self.device)
         if scale:
             new_fft_sz = int(2 ** (ceil(log2(pulse_length))))
             gen_waveform = torch.zeros((full_stft.shape[0], self.n_ants, new_fft_sz), dtype=torch.complex64,
@@ -385,13 +399,16 @@ class GeneratorModel(FlatModule):
                 bin_bw = int(bandwidth / self.fs * self.stft_win_sz)
                 g1 = torch.istft(complex_stft * self.getWindow(bin_bw)[None, :, None],
                                  stft_win, hop_length=self.hop,
-                                 window=torch.ones(self.stft_win_sz, device=self.device),
+                                 window=win,
                                  return_complex=True, center=False)
             else:
                 # This is for training purposes
-                g1 = torch.istft(complex_stft, stft_win, hop_length=self.hop,
-                                 window=torch.ones(self.stft_win_sz, device=self.device),
-                                 return_complex=True)
+                # g1 = istft_irfft(complex_stft, hop_length=self.hop)
+                '''g1 = self.stft.inverse(full_stft[:, n, :, :], full_stft[:, n + 1, :, :], input_type='realimag')'''
+                g1 = torch.istft(complex_stft,
+                                 stft_win, hop_length=self.hop,
+                                 window=win, onesided=False,
+                                 return_complex=True, center=True)
             if scale:
                 g1 = torch.fft.fft(g1, new_fft_sz, dim=-1)
             else:

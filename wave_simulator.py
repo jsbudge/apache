@@ -1,3 +1,5 @@
+import pickle
+
 import numpy as np
 import torch
 
@@ -45,7 +47,7 @@ def reloadWaveforms(model, device, wave_mdl, pulse_data, mfilt, rollback, nsam, 
     _, cov_dt = getVAECov(pulse_data, mfilt, rollback, nsam, fft_len)
     dt = train_transforms(cov_dt.astype(np.float32)).unsqueeze(0)
     waves = wave_mdl.getWaveform(model.forward(dt.to(device))[2].to(wave_mdl.device),
-                                 model.forward(tc_d)[2].to(wave_mdl.device), pulse_length=nr
+                                 model.forward(tc_d)[2].to(wave_mdl.device), pulse_length=[nr]
                                  ).data.numpy().squeeze(0) * 1e4
     chirps = []
     mfilt_jax = []
@@ -141,7 +143,7 @@ else:
                         np.arange(ngpssam) / GPS_UPDATE_RATE_HZ, .5)
                * sim_settings['scan_angle'] / 2 * DTR)
     gim_el = np.zeros_like(gim_pan) + np.arccos(req_alt / req_slant_range)
-    goff = np.array([wave_config['phase_center_offset_m'], 0., wave_config['apache_params']['wheel_height_m']])
+    goff = np.array([wave_config['apache_params']['phase_center_offset_m'], 0., wave_config['apache_params']['wheel_height_m']])
     grot = np.array([0., 0., 0.])
     rpi = ApachePlatform(wave_config['apache_params'], e, n, u, r, p, y, t, dep_angle=req_dep_ang / DTR,
                             gimbal=np.array([gim_pan, gim_el]).T, gimbal_rotations=grot, gimbal_offset=goff, fs=2e9)
@@ -158,7 +160,7 @@ wave_fft_len = wave_config['generate_data_settings']['fft_sz']
 plat_e, plat_n, plat_u = rpi.pos(rpi.gpst).T
 plat_r, plat_p, plat_y = rpi.att(rpi.gpst).T
 gimbal = np.array([rpi.pan(rpi.gpst), rpi.tilt(rpi.gpst)]).T
-cpi_len = max(settings['cpi_len'], full_scan)
+cpi_len = settings['cpi_len']
 
 rps = []
 vx_array = []
@@ -234,11 +236,17 @@ else:
     tcdata = np.fromfile(f'{wave_config["dataset_params"]["data_path"]}/targets.cov', dtype=np.float32).reshape(
         (-1, 32, 32, 2))
 
-    wave_mdl = GeneratorModel(fft_sz=fft_len,
-                              stft_win_sz=wave_config['settings']['stft_win_sz'],
-                              clutter_latent_size=wave_config['model_params']['latent_dim'],
-                              target_latent_size=wave_config['model_params']['latent_dim'], n_ants=2)
-    wave_mdl.load_state_dict(torch.load('./model/wave_model.state'))
+    try:
+        with open('./model/current_model_params.pic', 'rb') as f:
+            generator_params = pickle.load(f)
+        wave_mdl = GeneratorModel(**generator_params)
+        wave_mdl.load_state_dict(torch.load(generator_params['state_file']))
+    except RuntimeError as e:
+        print(f'Wavemodel save file does not match current structure. Re-running with new structure.\n{e}')
+        wave_mdl = GeneratorModel(fft_sz=fft_len,
+                                  stft_win_sz=wave_config['settings']['stft_win_sz'],
+                                  clutter_latent_size=wave_config['model_params']['latent_dim'],
+                                  target_latent_size=wave_config['model_params']['latent_dim'], n_ants=2)
     wave_mdl.eval()
 
     active_clutter = sdr.getPulses(sdr[0].frame_num[:wave_config['settings']['cpi_len']], 0)[1]

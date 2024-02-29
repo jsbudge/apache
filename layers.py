@@ -257,10 +257,48 @@ class BandwidthEncoder(LightningModule):
 
 class MMExpand(LightningModule):
 
-    def __init__(self, channels):
+    def __init__(self, inner_channels, outer_channels, step_sz, win_sz):
         super(MMExpand, self).__init__()
-        self.channels = nn.Parameter(torch.ones(1, 1, channels, device=self.device))
+        self.channels = nn.Parameter(torch.ones(1, inner_channels, device=self.device))
+        self.inner_channels = inner_channels
+        self.step_sz = step_sz
+        self.win_sz = win_sz
+        self.norm = nn.BatchNorm2d(1)
 
     def forward(self, x, nframes):
-        y = torch.ones((1, nframes, 1), device=self.device) * self.channels
-        return x * y
+        pos_encoding = torch.linspace(0, nframes * self.step_sz, nframes, device=self.device).view(
+            1, nframes, 1) / (nframes * self.step_sz + self.win_sz)
+        y = torch.tile(pos_encoding * self.channels, (x.shape[0], 1, 1))
+        return self.norm(torch.bmm(y, x).unsqueeze(1))
+
+
+class Windower(LightningModule):
+
+    def __init__(self, win_sz, fs, win_type='hann'):
+        super(Windower, self).__init__()
+        self.win_sz = win_sz
+        self.fs = fs
+
+    def forward(self, bwidth):
+        bin_bw = int((bwidth / self.fs) * self.win_sz)
+        bin_bw += 1 if bin_bw % 2 != 0 else 0
+        win = torch.zeros((1, 1, self.win_sz, 1), device=self.device)
+        w = torch.windows.hann(bin_bw, device=self.device)
+        win[0, 0, :bin_bw // 2, 0] = w[-bin_bw // 2:]
+        win[0, 0, -bin_bw // 2:, 0] = w[:bin_bw // 2]
+        return win
+
+
+class ISTFT(LightningModule):
+    def __init__(self, win_sz, fft_sz=2048):
+        super(ISTFT, self).__init__()
+        self.M = win_sz
+        self.N = fft_sz
+        self.h = torch.windows.hann(fft_sz, device=self.device)
+        self.step_size = fft_sz - win_sz - 1
+
+    def forward(self, x, nr):
+        pos = 0
+        y = torch.zeros((x.shape[0], nr), dtype=torch.complex64, device=self.device)
+        while pos + self.N <= x.shape[2]:
+            yt = torch.fft.ifft()

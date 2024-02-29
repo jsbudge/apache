@@ -69,30 +69,6 @@ if __name__ == '__main__':
     fft_len = config['generate_data_settings']['fft_sz']
     nr = 5000  # int((config['perf_params']['vehicle_slant_range_min'] * 2 / c0 - 1 / TAC) * fs)
 
-    try:
-        with open(f"{config['wave_exp_params']['window_path']}.pic", 'rb') as f:
-            wmdl_params = pickle.load(f)
-        wmdl = WindowModule(**wmdl_params)
-        wmdl.load_state_dict(torch.load(wmdl_params['state_file']))
-    except FileNotFoundError:
-        print('WindowModel loading failed. Re-training...')
-        wmdl = WindowModule(fs,
-                            config['settings']['stft_win_sz'], 32,
-                            {'LR': 1e-1, 'weight_decay': .01, 'scheduler_gamma': .98})
-        data = STFTModule(fs, config['settings']['stft_win_sz'], 250e6, 1e9,
-                          **config['dataset_params'])
-        data.setup()
-        trainer = Trainer(max_epochs=200,
-                          log_every_n_steps=config['exp_params']['log_epoch'], devices=1,
-                          strategy='ddp', callbacks=
-                          [StochasticWeightAveraging(swa_lrs=1e-3)])
-        trainer.fit(wmdl, datamodule=data)
-        bw, win = next(iter(data.val_dataset))
-        gen_win = wmdl(bw)
-        if trainer.is_global_zero:
-            wmdl.save(config['wave_exp_params']['window_path'])
-    wmdl.to(device)
-
     print('Setting up wavemodel...')
     warm_start = False
     if config['settings']['warm_start']:
@@ -100,18 +76,18 @@ if __name__ == '__main__':
         try:
             with open('./model/current_model_params.pic', 'rb') as f:
                 generator_params = pickle.load(f)
-            wave_mdl = GeneratorModel(window_model=wmdl, **generator_params)
+            wave_mdl = GeneratorModel(**generator_params)
             wave_mdl.load_state_dict(torch.load(generator_params['state_file']))
             warm_start = True
         except RuntimeError as e:
             print(f'Wavemodel save file does not match current structure. Re-running with new structure.\n{e}')
-            wave_mdl = GeneratorModel(window_model=wmdl, fft_sz=fft_len,
+            wave_mdl = GeneratorModel(fft_sz=fft_len,
                                       stft_win_sz=config['settings']['stft_win_sz'],
                                       clutter_latent_size=config['model_params']['latent_dim'],
                                       target_latent_size=config['model_params']['latent_dim'], n_ants=2)
     else:
         print('Initializing new wavemodel...')
-        wave_mdl = GeneratorModel(window_model=wmdl, fft_sz=fft_len,
+        wave_mdl = GeneratorModel(fft_sz=fft_len,
                                   stft_win_sz=config['settings']['stft_win_sz'],
                                   clutter_latent_size=config['model_params']['latent_dim'],
                                   target_latent_size=config['model_params']['latent_dim'], n_ants=2)
@@ -142,14 +118,17 @@ if __name__ == '__main__':
                                            name="WaveModel", log_graph=True)
     # logger.experiment.add_graph(wave_mdl, wave_mdl.example_input_array)
     trainer = Trainer(logger=logger, max_epochs=config['train_params']['max_epochs'],
-                      log_every_n_steps=config['exp_params']['log_epoch'],
+                      log_every_n_steps=config['exp_params']['log_epoch'], devices=1,
                       strategy='ddp', gradient_clip_val=.5, callbacks=
                       [EarlyStopping(monitor='loss', patience=config['wave_exp_params']['patience'],
                                      check_finite=True),
                        StochasticWeightAveraging(swa_lrs=config['wave_exp_params']['LR'])])
 
     print("======= Training =======")
-    trainer.fit(experiment, datamodule=data)
+    try:
+        trainer.fit(experiment, datamodule=data)
+    except KeyboardInterrupt:
+        print('Breaking out of training early.')
 
     if trainer.global_rank == 0:
         with torch.no_grad():
@@ -162,8 +141,9 @@ if __name__ == '__main__':
             cs = cs.to(device)
             ts = ts.to(device)
 
-            waves = wave_mdl.getWaveform(cc, tc, [nr],
-                                         torch.tensor([config['settings']['bandwidth']])).cpu().data.numpy()
+            nn_output = wave_mdl(cc, tc, [nr], torch.tensor([config['settings']['bandwidth']]))
+
+            waves = wave_mdl.getWaveform(nn_output=nn_output).cpu().data.numpy()
             print('Loaded waveforms...')
 
             clutter = cs.cpu().data.numpy()
@@ -212,8 +192,7 @@ if __name__ == '__main__':
             plt.legend(['Waveform 1', 'Waveform 2', 'Cross Correlation', 'Linear Chirp'])
             plt.xlabel('Lag')
 
-            waves = wave_mdl.getWaveform(cc, tc, [nr], bandwidth=torch.tensor([config['settings']['bandwidth']]),
-                                         scale=True).cpu().data.numpy()
+            waves = wave_mdl.getWaveform(cc, tc, [nr], torch.tensor([config['settings']['bandwidth']]), scale=True).cpu().data.numpy()
 
             plt.figure('Time Series')
             wave1 = waves.copy()
@@ -224,14 +203,27 @@ if __name__ == '__main__':
             plt.xlabel('Time')
 
             wave_t = np.fft.ifft(waves[0, 0])[:nr]
-            freq_stft, t_stft, wave_stft = stft(wave_t, return_onesided=False, fs=2e9, window=np.ones(256))
+            win = torch.windows.hann(256).data.numpy()
+            freq_stft, t_stft, wave_stft = stft(wave_t, return_onesided=False, window=win, fs=2e9)
             plt.figure('Wave STFT')
             plt.pcolormesh(t_stft, np.fft.fftshift(freq_stft), np.fft.fftshift(db(wave_stft), axes=0))
             plt.ylabel('Freq')
             plt.xlabel('Time')
             plt.colorbar()
 
+            nn_numpy = torch.complex(nn_output[0, 0, ...], nn_output[0, 1, ...]).cpu().data.numpy()
+            scipy_sig = istft(nn_numpy, window=win,
+                              input_onesided=False, scaling='psd')[1]
+            freqs = np.fft.fftshift(np.fft.fftfreq(fft_len * 2, 1 / fs))
+            plt.figure('Scipy Signal')
+            plt.plot(freqs, np.fft.fftshift(db(np.fft.fft(scipy_sig, fft_len * 2))))
+            plt.plot(freqs, db(np.fft.fftshift(np.fft.fft(wave_t, fft_len * 2))))
+            plt.legend(['Scipy', 'PyTorch'])
             plt.show()
+
+            plt.figure('Neural Net Output')
+            plt.imshow(db(nn_numpy), clim=[db(nn_numpy)[db(nn_numpy) > -300].mean() - db(nn_numpy)[db(nn_numpy) > -300].std() * 3, 0])
+            plt.axis('tight')
 
         if trainer.is_global_zero and config['wave_exp_params']['save_model']:
             try:
@@ -239,3 +231,57 @@ if __name__ == '__main__':
                 print('Model saved to disk.')
             except Exception as e:
                 print(f'Model not saved: {e}')
+
+        '''pulse = genPulse(np.linspace(0, 1, 10), np.linspace(-1, 1, 10), nr, fs, 9.6e9, 200e6)
+        st = torch.stft(torch.tensor(pulse), 256, 256 // 4, 256, window=torch.windows.hann(256), onesided=False, return_complex=True)
+        # st[26:-26] = 0
+        ist = torch.istft(st, n_fft=256, hop_length=256 // 8, win_length=256, window=torch.ones(256), onesided=False,
+                                 return_complex=True)
+        rest = torch.stft(ist, 256, 256 // 8, 256, window=torch.ones(256), onesided=False, return_complex=True, center=False)
+        plt.figure()
+        plt.subplot(2, 3, 1)
+        plt.title('Second STFT')
+        plt.imshow(db(rest.data.numpy()))
+        plt.axis('tight')
+        plt.subplot(2, 3, 2)
+        plt.title('First STFT')
+        plt.imshow(db(st.data.numpy()))
+        plt.axis('tight')
+        plt.subplot(2, 3, 3)
+        plt.title('ISTFT')
+        plt.plot(ist.data.numpy().real)
+        plt.axis('tight')
+        plt.subplot(2, 3, 4)
+        plt.title('Original')
+        plt.plot(pulse.real)
+        plt.axis('tight')
+        plt.subplot(2, 3, 5)
+        plt.title('Original FFT')
+        plt.plot(db(np.fft.fft(pulse)))
+        plt.subplot(2, 3, 6)
+        plt.title('ISTFT FFT')
+        plt.plot(db(torch.fft.fft(ist).data.numpy()))'''
+
+        noverlap = 128
+        nfft = 256
+        win = torch.ones(256).data.numpy()
+
+        ist = istft(nn_numpy, nperseg=256, window=win, input_onesided=False, noverlap=noverlap)[1]
+        nst = stft(ist, nperseg=256, noverlap=noverlap, window=win, return_onesided=False, nfft=nfft)[2][:, 1:-1]
+        rest = istft(nst, window=win, nperseg=256, noverlap=noverlap, input_onesided=False, nfft=nfft)[1]
+
+        plt.figure()
+        plt.subplot(2, 2, 1)
+        plt.title('Original')
+        plt.imshow(db(nn_numpy))
+        plt.axis('tight')
+        plt.subplot(2, 2, 2)
+        plt.title('ISTFT')
+        plt.plot(ist.real)
+        plt.subplot(2, 2, 3)
+        plt.title('STFT')
+        plt.imshow(db(nst))
+        plt.axis('tight')
+        plt.subplot(2, 2, 4)
+        plt.title('reISTFT')
+        plt.plot(rest.real)
