@@ -12,7 +12,7 @@ import yaml
 from dataloaders import WaveDataModule, STFTModule
 from experiment import GeneratorExperiment
 from models import BetaVAE, InfoVAE, WAE_MMD
-from waveform_model import GeneratorModel, init_weights, WindowModule
+from waveform_model import GeneratorModel, init_weights
 from os import listdir
 
 # pio.renderers.default = 'svg'
@@ -58,7 +58,8 @@ if __name__ == '__main__':
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     # torch.cuda.empty_cache()
 
-    seed_everything(np.random.randint(1, 2048), workers=True)
+    # seed_everything(np.random.randint(1, 2048), workers=True)
+    seed_everything(42, workers=True)
 
     with open('./vae_config.yaml', 'r') as file:
         try:
@@ -118,8 +119,7 @@ if __name__ == '__main__':
                                            name="WaveModel", log_graph=True)
     # logger.experiment.add_graph(wave_mdl, wave_mdl.example_input_array)
     trainer = Trainer(logger=logger, max_epochs=config['train_params']['max_epochs'],
-                      log_every_n_steps=config['exp_params']['log_epoch'], devices=1,
-                      strategy='ddp', gradient_clip_val=.5, callbacks=
+                      log_every_n_steps=config['exp_params']['log_epoch'], devices=1, gradient_clip_val=.5, callbacks=
                       [EarlyStopping(monitor='loss', patience=config['wave_exp_params']['patience'],
                                      check_finite=True),
                        StochasticWeightAveraging(swa_lrs=config['wave_exp_params']['LR'])])
@@ -142,6 +142,7 @@ if __name__ == '__main__':
             ts = ts.to(device)
 
             nn_output = wave_mdl(cc, tc, [nr], torch.tensor([config['settings']['bandwidth']]))
+            nn_numpy = nn_output[0, 0, ...].cpu().data.numpy()
 
             waves = wave_mdl.getWaveform(nn_output=nn_output).cpu().data.numpy()
             print('Loaded waveforms...')
@@ -203,27 +204,13 @@ if __name__ == '__main__':
             plt.xlabel('Time')
 
             wave_t = np.fft.ifft(waves[0, 0])[:nr]
-            win = torch.windows.hann(256).data.numpy()
+            win = torch.ones(256).data.numpy()
             freq_stft, t_stft, wave_stft = stft(wave_t, return_onesided=False, window=win, fs=2e9)
             plt.figure('Wave STFT')
             plt.pcolormesh(t_stft, np.fft.fftshift(freq_stft), np.fft.fftshift(db(wave_stft), axes=0))
             plt.ylabel('Freq')
             plt.xlabel('Time')
             plt.colorbar()
-
-            nn_numpy = torch.complex(nn_output[0, 0, ...], nn_output[0, 1, ...]).cpu().data.numpy()
-            scipy_sig = istft(nn_numpy, window=win,
-                              input_onesided=False, scaling='psd')[1]
-            freqs = np.fft.fftshift(np.fft.fftfreq(fft_len * 2, 1 / fs))
-            plt.figure('Scipy Signal')
-            plt.plot(freqs, np.fft.fftshift(db(np.fft.fft(scipy_sig, fft_len * 2))))
-            plt.plot(freqs, db(np.fft.fftshift(np.fft.fft(wave_t, fft_len * 2))))
-            plt.legend(['Scipy', 'PyTorch'])
-            plt.show()
-
-            plt.figure('Neural Net Output')
-            plt.imshow(db(nn_numpy), clim=[db(nn_numpy)[db(nn_numpy) > -300].mean() - db(nn_numpy)[db(nn_numpy) > -300].std() * 3, 0])
-            plt.axis('tight')
 
         if trainer.is_global_zero and config['wave_exp_params']['save_model']:
             try:
@@ -267,7 +254,7 @@ if __name__ == '__main__':
         win = torch.ones(256).data.numpy()
 
         ist = istft(nn_numpy, nperseg=256, window=win, input_onesided=False, noverlap=noverlap)[1]
-        nst = stft(ist, nperseg=256, noverlap=noverlap, window=win, return_onesided=False, nfft=nfft)[2][:, 1:-1]
+        nst = stft(ist, nperseg=256, noverlap=noverlap, window=win, return_onesided=False, nfft=nfft)[2]
         rest = istft(nst, window=win, nperseg=256, noverlap=noverlap, input_onesided=False, nfft=nfft)[1]
 
         plt.figure()
@@ -285,3 +272,26 @@ if __name__ == '__main__':
         plt.subplot(2, 2, 4)
         plt.title('reISTFT')
         plt.plot(rest.real)
+
+# Ensure overlap condition is met
+pulse = np.zeros(nr + 256, dtype=np.complex128)
+pulse[128:-128] = genPulse(np.linspace(0, 1, 10), np.linspace(0, 1, 10), nr, fs, 9.6e9, 400e6)
+pstft = stft(pulse, nperseg=256, window=np.ones(256), noverlap=128, return_onesided=False)[2]
+rec_stft = pstft.copy()
+for n in range(pstft.shape[1] - 1):
+    overlap_sig = np.fft.ifft(rec_stft[:, n], norm='forward')
+    overlap_sig[:129] = 0.
+    hop_sig = np.fft.ifft(rec_stft[:, n + 1], norm='forward')
+    hop_sig[129:] = 0.
+    rec_stft[:, n + 1] = (np.fft.fft(overlap_sig, 256, norm='forward') +
+                         np.fft.fft(hop_sig, 256, norm='forward'))
+
+plt.figure()
+plt.subplot(2, 1, 1)
+plt.title('Original')
+plt.imshow(db(pstft))
+plt.axis('tight')
+plt.subplot(2, 1, 2)
+plt.title('Rec')
+plt.imshow(db(rec_stft))
+plt.axis('tight')

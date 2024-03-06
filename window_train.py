@@ -49,7 +49,7 @@ if __name__ == '__main__':
                       log_every_n_steps=config['exp_params']['log_epoch'],
                       strategy='ddp',
                       callbacks=[EarlyStopping(monitor='loss', patience=30,
-                                               check_finite=True), StochasticWeightAveraging(swa_lrs=1e-2)])
+                                               check_finite=True), StochasticWeightAveraging(swa_lrs=1e-5)])
 
     print("======= Training =======")
     trainer.fit(experiment, datamodule=data)
