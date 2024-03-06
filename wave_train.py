@@ -7,7 +7,7 @@ from scipy.signal import stft, istft
 import plotly.io as pio
 import torch
 from pytorch_lightning import Trainer, loggers, seed_everything
-from pytorch_lightning.callbacks import EarlyStopping, StochasticWeightAveraging
+from pytorch_lightning.callbacks import EarlyStopping, StochasticWeightAveraging, ModelPruning
 import yaml
 from dataloaders import WaveDataModule, STFTModule
 from experiment import GeneratorExperiment
@@ -118,11 +118,15 @@ if __name__ == '__main__':
         logger = loggers.TensorBoardLogger(config['train_params']['log_dir'],
                                            name="WaveModel", log_graph=True)
     # logger.experiment.add_graph(wave_mdl, wave_mdl.example_input_array)
+
+    expected_lr = (config['wave_exp_params']['LR'] *
+                   config['wave_exp_params']['scheduler_gamma']**(config['train_params']['max_epochs'] * .8))
     trainer = Trainer(logger=logger, max_epochs=config['train_params']['max_epochs'],
                       log_every_n_steps=config['exp_params']['log_epoch'], devices=1, gradient_clip_val=.5, callbacks=
                       [EarlyStopping(monitor='loss', patience=config['wave_exp_params']['patience'],
                                      check_finite=True),
-                       StochasticWeightAveraging(swa_lrs=config['wave_exp_params']['LR'])])
+                       StochasticWeightAveraging(swa_lrs=expected_lr),
+                       ModelPruning("l1_unstructured", amount=0.1)])
 
     print("======= Training =======")
     try:
@@ -251,7 +255,7 @@ if __name__ == '__main__':
 
         noverlap = 128
         nfft = 256
-        win = torch.ones(256).data.numpy()
+        win = torch.windows.hann(256).data.numpy()
 
         ist = istft(nn_numpy, nperseg=256, window=win, input_onesided=False, noverlap=noverlap)[1]
         nst = stft(ist, nperseg=256, noverlap=noverlap, window=win, return_onesided=False, nfft=nfft)[2]
@@ -272,26 +276,3 @@ if __name__ == '__main__':
         plt.subplot(2, 2, 4)
         plt.title('reISTFT')
         plt.plot(rest.real)
-
-# Ensure overlap condition is met
-pulse = np.zeros(nr + 256, dtype=np.complex128)
-pulse[128:-128] = genPulse(np.linspace(0, 1, 10), np.linspace(0, 1, 10), nr, fs, 9.6e9, 400e6)
-pstft = stft(pulse, nperseg=256, window=np.ones(256), noverlap=128, return_onesided=False)[2]
-rec_stft = pstft.copy()
-for n in range(pstft.shape[1] - 1):
-    overlap_sig = np.fft.ifft(rec_stft[:, n], norm='forward')
-    overlap_sig[:129] = 0.
-    hop_sig = np.fft.ifft(rec_stft[:, n + 1], norm='forward')
-    hop_sig[129:] = 0.
-    rec_stft[:, n + 1] = (np.fft.fft(overlap_sig, 256, norm='forward') +
-                         np.fft.fft(hop_sig, 256, norm='forward'))
-
-plt.figure()
-plt.subplot(2, 1, 1)
-plt.title('Original')
-plt.imshow(db(pstft))
-plt.axis('tight')
-plt.subplot(2, 1, 2)
-plt.title('Rec')
-plt.imshow(db(rec_stft))
-plt.axis('tight')

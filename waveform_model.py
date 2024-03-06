@@ -15,7 +15,7 @@ from torchvision import transforms
 from scipy.signal import istft
 
 from dataloaders import STFTModule
-from layers import LSTMAttention, AttentionConv
+from layers import LSTMAttention, AttentionConv, ApplyBandwidth
 
 
 def getTrainTransforms(var):
@@ -98,11 +98,11 @@ class GeneratorModel(FlatModule):
 
         # Both the clutter and target stack standardize the output for any latent size
         self.clutter_stack = nn.Sequential(
-            nn.Linear(clutter_latent_size, self.stft_win_sz),
+            nn.Linear(clutter_latent_size, self.stft_win_sz - 1),
         )
 
         self.target_stack = nn.Sequential(
-            nn.Linear(target_latent_size, self.stft_win_sz),
+            nn.Linear(target_latent_size, self.stft_win_sz - 1),
         )
 
         # Mix together target and clutter
@@ -113,13 +113,24 @@ class GeneratorModel(FlatModule):
             nn.Tanh(),
         )
 
-        # self.lst_hop = nn.LSTM(self.stft_win_sz, self.stft_win_sz, batch_first=True)
         self.lst_hop = nn.Transformer(self.stft_win_sz, batch_first=True)
 
+        self.expand_to_ants = nn.Sequential(
+            nn.Conv1d(1, channel_sz, 5, 1, 2, dtype=torch.complex64),
+            nn.Tanh(),
+            nn.Conv1d(channel_sz, channel_sz, 3, 1, 1, dtype=torch.complex64),
+            nn.Tanh(),
+            nn.Conv1d(channel_sz, self.n_ants * 2, 1, 1, 0, dtype=torch.complex64),
+            nn.Tanh(),
+        )
+        self.expand_to_ants.apply(init_weights)
+
         self.final = nn.Sequential(
-            nn.Conv1d(1, self.n_ants, 1, 1, 0, dtype=torch.complex64),
+            nn.Conv2d(self.n_ants, self.n_ants, 1, 1, 0, dtype=torch.complex64),
         )
         self.final.apply(init_weights)
+
+        self.add_bw = ApplyBandwidth(fs)
 
         self.example_input_array = (torch.zeros((1, clutter_latent_size)), torch.zeros((1, target_latent_size)),
                                     torch.tensor([1250]), torch.tensor(400e6))
@@ -128,24 +139,27 @@ class GeneratorModel(FlatModule):
                 pulse_length: [int], bandwidth: Tensor) -> torch.tensor:
         # Use only the first pulse_length because it gives batch_size random numbers as part of the dataloader
         n_frames = 1 + (pulse_length[0] - self.stft_win_sz) // self.hop
-        n_windows = pulse_length[0] // self.stft_win_sz - 1
+        n_windows = pulse_length[0] // self.stft_win_sz
 
         # Get clutter and target features, for LSTM input
-        c_stack = self.clutter_stack(clutter).view(-1, 1, self.stft_win_sz)
-        t_stack = self.target_stack(target).view(-1, 1, self.stft_win_sz)
+        c_stack = self.clutter_stack(clutter).view(-1, 1, self.stft_win_sz - 1)
+        t_stack = self.target_stack(target).view(-1, 1, self.stft_win_sz - 1)
 
-        # Shape is (batch, 12, stft_win_sz) after stft operation
+        # Shape is (batch, 1, stft_win_sz, 1) after mixture and add_bw
         x = self.mixture(torch.concat([c_stack, t_stack], dim=1)).unsqueeze(3)
+        x = self.add_bw(x, bandwidth[0])
         for n in range(n_windows - 1):
-            l = self.lst_hop(x[:, :, :, n], x[:, :, :, n])
+            # Target mask of the transformer is the last generated section
+            if n == 0:
+                l = self.lst_hop(x[:, :, :, n], torch.zeros((x.shape[0], x.shape[1], x.shape[2]), device=self.device))
+            else:
+                l = self.lst_hop(x[:, :, :, n], x[:, :, :, n - 1])
             x = torch.cat([x, l.unsqueeze(3)], dim=3)
-        x = torch.cat([x.view(-1, 1, n_windows * self.stft_win_sz),
-                       torch.zeros((x.shape[0], 1, pulse_length[0] - n_windows * self.stft_win_sz), device=self.device)], dim=2)
-        x = self.final(x.type(torch.complex64))
+        x = self.expand_to_ants(x.view(-1, 1, n_windows * self.stft_win_sz).type(torch.complex64))
         x = torch.cat([torch.stft(x[:, n, :], self.stft_win_sz, self.hop,
-                                  window=torch.ones(self.stft_win_sz, device=self.device), center=True).unsqueeze(1)
+                                  window=torch.windows.hann(self.stft_win_sz, device=self.device), center=True).unsqueeze(1)
                        for n in range(self.n_ants)], dim=1)
-        return x
+        return self.final(x)
 
     def loss_function(self, *args, **kwargs) -> dict:
         # These values are set here purely for debugging purposes
@@ -193,16 +207,19 @@ class GeneratorModel(FlatModule):
             # gen_psd = g1 * g1.conj()
             # left_sig_c = torch.abs(gen_psd - clutter_psd)
 
-            clutter_return = torch.abs(clutter_spectrum * g1) ** 2
-            target_return = torch.abs(target_spectrum * g1) ** 2
-            valids = clutter_return != 0.
-            I_k = torch.nansum(torch.log(1. + target_return[valids] / clutter_return[valids])) / self.fft_sz
-            # I_k = torch.nanmean(target_return) / self.fft_sz
-            target_loss += min(1 / (I_k / (gen_waveform.shape[0] * self.n_ants)), 1e3)
-            # target_loss += I_k / (gen_waveform.shape[0] * self.n_ants)
+            clutter_return = torch.abs(clutter_spectrum - g1) ** 2
+            target_return = torch.abs(target_spectrum - g1) ** 2
+            g1_return = torch.abs(g1) ** 2
+            ratio = (target_return / clutter_return)
+            ratio[torch.logical_and(clutter_spectrum == 0, target_spectrum == 0)] = (
+                g1_return)[torch.logical_and(clutter_spectrum == 0, target_spectrum == 0)]
+            ratio[torch.logical_and(clutter_spectrum == 0, target_spectrum != 0)] = 0.
+            I_k = torch.log(torch.nansum(target_return / clutter_return))
+            target_loss += I_k / (gen_waveform.shape[0] * self.n_ants)
 
             # Get the ISLR for this waveform
-            sidelobe_loss += min(torch.nansum(torch.max(sidelobe_func, dim=-1)[0] / sll) / (self.n_ants * sidelobe_func.shape[0]), 1e3)
+            sidelobe_loss += (torch.nansum(torch.max(sidelobe_func, dim=-1)[0] / sll)
+                              / (self.n_ants * sidelobe_func.shape[0]))
             # gn = g1.conj()  # Conjugate of current g1 for orthogonality loss on next loop
 
         # Apply hinge loss to sidelobes
@@ -270,12 +287,12 @@ class GeneratorModel(FlatModule):
             if use_window:
                 g1 = torch.istft(complex_stft * self.getWindow(self.bin_bw)[None, :, None],
                                  stft_win, hop_length=self.hop,
-                                 window=torch.ones(self.stft_win_sz, device=self.device),
+                                 window=torch.windows.hann(self.stft_win_sz, device=self.device),
                                  return_complex=True, onesided=False, center=True)
             else:
                 # This is for training purposes
                 g1 = torch.istft(complex_stft, stft_win, hop_length=self.hop,
-                                 window=torch.ones(self.stft_win_sz, device=self.device),
+                                 window=torch.windows.hann(self.stft_win_sz, device=self.device),
                                  return_complex=True, onesided=False, center=True)
             if scale:
                 g1 = torch.fft.fft(g1, new_fft_sz, dim=-1)

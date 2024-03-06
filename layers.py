@@ -187,6 +187,21 @@ class LSTMAttention(LightningModule):
         return context_vector, attn_weights
 
 
+class ApplyBandwidth(LightningModule):
+    def __init__(self, fs):
+        super(ApplyBandwidth, self).__init__()
+        self.fs = fs
+
+    def forward(self, x, bandwidth):
+        # Scale bandwidth appropriately
+        scaled_bw = bandwidth / self.fs
+
+        # Apply to output
+        bw_vec = torch.ones((x.shape[0], 1, 1, 1), device=self.device)
+        bw_vec *= scaled_bw.to(self.device)  #torch.tensor(scaled_bw, device=self.device)
+        return torch.cat([x, bw_vec], dim=2)
+
+
 class AttentionConv(LightningModule):
     def __init__(self, in_channels, out_channels, kernel_size, stride=1, padding=0, groups=1, bias=False):
         super(AttentionConv, self).__init__()

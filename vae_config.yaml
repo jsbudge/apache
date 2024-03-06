@@ -102,4 +102,4 @@ model_params:
 
 train_params:
   log_dir: ./logs
-  max_epochs: 1
+  max_epochs: 10
