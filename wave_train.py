@@ -1,7 +1,7 @@
 import pickle
 
 import numpy as np
-from simulib.simulation_functions import genPulse, findPowerOf2, db
+from simulib import genPulse, findPowerOf2, db
 import matplotlib.pyplot as plt
 from scipy.signal import stft, istft
 import plotly.io as pio
@@ -122,11 +122,10 @@ if __name__ == '__main__':
     expected_lr = (config['wave_exp_params']['LR'] *
                    config['wave_exp_params']['scheduler_gamma']**(config['train_params']['max_epochs'] * .8))
     trainer = Trainer(logger=logger, max_epochs=config['train_params']['max_epochs'],
-                      log_every_n_steps=config['exp_params']['log_epoch'], devices=1, gradient_clip_val=.5, callbacks=
+                      log_every_n_steps=config['exp_params']['log_epoch'], devices=2, callbacks=
                       [EarlyStopping(monitor='loss', patience=config['wave_exp_params']['patience'],
                                      check_finite=True),
-                       StochasticWeightAveraging(swa_lrs=expected_lr),
-                       ModelPruning("l1_unstructured", amount=0.1)])
+                       StochasticWeightAveraging(swa_lrs=expected_lr)])
 
     print("======= Training =======")
     try:
@@ -208,7 +207,7 @@ if __name__ == '__main__':
             plt.xlabel('Time')
 
             wave_t = np.fft.ifft(waves[0, 0])[:nr]
-            win = torch.ones(256).data.numpy()
+            win = torch.windows.hann(256).data.numpy()
             freq_stft, t_stft, wave_stft = stft(wave_t, return_onesided=False, window=win, fs=2e9)
             plt.figure('Wave STFT')
             plt.pcolormesh(t_stft, np.fft.fftshift(freq_stft), np.fft.fftshift(db(wave_stft), axes=0))
@@ -222,57 +221,3 @@ if __name__ == '__main__':
                 print('Model saved to disk.')
             except Exception as e:
                 print(f'Model not saved: {e}')
-
-        '''pulse = genPulse(np.linspace(0, 1, 10), np.linspace(-1, 1, 10), nr, fs, 9.6e9, 200e6)
-        st = torch.stft(torch.tensor(pulse), 256, 256 // 4, 256, window=torch.windows.hann(256), onesided=False, return_complex=True)
-        # st[26:-26] = 0
-        ist = torch.istft(st, n_fft=256, hop_length=256 // 8, win_length=256, window=torch.ones(256), onesided=False,
-                                 return_complex=True)
-        rest = torch.stft(ist, 256, 256 // 8, 256, window=torch.ones(256), onesided=False, return_complex=True, center=False)
-        plt.figure()
-        plt.subplot(2, 3, 1)
-        plt.title('Second STFT')
-        plt.imshow(db(rest.data.numpy()))
-        plt.axis('tight')
-        plt.subplot(2, 3, 2)
-        plt.title('First STFT')
-        plt.imshow(db(st.data.numpy()))
-        plt.axis('tight')
-        plt.subplot(2, 3, 3)
-        plt.title('ISTFT')
-        plt.plot(ist.data.numpy().real)
-        plt.axis('tight')
-        plt.subplot(2, 3, 4)
-        plt.title('Original')
-        plt.plot(pulse.real)
-        plt.axis('tight')
-        plt.subplot(2, 3, 5)
-        plt.title('Original FFT')
-        plt.plot(db(np.fft.fft(pulse)))
-        plt.subplot(2, 3, 6)
-        plt.title('ISTFT FFT')
-        plt.plot(db(torch.fft.fft(ist).data.numpy()))'''
-
-        noverlap = 128
-        nfft = 256
-        win = torch.windows.hann(256).data.numpy()
-
-        ist = istft(nn_numpy, nperseg=256, window=win, input_onesided=False, noverlap=noverlap)[1]
-        nst = stft(ist, nperseg=256, noverlap=noverlap, window=win, return_onesided=False, nfft=nfft)[2]
-        rest = istft(nst, window=win, nperseg=256, noverlap=noverlap, input_onesided=False, nfft=nfft)[1]
-
-        plt.figure()
-        plt.subplot(2, 2, 1)
-        plt.title('Original')
-        plt.imshow(db(nn_numpy))
-        plt.axis('tight')
-        plt.subplot(2, 2, 2)
-        plt.title('ISTFT')
-        plt.plot(ist.real)
-        plt.subplot(2, 2, 3)
-        plt.title('STFT')
-        plt.imshow(db(nst))
-        plt.axis('tight')
-        plt.subplot(2, 2, 4)
-        plt.title('reISTFT')
-        plt.plot(rest.real)

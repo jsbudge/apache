@@ -28,10 +28,13 @@ def getTrainTransforms(var):
 
 
 def init_weights(m):
-    if isinstance(m, (nn.Conv1d, nn.ConvTranspose1d, nn.Conv2d, nn.ConvTranspose2d)):
-        with contextlib.suppress(AttributeError):
+    with contextlib.suppress(ValueError):
+        if hasattr(m, 'weight'):
             torch.nn.init.xavier_normal_(m.weight)
-            m.bias.data.fill_(0.01)
+# sourcery skip: merge-nested-ifs
+        if hasattr(m, 'bias'):
+            if m.bias is not None:
+                m.bias.data.fill_(.01)
 
 
 class FlatModule(LightningModule):
@@ -82,7 +85,7 @@ class GeneratorModel(FlatModule):
                  n_ants: int,
                  activation: str = 'leaky',
                  fs: float = 2e9,
-                 channel_sz: int = 32,
+                 channel_sz: int = 48,
                  **kwargs,
                  ) -> None:
         super(GeneratorModel, self).__init__()
@@ -99,34 +102,62 @@ class GeneratorModel(FlatModule):
         # Both the clutter and target stack standardize the output for any latent size
         self.clutter_stack = nn.Sequential(
             nn.Linear(clutter_latent_size, self.stft_win_sz - 1),
+            nn.GELU(),
         )
 
         self.target_stack = nn.Sequential(
             nn.Linear(target_latent_size, self.stft_win_sz - 1),
+            nn.GELU(),
         )
 
         # Mix together target and clutter
         self.mixture = nn.Sequential(
             nn.Conv1d(2, channel_sz, 1, 1, 0),
-            nn.Tanh(),
+            nn.GELU(),
+            nn.Conv1d(channel_sz, channel_sz, 3, 1, 1),
+            nn.GELU(),
             nn.Conv1d(channel_sz, 1, 1, 1, 0),
-            nn.Tanh(),
+            nn.GELU(),
         )
 
-        self.lst_hop = nn.Transformer(self.stft_win_sz, batch_first=True)
+        self.lst_hop = nn.Transformer(self.stft_win_sz, num_decoder_layers=6, num_encoder_layers=6, activation='gelu',
+                                      batch_first=True)
 
         self.expand_to_ants = nn.Sequential(
-            nn.Conv1d(1, channel_sz, 5, 1, 2, dtype=torch.complex64),
-            nn.Tanh(),
-            nn.Conv1d(channel_sz, channel_sz, 3, 1, 1, dtype=torch.complex64),
-            nn.Tanh(),
-            nn.Conv1d(channel_sz, self.n_ants * 2, 1, 1, 0, dtype=torch.complex64),
-            nn.Tanh(),
+            nn.Conv1d(1, channel_sz, 1, 1, 0),
+            nn.GELU(),
+            nn.Conv1d(channel_sz, channel_sz, 15, 1, 7),
+            nn.GELU(),
+            nn.Conv1d(channel_sz, channel_sz, 7, 1, 3),
+            nn.GELU(),
+            nn.Conv1d(channel_sz, channel_sz, 3, 1, 1),
+            nn.GELU(),
+            nn.Conv1d(channel_sz, self.n_ants * 2, 1, 1, 0),
         )
         self.expand_to_ants.apply(init_weights)
 
         self.final = nn.Sequential(
-            nn.Conv2d(self.n_ants, self.n_ants, 1, 1, 0, dtype=torch.complex64),
+            nn.Conv2d(self.n_ants * 2, channel_sz, 1, 1, 0),
+            nn.GELU(),
+            nn.Conv2d(channel_sz, channel_sz, (3, 1), 1, (1, 0)),
+            nn.GELU(),
+            nn.Conv2d(channel_sz, channel_sz, (3, 1), 1, (1, 0)),
+            nn.GELU(),
+            nn.Conv2d(channel_sz, channel_sz, (3, 1), 1, (1, 0)),
+            nn.GELU(),
+            nn.Conv2d(channel_sz, channel_sz, (3, 1), 1, (1, 0)),
+            nn.GELU(),
+            nn.BatchNorm2d(channel_sz),
+            nn.Conv2d(channel_sz, channel_sz, (3, 1), 1, (1, 0)),
+            nn.GELU(),
+            nn.Conv2d(channel_sz, channel_sz, (3, 1), 1, (1, 0)),
+            nn.GELU(),
+            nn.Conv2d(channel_sz, channel_sz, (3, 1), 1, (1, 0)),
+            nn.GELU(),
+            nn.Conv2d(channel_sz, channel_sz, (3, 1), 1, (1, 0)),
+            nn.GELU(),
+            nn.BatchNorm2d(channel_sz),
+            nn.Conv2d(channel_sz, self.n_ants * 2, 1, 1, 0),
         )
         self.final.apply(init_weights)
 
@@ -155,10 +186,12 @@ class GeneratorModel(FlatModule):
             else:
                 l = self.lst_hop(x[:, :, :, n], x[:, :, :, n - 1])
             x = torch.cat([x, l.unsqueeze(3)], dim=3)
-        x = self.expand_to_ants(x.view(-1, 1, n_windows * self.stft_win_sz).type(torch.complex64))
-        x = torch.cat([torch.stft(x[:, n, :], self.stft_win_sz, self.hop,
-                                  window=torch.windows.hann(self.stft_win_sz, device=self.device), center=True).unsqueeze(1)
-                       for n in range(self.n_ants)], dim=1)
+        x = self.expand_to_ants(x.view(-1, 1, n_windows * self.stft_win_sz))
+        x = torch.cat(
+            [torch.view_as_real(torch.stft(torch.complex(x[:, n, :], x[:, n + 1, :]), self.stft_win_sz, self.hop,
+                                           window=torch.windows.hann(self.stft_win_sz, device=self.device),
+                                           center=True))
+             for n in range(0, self.n_ants * 2, 2)], dim=3).swapaxes(1, 3).swapaxes(2, 3)
         return self.final(x)
 
     def loss_function(self, *args, **kwargs) -> dict:
@@ -169,7 +202,8 @@ class GeneratorModel(FlatModule):
         # Initialize losses to zero and place on correct device
         sidelobe_loss = torch.tensor(0., device=dev, requires_grad=False)
         target_loss = torch.tensor(0., device=dev)
-        # ortho_loss = torch.tensor(0., device=dev)
+        # bandwidth_loss = torch.tensor(0., device=dev, requires_grad=False)
+        ortho_loss = torch.tensor(0., device=dev)
 
         # Get clutter spectrum into complex form and normalize to unit energy
         clutter_spectrum = torch.complex(args[1][:, :, 0], args[1][:, :, 1])
@@ -200,8 +234,8 @@ class GeneratorModel(FlatModule):
                                                   padding=32)[0].unique(dim=1).detach()[:, 1]
 
             # This is orthogonality losses, so we need a persistent value across the for loop
-            # if n > 0:
-            #     ortho_loss += torch.sum(torch.abs(g1 * gn)) / gen_waveform.shape[0]
+            if n > 0:
+                ortho_loss += torch.sum(torch.abs(g1 * gn)) / gen_waveform.shape[0]
 
             # Power in the leftover signal for both clutter and target
             # gen_psd = g1 * g1.conj()
@@ -209,28 +243,40 @@ class GeneratorModel(FlatModule):
 
             clutter_return = torch.abs(clutter_spectrum - g1) ** 2
             target_return = torch.abs(target_spectrum - g1) ** 2
-            g1_return = torch.abs(g1) ** 2
+            g1_return = torch.abs(g1) * 100.
             ratio = (target_return / clutter_return)
             ratio[torch.logical_and(clutter_spectrum == 0, target_spectrum == 0)] = (
                 g1_return)[torch.logical_and(clutter_spectrum == 0, target_spectrum == 0)]
             ratio[torch.logical_and(clutter_spectrum == 0, target_spectrum != 0)] = 0.
-            I_k = torch.log(torch.nansum(target_return / clutter_return))
+            I_k = torch.sum(torch.log(torch.nanmean(ratio, dim=1)))
             target_loss += I_k / (gen_waveform.shape[0] * self.n_ants)
 
             # Get the ISLR for this waveform
             sidelobe_loss += (torch.nansum(torch.max(sidelobe_func, dim=-1)[0] / sll)
                               / (self.n_ants * sidelobe_func.shape[0]))
-            # gn = g1.conj()  # Conjugate of current g1 for orthogonality loss on next loop
+
+            # Make sure it stays within bandwidth
+            '''bwidth_fun = torch.log(g1_return)
+            bwidth_target = args[3][0] / self.fs * self.fft_sz
+            bwidth_fun += torch.abs(torch.max(bwidth_fun)) + 15
+            bwidth_fun[bwidth_fun < 0] = 0.
+            abs_bw = torch.nansum(bwidth_fun > 0, dim=1).type(torch.float32)
+            rel_bw = torch.nansum(bwidth_fun, dim=1)
+            abs_bw[abs_bw > bwidth_target] = rel_bw[abs_bw > bwidth_target]
+            abs_bw[abs_bw <= bwidth_target] = (abs_bw[abs_bw <= bwidth_target] - bwidth_target)**2 / self.fft_sz
+            bandwidth_loss += torch.sum(abs_bw) / (gen_waveform.shape[0] * self.n_ants)'''
+            gn = g1.conj()  # Conjugate of current g1 for orthogonality loss on next loop
 
         # Apply hinge loss to sidelobes
         sidelobe_loss = (sidelobe_loss - .1) ** 2
+        ortho_loss = (ortho_loss - .1) ** 2
 
         # Use sidelobe and orthogonality as regularization params for target loss
         # loss = torch.sqrt(target_loss**2 + sidelobe_loss**2 + ortho_loss**2)
-        loss = torch.sqrt(torch.abs(target_loss * (1. + sidelobe_loss)))
+        loss = torch.sqrt(torch.abs(target_loss * (1. + sidelobe_loss + ortho_loss)))
 
         return {'loss': loss, 'target_loss': target_loss,
-                'sidelobe_loss': sidelobe_loss}
+                'sidelobe_loss': sidelobe_loss, 'ortho_loss': ortho_loss}
 
     def save(self, fpath, model_name='current'):
         torch.save(self.state_dict(), f'{fpath}/{model_name}_wave_model.state')
@@ -280,8 +326,8 @@ class GeneratorModel(FlatModule):
         else:
             gen_waveform = torch.zeros((full_stft.shape[0], self.n_ants, self.fft_sz), dtype=torch.complex64,
                                        device=self.device, requires_grad=False)
-        for n in range(n_ants):
-            complex_stft = full_stft[:, n, :, :]
+        for n in range(0, n_ants * 2, 2):
+            complex_stft = torch.complex(full_stft[:, n, :, :], full_stft[:, n + 1, :, :])
 
             # Apply a window if wanted for actual simulation
             if use_window:
@@ -299,7 +345,7 @@ class GeneratorModel(FlatModule):
             else:
                 g1 = torch.fft.fft(g1, self.fft_sz, dim=-1)
             g1 = g1 / torch.sqrt(torch.sum(g1 * torch.conj(g1), dim=1))[:, None]  # Unit energy calculation
-            gen_waveform[:, n, ...] = g1
+            gen_waveform[:, n // 2, ...] = g1
         return gen_waveform
 
 
@@ -357,4 +403,3 @@ class RCSModel(FlatModule):
 
     def loss_function(self, *args, **kwargs) -> dict:
         return {'loss': self.loss(args[0], args[1])}
-

@@ -65,15 +65,16 @@ exp_params:
 # For training of wavemodel
 wave_exp_params:
   window_path: ./model/wmdl
-  LR: 0.0001
-  weight_decay: 0.01
-  scheduler_gamma: 0.6
-  kld_weight: .39
+  LR: 0.001
+  weight_decay: 0.02
+  scheduler_gamma: 0.1
+  betas: [.6, .6]
+  step_size: 5
   log_epoch: 10
   is_tuning: False
   save_model: False
   loss_landscape: False
-  patience: 50
+  patience: 150
   bandwidth: 400000000.
 
 # For training of rcs model
@@ -102,4 +103,4 @@ model_params:
 
 train_params:
   log_dir: ./logs
-  max_epochs: 10
+  max_epochs: 25

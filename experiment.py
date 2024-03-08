@@ -165,15 +165,16 @@ class GeneratorExperiment(pl.LightningModule):
             self.optim_path.append(self.model.get_flat_params())
 
     def configure_optimizers(self):
-        optimizer = optim.Adam(self.model.parameters(),
-                               lr=self.params['LR'],
-                               weight_decay=self.params['weight_decay'],
-                               eps=1e-7)
+        optimizer = optim.AdamW(self.model.parameters(),
+                                lr=self.params['LR'],
+                                weight_decay=self.params['weight_decay'],
+                                betas=self.params['betas'],
+                                eps=1e-7)
         optims = [optimizer]
         if self.params['scheduler_gamma'] is None:
             return optims
-        scheduler = optim.lr_scheduler.ExponentialLR(optims[0],
-                                                     gamma=self.params['scheduler_gamma'])
+        scheduler = optim.lr_scheduler.StepLR(optims[0], step_size=self.params['step_size'],
+                                              gamma=self.params['scheduler_gamma'])
         scheds = [scheduler]
 
         return optims, scheds
@@ -184,7 +185,7 @@ class GeneratorExperiment(pl.LightningModule):
 
         bandwidth = torch.ones(clutter_cov.shape[0], 1, device=self.device) * self.params['bandwidth']
         results = self.forward(clutter_cov, target_cov, pulse_length=pulse_length, bandwidth=bandwidth)
-        train_loss = self.model.loss_function(results, clutter_spec, target_spec)
+        train_loss = self.model.loss_function(results, clutter_spec, target_spec, bandwidth)
 
         self.log_dict({key: val.item() for key, val in train_loss.items()}, sync_dist=True, prog_bar=True)
         return train_loss

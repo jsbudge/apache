@@ -8,8 +8,7 @@ from generate_trainingdata import getVAECov
 from models import InfoVAE, BetaVAE, WAE_MMD
 from simulib.simulation_functions import getElevation, llh2enu, findPowerOf2, db, enu2llh, azelToVec, genPulse
 from data_converter.aps_io import loadCorrectionGPSData, loadGPSData, loadGimbalData
-from simulib.cuda_kernels import getMaxThreads, backproject
-from simulib.jax_kernels import range_profile_vectorized, applyRadiationPattern, real_beam_image
+from simulib import getMaxThreads, backproject, range_profile_vectorized, applyRadiationPattern, real_beam_image
 import jax.numpy as jnp
 import jax.scipy.ndimage as jimage
 import jax
