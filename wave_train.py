@@ -14,6 +14,8 @@ from experiment import GeneratorExperiment
 from models import BetaVAE, InfoVAE, WAE_MMD
 from waveform_model import GeneratorModel, init_weights
 from os import listdir
+import torch.nn as nn
+import torch.nn.utils.prune as prune
 
 # pio.renderers.default = 'svg'
 pio.renderers.default = 'browser'
@@ -58,8 +60,8 @@ if __name__ == '__main__':
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     # torch.cuda.empty_cache()
 
-    # seed_everything(np.random.randint(1, 2048), workers=True)
-    seed_everything(42, workers=True)
+    seed_everything(np.random.randint(1, 2048), workers=True)
+    # seed_everything(42, workers=True)
 
     with open('./vae_config.yaml', 'r') as file:
         try:
@@ -119,13 +121,13 @@ if __name__ == '__main__':
                                            name="WaveModel", log_graph=True)
     # logger.experiment.add_graph(wave_mdl, wave_mdl.example_input_array)
 
-    expected_lr = (config['wave_exp_params']['LR'] *
-                   config['wave_exp_params']['scheduler_gamma']**(config['train_params']['max_epochs'] * .8))
+    expected_lr = max((config['wave_exp_params']['LR'] *
+                   config['wave_exp_params']['scheduler_gamma']**(config['train_params']['max_epochs'] * .8)), 1e-9)
     trainer = Trainer(logger=logger, max_epochs=config['train_params']['max_epochs'],
                       log_every_n_steps=config['exp_params']['log_epoch'], devices=2, callbacks=
                       [EarlyStopping(monitor='loss', patience=config['wave_exp_params']['patience'],
                                      check_finite=True),
-                       StochasticWeightAveraging(swa_lrs=expected_lr)])
+                       StochasticWeightAveraging(swa_lrs=config['wave_exp_params']['LR'])])
 
     print("======= Training =======")
     try:
@@ -134,6 +136,17 @@ if __name__ == '__main__':
         print('Breaking out of training early.')
 
     if trainer.global_rank == 0:
+
+        # Implement some pruning
+        prune_layers = ([(m, 'weight') for m in wave_mdl.mixture if isinstance(m, nn.Conv1d)] +
+                        [(m, 'weight') for m in wave_mdl.expand_to_ants if isinstance(m, nn.Conv1d)] +
+                        [(m, 'weight') for m in wave_mdl.final if isinstance(m, nn.Conv2d)])
+
+        prune.global_unstructured(prune_layers, pruning_method=prune.L1Unstructured, amount=.1)
+
+        for m, n in prune_layers:
+            prune.remove(m, 'weight')
+
         with torch.no_grad():
             wave_mdl.to(device)
             wave_mdl.eval()
@@ -196,7 +209,8 @@ if __name__ == '__main__':
             plt.legend(['Waveform 1', 'Waveform 2', 'Cross Correlation', 'Linear Chirp'])
             plt.xlabel('Lag')
 
-            waves = wave_mdl.getWaveform(cc, tc, [nr], torch.tensor([config['settings']['bandwidth']]), scale=True).cpu().data.numpy()
+            waves = wave_mdl.getWaveform(cc, tc, [nr], torch.tensor([config['settings']['bandwidth']]),
+                                         scale=True, custom_fft_sz=8192).cpu().data.numpy()
 
             plt.figure('Time Series')
             wave1 = waves.copy()

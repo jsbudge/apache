@@ -42,12 +42,12 @@ def getFootprint(pos, az, el, az_bw, el_bw, near_range, far_range):
 
 
 def reloadWaveforms(model, device, wave_mdl, pulse_data, mfilt, rollback, nsam, nr, fft_len, tc_d, train_transforms, rps,
-                    cpi_len, taytay):
+                    cpi_len, taytay, bwidth):
     _, cov_dt = getVAECov(pulse_data, mfilt, rollback, nsam, fft_len)
     dt = train_transforms(cov_dt.astype(np.float32)).unsqueeze(0)
     waves = wave_mdl.getWaveform(model.forward(dt.to(device))[2].to(wave_mdl.device),
-                                 model.forward(tc_d)[2].to(wave_mdl.device), pulse_length=[nr]
-                                 ).data.numpy().squeeze(0) * 1e4
+                                 model.forward(tc_d)[2].to(wave_mdl.device), pulse_length=[nr], bandwidth=bwidth,
+                                 scale=True, custom_fft_sz=len(mfilt)).data.numpy().squeeze(0) * 1e4
     chirps = []
     mfilt_jax = []
     for rp in rps:
@@ -249,17 +249,18 @@ else:
     wave_mdl.eval()
 
     active_clutter = sdr.getPulses(sdr[0].frame_num[:wave_config['settings']['cpi_len']], 0)[1]
+    bandwidth_model = torch.tensor(400e6, device=wave_mdl.device)
 
     chirps, mfilt_jax = reloadWaveforms(model, device, wave_mdl, active_clutter, mfilt, rollback, nsam, nr, fft_len,
                                         train_transforms(tcdata[0, ...]).unsqueeze(0).to(device), train_transforms,
-                                        rps, cpi_len, taytay)
+                                        rps, cpi_len, taytay, bandwidth_model)
 
 # Get all the JAX info ready for random point generation
 mapped_rpg = jax.vmap(range_profile_vectorized,
                       in_axes=[None, None, None, None, 0, 0, 0, 0, 0, 0,
                                None, None, None, None, None, None, None, None])
 mapped_rbi = jax.vmap(real_beam_image,
-                      in_axes=[None, None, None, None, 0, 0, None, None, None, None, None])
+                      in_axes=[None, None, None, None, 0, 0, None, None, None, None])
 
 # This replaces the ASI background with a custom image
 bg_image = imageio.imread('/data6/Jeff_Backup/Pictures/josh.png').sum(axis=2)
@@ -357,7 +358,7 @@ for tidx, frames in tqdm(enumerate(idx_t[pos:pos + cpi_len] for pos in frame_gen
     if not sim_settings['use_sdr_waveform'] and tmp_len == cpi_len:
         chirps, mfilt_jax = reloadWaveforms(model, device, wave_mdl, active_clutter, mfilt, rollback, nsam, nr, fft_len,
                                             train_transforms(tcdata[tidx, ...]).unsqueeze(0).to(device),
-                                            train_transforms, rps, cpi_len, taytay)
+                                            train_transforms, rps, cpi_len, taytay, bandwidth_model)
     # Pan and Tilt are shared by each channel, antennas are all facing the same way
     panrx = rpi.pan(ts)
     elrx = rpi.tilt(ts)
@@ -408,8 +409,7 @@ for tidx, frames in tqdm(enumerate(idx_t[pos:pos + cpi_len] for pos in frame_gen
                                         postx[cpi_len // 2 - H.shape[1] // 2 - 1:cpi_len // 2 + H.shape[1] // 2, :],
                                         posrx[cpi_len // 2 - H.shape[1] // 2 - 1:cpi_len // 2 + H.shape[1] // 2, :],
                                         panrx[cpi_len // 2 - H.shape[1] // 2 - 1:cpi_len // 2 + H.shape[1] // 2],
-                                        near_range_s, fs * settings['upsample'], 2 * np.pi * (fc / c0),
-                                        nsam), axis=0)
+                                        near_range_s, fs * settings['upsample'], 2 * np.pi * (fc / c0)), axis=0)
         '''rbi_image += jnp.sum(mapped_rbi(sig_k, grid_x[0], grid_y[0], grid_z[0],
                                         postx,
                                         posrx,
