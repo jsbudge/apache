@@ -8,10 +8,7 @@ from generate_trainingdata import getVAECov
 from models import InfoVAE, BetaVAE, WAE_MMD
 from simulib.simulation_functions import getElevation, llh2enu, findPowerOf2, db, enu2llh, azelToVec, genPulse
 from data_converter.aps_io import loadCorrectionGPSData, loadGPSData, loadGimbalData
-from simulib import getMaxThreads, backproject, range_profile_vectorized, applyRadiationPattern, real_beam_image
-import jax.numpy as jnp
-import jax.scipy.ndimage as jimage
-import jax
+from simulib import getMaxThreads, backproject,
 from simulib.grid_helper import SDREnvironment
 from simulib.platform_helper import SDRPlatform, RadarPlatform
 import cupy as cupy
@@ -27,6 +24,7 @@ from scipy.interpolate import RectBivariateSpline
 from scipy.linalg import convolution_matrix
 from itertools import permutations
 import imageio.v2 as imageio
+from celluloid import Camera
 
 from waveform_model import GeneratorModel, getTrainTransforms
 
@@ -41,7 +39,8 @@ def getFootprint(pos, az, el, az_bw, el_bw, near_range, far_range):
     return np.array(footprint)
 
 
-def reloadWaveforms(model, device, wave_mdl, pulse_data, mfilt, rollback, nsam, nr, fft_len, tc_d, train_transforms, rps,
+def reloadWaveforms(model, device, wave_mdl, pulse_data, mfilt, rollback, nsam, nr, fft_len, tc_d, train_transforms,
+                    rps,
                     cpi_len, taytay, bwidth):
     _, cov_dt = getVAECov(pulse_data, mfilt, rollback, nsam, fft_len)
     dt = train_transforms(cov_dt.astype(np.float32)).unsqueeze(0)
@@ -125,6 +124,7 @@ else:
     # Run directly at the plane from the south
     grid_origin = plane_pos  # llh2enu(*bg.origin, bg.ref)
     full_scan = int(sim_settings['az_bw'] / sim_settings['scan_rate'] * sim_settings['prf'])
+    full_scan -= 0 if full_scan % 2 == 0 else 1
     # Get parameters for the Apache specs
     req_slant_range = sim_settings['standoff_range']
     req_alt = wave_config['apache_params']['alt_max']
@@ -142,10 +142,11 @@ else:
                         np.arange(ngpssam) / GPS_UPDATE_RATE_HZ, .5)
                * sim_settings['scan_angle'] / 2 * DTR)
     gim_el = np.zeros_like(gim_pan) + np.arccos(req_alt / req_slant_range)
-    goff = np.array([wave_config['apache_params']['phase_center_offset_m'], 0., wave_config['apache_params']['wheel_height_m']])
+    goff = np.array(
+        [wave_config['apache_params']['phase_center_offset_m'], 0., wave_config['apache_params']['wheel_height_m']])
     grot = np.array([0., 0., 0.])
     rpi = ApachePlatform(wave_config['apache_params'], e, n, u, r, p, y, t, dep_angle=req_dep_ang / DTR,
-                            gimbal=np.array([gim_pan, gim_el]).T, gimbal_rotations=grot, gimbal_offset=goff, fs=2e9)
+                         gimbal=np.array([gim_pan, gim_el]).T, gimbal_rotations=grot, gimbal_offset=goff, fs=2e9)
     rpi.fc = 9.6e9
     rpi.bwidth = 400e6
     ranges = rpi.calcRangeBins(u.mean(), settings['upsample'], settings['plp'], ranges=(1500, 1800))
@@ -200,6 +201,18 @@ twin_tmp = taylor(taywin, nbar=10, sll=60)
 taytay[:taywin // 2] = twin_tmp[taywin // 2:]
 taytay[-taywin // 2:] = twin_tmp[:taywin // 2]
 
+# Run through loop to get data simulated
+gap_len = cpi_len
+if settings['simulation_params']['use_sdr_gps']:
+    data_t = sdr[settings['channel']].pulse_time
+    idx_t = sdr[settings['channel']].frame_num
+else:
+    data_t = rpi.getValidPulseTimings(settings['simulation_params']['prf'], nr / TAC, cpi_len, as_blocks=True)
+    data_t = [d for d in data_t if len(d) > 0]
+    gap_len = len(data_t[0])
+
+ang_dist_traveled_over_cpi = gap_len / sim_settings['prf'] * sim_settings['scan_rate'] * DTR
+
 # Chirps and Mfilts for each channe
 if sim_settings['use_sdr_waveform']:
     waves = np.array([np.fft.fft(genPulse(np.linspace(0, 1, 10),
@@ -214,8 +227,8 @@ if sim_settings['use_sdr_waveform']:
     for rp in rps:
         chirp = jnp.array(waves[rp.tx_num, :])
         mfilt = chirp.conj() * taytay
-        chirps.append(jnp.tile(chirp, (cpi_len, 1)).T)
-        mfilt_jax.append(np.tile(mfilt, (cpi_len, 1)).T)
+        chirps.append(jnp.tile(chirp, (gap_len, 1)).T)
+        mfilt_jax.append(np.tile(mfilt, (gap_len, 1)).T)
 else:
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     mfilt = sdr.genMatchedFilter(0, fft_len=fft_len)
@@ -236,6 +249,7 @@ else:
         (-1, 32, 32, 2))
 
     try:
+        print(f'Wavemodel save file loading...')
         with open('./model/current_model_params.pic', 'rb') as f:
             generator_params = pickle.load(f)
         wave_mdl = GeneratorModel(**generator_params)
@@ -267,7 +281,7 @@ bg_image = imageio.imread('/data6/Jeff_Backup/Pictures/josh.png').sum(axis=2)
 bg_image = RectBivariateSpline(np.arange(bg_image.shape[0]), np.arange(bg_image.shape[1]), bg_image)(
     np.linspace(0, bg_image.shape[0], nbpj_pts[0][0]), np.linspace(0, bg_image.shape[1], nbpj_pts[0][1])) / 750
 # bg_image = np.zeros(nbpj_pts[0])
-# bg_image[::50, ::50] = 1
+# bg_image[::20, ::20] = 10
 
 # Constant part of the radar equation
 receive_power_scale = (settings['antenna_params']['transmit_power'][0] / .01 *
@@ -306,8 +320,8 @@ data = rpi.boresight(rpi.gpst)
 sorted_data = data[np.lexsort(data.T), :]
 row_mask = np.append([True], np.any(np.diff(sorted_data, axis=0), 1))
 unique_boresights = sorted_data[row_mask].T
-az_spread = np.linspace(rpi.pan(rpi.gpst).min(), rpi.pan(rpi.gpst).max(), 200)
-im_ranges = np.linspace(2181 - 100., 2181 + 100., 200)
+az_spread = np.linspace(rpi.pan(rpi.gpst).min(), rpi.pan(rpi.gpst).max(), nbpj_pts[0][0])
+im_ranges = np.linspace(2181 - 100., 2181 + 100., nbpj_pts[0][1])
 imgrid = np.hstack([azelToVec(az_spread, np.ones_like(az_spread) *
                               np.arcsin(plat_to_grid[2] / np.linalg.norm(plat_to_grid))) * g for g in im_ranges])
 im_x = (imgrid[0, :] + rpi.pos(rpi.gpst[0])[0]).reshape((len(az_spread), len(im_ranges)), order='F')
@@ -315,28 +329,22 @@ im_y = (imgrid[1, :] + rpi.pos(rpi.gpst[0])[1]).reshape((len(az_spread), len(im_
 im_z = (imgrid[2, :] + rpi.pos(rpi.gpst[0])[2]).reshape((len(az_spread), len(im_ranges)), order='F')
 
 # Get pointing vector for MIMO consolidation
-ublock = np.array([azelToVec(n, 0) for n in np.linspace(-sim_settings['az_bw'] / 2, sim_settings['az_bw'] / 2, full_scan)]).T
+ublock = np.array(
+    [azelToVec(n, 0) for n in np.linspace(-ang_dist_traveled_over_cpi / 2, ang_dist_traveled_over_cpi / 2, cpi_len)]).T
 fine_ucavec = np.exp(-1j * 2 * np.pi * sdr[0].fc / c0 * vx_array.dot(ublock))
 array_factor = fine_ucavec.conj().T.dot(np.eye(vx_array.shape[0])).dot(fine_ucavec)[:, 0] / vx_array.shape[0]
 
-# Run through loop to get data simulated
-if settings['simulation_params']['use_sdr_gps']:
-    data_t = sdr[settings['channel']].pulse_time
-    idx_t = sdr[settings['channel']].frame_num
-else:
-    data_t = rpi.getValidPulseTimings(settings['simulation_params']['prf'], 1e-6, cpi_len)
-    data_t = data_t[data_t < data_t[0] + settings['simulation_params']['collect_duration']]
-    idx_t = np.arange(len(data_t))
 test = None
 print('Running simulation...')
 pulse_pos = 0
 # Data blocks for imaging
 rbi_image = np.zeros((len(az_spread), len(im_ranges)), dtype=np.complex128)
 
-nz = np.zeros(full_scan)
-tx_pattern = applyRadiationPattern(nz, np.linspace(-sim_settings['az_bw'] / 2, sim_settings['az_bw'] / 2, full_scan),
+nz = np.zeros(cpi_len)
+tx_pattern = applyRadiationPattern(nz, np.linspace(-ang_dist_traveled_over_cpi / 2, ang_dist_traveled_over_cpi / 2,
+                                                   cpi_len),
                                    nz, nz, nz, nz, rpi.az_half_bw, rpi.el_half_bw)
-H = convolution_matrix(tx_pattern * array_factor, cpi_len, 'valid').T
+H = convolution_matrix(tx_pattern * array_factor, gap_len, 'valid')
 
 # Truncated SVD for superresolution
 U, eig, Vt = np.linalg.svd(H, full_matrices=False)
@@ -345,20 +353,22 @@ eig[knee:] = 0
 eig[:knee] = 1 / eig[:knee]
 Hinv = Vt.T.dot(np.diag(eig)).dot(U.T)
 
-# Hinv = np.linalg.pinv(H)
-overlap_pan = (cpi_len - H.shape[1]) // 2 + 1
+Hinv = np.linalg.pinv(H)
+
+H_w = np.fft.fft(tx_pattern * array_factor, gap_len)
 abs_range_min = np.linalg.norm(grid_origin - rpi.pos(rpi.gpst), axis=1).min()
 det_pts = list()
 ex_chirps = list()
-frame_gen_pts = np.arange(0, len(data_t), cpi_len - overlap_pan * 2)
-for tidx, frames in tqdm(enumerate(idx_t[pos:pos + cpi_len] for pos in frame_gen_pts), total=len(frame_gen_pts)):
-    ts = data_t[frames]
+
+camfig, camax = plt.subplots(1, 1)
+cam = Camera(camfig)
+for tidx, ts in tqdm(enumerate(data_t), total=len(data_t)):
     tmp_len = len(ts)
     ex_chirps.append(np.array(chirps[0][:, 0]))
-    if not sim_settings['use_sdr_waveform'] and tmp_len == cpi_len:
+    if not sim_settings['use_sdr_waveform'] and tmp_len == gap_len:
         chirps, mfilt_jax = reloadWaveforms(model, device, wave_mdl, active_clutter, mfilt, rollback, nsam, nr, fft_len,
-                                            train_transforms(tcdata[tidx, ...]).unsqueeze(0).to(device),
-                                            train_transforms, rps, cpi_len, taytay, bandwidth_model)
+                                            train_transforms(tcdata[0, ...]).unsqueeze(0).to(device),
+                                            train_transforms, rps, gap_len, taytay, bandwidth_model)
     # Pan and Tilt are shared by each channel, antennas are all facing the same way
     panrx = rpi.pan(ts)
     elrx = rpi.tilt(ts)
@@ -399,24 +409,26 @@ for tidx, frames in tqdm(enumerate(idx_t[pos:pos + cpi_len] for pos in frame_gen
 
     # Real-beam imaging
     range_walk = np.linalg.norm(pt_ref, axis=1) - abs_range_min
-    if tmp_len == cpi_len:
+    if tmp_len == gap_len:
         rbi_y = beamform_data.get()  # * np.exp(-1j * 2 * np.pi * fc / c0 * range_walk)
         '''g_k = np.zeros((H.shape[1], nsam))
         b_k = np.zeros_like(g_k)
         sig_k = np.linalg.pinv(.01 * H.T.dot(H) + 10 * np.eye(H.shape[1])).dot(.01 * H.T.dot(rbi_y.T) + 10 * (g_k - b_k))'''
-        sig_k = rbi_y.dot(Hinv.T)
-        rbi_image += jnp.sum(mapped_rbi(sig_k, im_x, im_y, im_z,
-                                        postx[cpi_len // 2 - H.shape[1] // 2 - 1:cpi_len // 2 + H.shape[1] // 2, :],
-                                        posrx[cpi_len // 2 - H.shape[1] // 2 - 1:cpi_len // 2 + H.shape[1] // 2, :],
-                                        panrx[cpi_len // 2 - H.shape[1] // 2 - 1:cpi_len // 2 + H.shape[1] // 2],
-                                        near_range_s, fs * settings['upsample'], 2 * np.pi * (fc / c0)), axis=0)
-        '''rbi_image += jnp.sum(mapped_rbi(sig_k, grid_x[0], grid_y[0], grid_z[0],
-                                        postx,
-                                        posrx,
-                                        panrx,
-                                        near_range_s, fs * settings['upsample'], 2 * np.pi * (fc / c0),
-                                        elrx,
-                                        rpi.az_half_bw, rpi.el_half_bw), axis=0)'''
+        # sig_k = np.fft.ifft(np.fft.fft(rbi_y, axis=1) / H_w)[:, cpi_len // 2:-cpi_len // 2 + 1]
+        sig_k = rbi_y.dot(Hinv)
+        # Get the angles this scan section covers
+        angs = np.logical_and(az_spread <= panrx[gap_len // 2 - H.shape[0] // 2 - 1],
+                              az_spread >= panrx[gap_len // 2 + H.shape[0] // 2])
+        tmp_im = jnp.sum(mapped_rbi(sig_k, im_x[angs, :], im_y[angs, :], im_z[angs, :],
+                                    postx[:2, :],
+                                    posrx[:2, :],
+                                    panrx[gap_len // 2 - H.shape[0] // 2 - 1:gap_len // 2 + H.shape[0] // 2],
+                                    near_range_s, fs * settings['upsample'], 2 * np.pi * (fc / c0)), axis=0)
+
+        rbi_image[angs, :] += tmp_im
+        camax.imshow(db(np.array(rbi_y)), clim=[-176, -7])
+        plt.axis('tight')
+        cam.snap()
         if not sim_settings['use_sdr_waveform']:
             active_clutter = rbi_y.T[:, :32]
 
@@ -427,6 +439,7 @@ del upsample_data
 """
 ----------------------------PLOTS-------------------------------
 """
+anim = cam.animate()
 
 try:
     plt.figure('IMSHOW truth data')
@@ -453,12 +466,12 @@ plt.show()
 rbi_image = np.array(rbi_image)
 
 plane_vec = plane_pos - rpi.pos(rpi.gpst).mean(axis=0)
-clims = abs(rbi_image)
-clims = (max(np.median(clims) - 3 * clims.std(), 0),
-         np.median(clims) + 3 * clims.std() - min(0, np.median(clims) - 3 * clims.std()))
+climage = db(rbi_image)
+clims = (np.median(climage) - 3 * climage.std(),
+         max(np.median(climage) + 3 * climage.std(), np.max(climage) + 2))
 fig = plt.figure('RBI image')
 ax = fig.add_subplot(111, projection='polar')
-ax.pcolormesh(az_spread, np.flip(im_ranges), abs(rbi_image),
+ax.pcolormesh(az_spread, np.flip(im_ranges), climage,
               clim=clims, edgecolors='face')
 ax.scatter(np.arctan2(plane_vec[0], plane_vec[1]), np.linalg.norm(plane_vec))
 ax.set_ylim(0, ranges[-1])
@@ -467,7 +480,7 @@ ax.grid(False)
 plt.axis('tight')
 
 plt.figure('RBI cartesian')
-plt.imshow(abs(rbi_image), clim=clims,
+plt.imshow(climage.T, clim=clims,
            extent=[az_spread[0] / DTR, az_spread[-1] / DTR, im_ranges[0], im_ranges[-1]])
 plt.scatter(np.arctan2(plane_vec[0], plane_vec[1]) / DTR, np.linalg.norm(plane_vec))
 plt.axis('tight')
@@ -487,5 +500,9 @@ plt.show()
 pfig = px.scatter_3d(x=grid_x[0].flatten(), y=grid_y[0].flatten(), z=grid_z[0].flatten())
 pfig.add_scatter3d(x=im_x.flatten(), y=im_y.flatten(), z=im_z.flatten())
 pfig.show()
+
+plt.figure('Target Angles')
+plt.plot(az_spread / DTR, db(np.sum(bg_image, axis=1)))
+plt.plot(az_spread / DTR, db(np.sum(rbi_image, axis=0)))
 
 # px.imshow(abs(rbi_image), zmin=clims.mean() - 3 * clims.std(), zmax=clims.mean() + 3 * clims.std()).show()

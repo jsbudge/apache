@@ -9,7 +9,7 @@ plp: .3
 partial_pulse_percent: .2
 debug: True
 ngrids: 1
-pts_per_m: [2, 4]
+pts_per_m: [4, 4]
 grid_width: [100, 10]
 grid_height: [100, 10]
 channel: 0
@@ -23,20 +23,20 @@ noise_level: -300
 simulation_params:
   use_sdr_gps: False
   use_sdr_gimbal: True
-  use_sdr_waveform: False
+  use_sdr_waveform: True
   use_sdr_fc: True
   # This is for use_sdr_gps == False
-  collect_duration: 2
-  prf: 2200
+  collect_duration: 1
+  prf: 10000
   scan_rate: 10  # deg/s
   scan_angle: 10  # degrees
   standoff_range: 2181.  # meters
   az_bw: .866
-  el_bw: .866
+  el_bw: 1.5
 
 antenna_params:
-  n_tx: 2
-  n_rx: 2
+  n_tx: 1
+  n_rx: 1
   gain: [25, 25]
   transmit_power: [100, 100]
   tx_pos: [[-0.015614190520833333, 0., 0.], [0.015614190520833333, 0, 0]]

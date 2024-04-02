@@ -4,7 +4,6 @@ import numpy as np
 from simulib import genPulse, findPowerOf2, db
 import matplotlib.pyplot as plt
 from scipy.signal import stft, istft
-import plotly.io as pio
 import torch
 from pytorch_lightning import Trainer, loggers, seed_everything
 from pytorch_lightning.callbacks import EarlyStopping, StochasticWeightAveraging, ModelPruning
@@ -16,9 +15,6 @@ from waveform_model import GeneratorModel, init_weights
 from os import listdir
 import torch.nn as nn
 import torch.nn.utils.prune as prune
-
-# pio.renderers.default = 'svg'
-pio.renderers.default = 'browser'
 
 fs = 2e9
 c0 = 299792458.0
@@ -119,7 +115,7 @@ if __name__ == '__main__':
     else:
         logger = loggers.TensorBoardLogger(config['train_params']['log_dir'],
                                            name="WaveModel", log_graph=True)
-    # logger.experiment.add_graph(wave_mdl, wave_mdl.example_input_array)
+    # logger.experiment.add_graph(trainer, wave_mdl.example_input_array)
 
     expected_lr = max((config['wave_exp_params']['LR'] *
                    config['wave_exp_params']['scheduler_gamma']**(config['train_params']['max_epochs'] * .8)), 1e-9)
@@ -127,7 +123,7 @@ if __name__ == '__main__':
                       log_every_n_steps=config['exp_params']['log_epoch'], devices=2, callbacks=
                       [EarlyStopping(monitor='loss', patience=config['wave_exp_params']['patience'],
                                      check_finite=True),
-                       StochasticWeightAveraging(swa_lrs=config['wave_exp_params']['LR'])])
+                       StochasticWeightAveraging(swa_lrs=expected_lr)])
 
     print("======= Training =======")
     try:
@@ -138,14 +134,14 @@ if __name__ == '__main__':
     if trainer.global_rank == 0:
 
         # Implement some pruning
-        prune_layers = ([(m, 'weight') for m in wave_mdl.mixture if isinstance(m, nn.Conv1d)] +
+        '''prune_layers = ([(m, 'weight') for m in wave_mdl.mixture if isinstance(m, nn.Conv1d)] +
                         [(m, 'weight') for m in wave_mdl.expand_to_ants if isinstance(m, nn.Conv1d)] +
                         [(m, 'weight') for m in wave_mdl.final if isinstance(m, nn.Conv2d)])
 
         prune.global_unstructured(prune_layers, pruning_method=prune.L1Unstructured, amount=.1)
 
         for m, n in prune_layers:
-            prune.remove(m, 'weight')
+            prune.remove(m, 'weight')'''
 
         with torch.no_grad():
             wave_mdl.to(device)
@@ -157,7 +153,7 @@ if __name__ == '__main__':
             cs = cs.to(device)
             ts = ts.to(device)
 
-            nn_output = wave_mdl(cc, tc, [nr], torch.tensor([config['settings']['bandwidth']]))
+            nn_output = wave_mdl([cc, tc, [nr], torch.tensor([config['settings']['bandwidth']])])
             nn_numpy = nn_output[0, 0, ...].cpu().data.numpy()
 
             waves = wave_mdl.getWaveform(nn_output=nn_output).cpu().data.numpy()

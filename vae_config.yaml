@@ -66,9 +66,9 @@ exp_params:
 wave_exp_params:
   LR: 0.0001
   weight_decay: 0.35
-  scheduler_gamma: 0.39
-  betas: [.48, .32]
-  step_size: 10
+  scheduler_gamma: 0.25
+  betas: [.56, .26]
+  step_size: 8
   log_epoch: 10
   is_tuning: False
   save_model: False
@@ -102,4 +102,4 @@ model_params:
 
 train_params:
   log_dir: ./logs
-  max_epochs: 30
+  max_epochs: 1

@@ -39,7 +39,7 @@ class ApachePlatform(RadarPlatform):
 
         self.params = params
 
-    def getValidPulseTimings(self, prf, pulse_time, cpi_len):
+    def getValidPulseTimings(self, prf, pulse_time, cpi_len, as_blocks=False):
         tcpi = self.gpst[0] + np.arange(self.gpst[0], self.gpst[-1], 1 / prf)
         th_b = self.att(tcpi)[:, 1]
         u = self.params['wheel_height_m'] * np.cos(th_b) - self.params['phase_center_offset_m'] * np.sin(th_b)
@@ -69,10 +69,13 @@ class ApachePlatform(RadarPlatform):
         Npo = (int(max(np.ceil(ti * prf))) +
                extra_pulses)
 
-        valids = np.concatenate([np.arange(n * Npi + n * Npo, (n + 1) * Npi + n * Npo) for n in range(len(tcpi) // Npi)])
-        valids = valids[valids < len(tcpi)]
-
-        return tcpi[valids]
+        if as_blocks:
+            valids = [np.arange(n * Npi + n * Npo, (n + 1) * Npi + n * Npo) for n in range(len(tcpi) // Npi)]
+            return [tcpi[v[v < len(tcpi)]] for v in valids]
+        else:
+            valids = np.concatenate([np.arange(n * Npi + n * Npo, (n + 1) * Npi + n * Npo) for n in range(len(tcpi) // Npi)])
+            valids = valids[valids < len(tcpi)]
+            return tcpi[valids]
 
 
 def rotateY(theta):

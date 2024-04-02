@@ -145,8 +145,8 @@ class GeneratorExperiment(pl.LightningModule):
         if 'retain_first_backpass' in self.params:
             self.hold_graph = self.params['retain_first_backpass']
 
-    def forward(self, clutter: Tensor, target: Tensor, pulse_length: int, bandwidth: float) -> Tensor:
-        return self.model(clutter, target, pulse_length, bandwidth)
+    def forward(self, inp: list) -> Tensor:
+        return self.model(inp)
 
     def training_step(self, batch, batch_idx):
         train_loss = self.train_val_get(batch, batch_idx)
@@ -184,7 +184,7 @@ class GeneratorExperiment(pl.LightningModule):
         self.automatic_optimization = True
 
         bandwidth = torch.ones(clutter_cov.shape[0], 1, device=self.device) * self.params['bandwidth']
-        results = self.forward(clutter_cov, target_cov, pulse_length=pulse_length, bandwidth=bandwidth)
+        results = self.forward([clutter_cov, target_cov, pulse_length, bandwidth])
         train_loss = self.model.loss_function(results, clutter_spec, target_spec, bandwidth)
 
         self.log_dict({key: val.item() for key, val in train_loss.items()}, sync_dist=True, prog_bar=True)

@@ -152,8 +152,8 @@ class GeneratorModel(FlatModule):
         self.example_input_array = (torch.zeros((1, clutter_latent_size)), torch.zeros((1, target_latent_size)),
                                     torch.tensor([1250]), torch.tensor(400e6))
 
-    def forward(self, clutter: torch.tensor, target: torch.tensor,
-                pulse_length: [int], bandwidth: Tensor) -> torch.tensor:
+    def forward(self, inp: list) -> torch.tensor:
+        clutter, target, pulse_length, bandwidth = inp
         # Use only the first pulse_length because it gives batch_size random numbers as part of the dataloader
         n_frames = 1 + (pulse_length[0] - self.stft_win_sz) // self.hop
         n_windows = pulse_length[0] // self.stft_win_sz
@@ -298,7 +298,7 @@ class GeneratorModel(FlatModule):
         stft_win = self.stft_win_sz
 
         # Get the STFT either from the clutter, target, and pulse length or directly from the neural net
-        full_stft = self.forward(cc, tc, pulse_length, [bandwidth]) if nn_output is None else nn_output
+        full_stft = self.forward([cc, tc, pulse_length, [bandwidth]]) if nn_output is None else nn_output
         if scale:
             gen_waveform = torch.zeros((full_stft.shape[0], self.n_ants, custom_fft_sz), dtype=torch.complex64,
                                        device=self.device, requires_grad=False)
