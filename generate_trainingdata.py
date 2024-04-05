@@ -3,7 +3,6 @@ import numpy as np
 from data_converter.SDRParsing import SDRParse, load, loadXMLFile
 from tqdm import tqdm
 from glob import glob
-from jax.numpy import fft as jaxfft
 from pathlib import Path
 import yaml
 
@@ -84,11 +83,11 @@ def formatTargetClutterData(data: np.ndarray, bin_bandwidth: int):
 def getVAECov(data: np.ndarray, mfilt: np.ndarray = None, rollback: int = 0,
               nsam: int = 0, fft_len: int = 32768, mu: float = 0., var: float = 1., apply_mfilt: bool = True):
     if apply_mfilt:
-        pulses = jaxfft.fft(data, fft_len, axis=0) * mfilt[:, None]
+        pulses = np.fft.fft(data, fft_len, axis=0) * mfilt[:, None]
         # If the pulses are offset video, shift to be centered around zero
         pulses = np.roll(pulses, rollback, axis=0)
     else:
-        pulses = jaxfft.fft(data, fft_len, axis=0)
+        pulses = np.fft.fft(data, fft_len, axis=0)
     norm_energy = np.sqrt(np.sum(abs(pulses[:, 0] * pulses[:, 0].conj())))
     pulses /= norm_energy  # Normalize everything to the first pulse
     pmean = pulses.mean(axis=1)

@@ -4,14 +4,14 @@ poly_num: 1
 use_aps_debug: False
 rotate_grid: False
 use_ecef: True
-cpi_len: 32
+cpi_len: 128
 plp: .3
 partial_pulse_percent: .2
 debug: True
 ngrids: 1
-pts_per_m: [4, 4]
-grid_width: [100, 10]
-grid_height: [100, 10]
+pts_per_m: [1, 4]
+grid_width: [250, 10]
+grid_height: [250, 10]
 channel: 0
 fdelay: 1.5
 origin: [[40.138044, -111.660027, 1365.8849123907273], [40.138031, -111.660020, 1365.8849123907273]]
@@ -28,14 +28,14 @@ simulation_params:
   # This is for use_sdr_gps == False
   collect_duration: 1
   prf: 10000
-  scan_rate: 10  # deg/s
+  scan_rate: 80  # deg/s
   scan_angle: 10  # degrees
   standoff_range: 2181.  # meters
   az_bw: .866
   el_bw: 1.5
 
 antenna_params:
-  n_tx: 1
+  n_tx: 2
   n_rx: 1
   gain: [25, 25]
   transmit_power: [100, 100]

@@ -12,8 +12,8 @@ apache_params:
   vehicle_slant_range_max: 25000
   alt_min: 30.48
   alt_max: 1524.
-  az_min_bw: .0130899
-  el_min_bw: .034906
+  az_min_bw: .866
+  el_min_bw: 8.
 
 settings:
   cpi_len: 32
