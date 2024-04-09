@@ -9,30 +9,30 @@ plp: .3
 partial_pulse_percent: .2
 debug: True
 ngrids: 1
-pts_per_m: [1, 4]
-grid_width: [250, 10]
-grid_height: [250, 10]
+pts_per_m: 10
+grid_width: 200
+grid_height: 200
 channel: 0
 fdelay: 1.5
-origin: [[40.138044, -111.660027, 1365.8849123907273], [40.138031, -111.660020, 1365.8849123907273]]
+origin: [40.138044, -111.660027, 1365.8849123907273]
 gen_data: True
 gps_check: False
-pts_per_tri: [1, 1]
-noise_level: -300
+pts_per_tri: 5
+noise_level: -200
 
 simulation_params:
   use_sdr_gps: False
   use_sdr_gimbal: True
-  use_sdr_waveform: True
+  use_sdr_waveform: False
   use_sdr_fc: True
   # This is for use_sdr_gps == False
-  collect_duration: 1
+  collect_duration: .2
   prf: 10000
-  scan_rate: 80  # deg/s
+  scan_rate: 240  # deg/s
   scan_angle: 10  # degrees
   standoff_range: 2181.  # meters
   az_bw: .866
-  el_bw: 1.5
+  el_bw: 2.
 
 antenna_params:
   n_tx: 2

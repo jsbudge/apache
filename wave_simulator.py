@@ -71,8 +71,7 @@ with open('./vae_config.yaml', 'r') as file:
     except yaml.YAMLError as exc:
         print(exc)
 
-nbpj_pts = [(int(settings['grid_height'][i] * settings['pts_per_m'][i]),
-             int(settings['grid_width'][i] * settings['pts_per_m'][i])) for i in range(settings['ngrids'])]
+nbpj_pts = (int(settings['grid_height'] * settings['pts_per_m']), int(settings['grid_width'] * settings['pts_per_m']))
 sim_settings = settings['simulation_params']
 
 print('Loading SDR file...')
@@ -231,8 +230,8 @@ else:
                                      rps, cpi_len, bandwidth_model)
 
 # This replaces the ASI background with a custom image
-bg.resampleGrid(settings['origin'][0], settings['grid_width'][0], settings['grid_height'][0],
-                        *nbpj_pts[0], bg.heading if settings['rotate_grid'] else 0)
+bg.resampleGrid(settings['origin'], settings['grid_width'], settings['grid_height'],
+                        *nbpj_pts, bg.heading if settings['rotate_grid'] else 0)
 '''bg_image = imageio.imread('/data6/Jeff_Backup/Pictures/josh.png').sum(axis=2)
 bg_image = RectBivariateSpline(np.arange(bg_image.shape[0]), np.arange(bg_image.shape[1]), bg_image)(
     np.linspace(0, bg_image.shape[0], bg.refgrid.shape[0]), np.linspace(0, bg_image.shape[1], bg.refgrid.shape[1])) / 750'''
@@ -248,37 +247,13 @@ receive_power_scale = (settings['antenna_params']['transmit_power'][0] / .01 *
 noise_level = 10 ** (settings['noise_level'] / 20) / np.sqrt(2)
 
 # Calculate out points on the ground
-'''grid_z = list()
-bg_transforms = list()
-bg_refgrid = list()
-# These are only used for plotting, transforms are all we need for the actual simulation
-grid_y = list()
-grid_x = list()
-for n in range(settings['ngrids']):
-    gx, gy, gz = bg.getGrid(settings['origin'][n], settings['grid_width'][n], settings['grid_height'][n], *nbpj_pts[n],
-                            bg.heading if settings['rotate_grid'] else 0)
-    grid_z.append(gz)
-    grid_x.append(gx)
-    grid_y.append(gy)
-    bg_transforms.append(bg.getGridParams(settings['origin'][n], settings['grid_width'][n], settings['grid_height'][n],
-                                          nbpj_pts[n], bg.heading if settings['rotate_grid'] else 0))
-    if n == 0:
-        bg_refgrid.append(bg_image)
-    else:
-        bg_refgrid.append(bg.getRefGrid(settings['origin'][n], settings['grid_width'][n], settings['grid_height'][n],
-                                        *nbpj_pts[n], bg.heading if settings['rotate_grid'] else 0))
-    bg_refgrid[-1] = (bg_refgrid[-1] - bg_refgrid[-1].mean()) / bg_refgrid[-1].std()
-    bg_refgrid[-1] += abs(bg_refgrid[-1].min())
-    bg_refgrid[-1] *= 1e7'''
-
-# Calculate out points on the ground
-gx, gy, gz = bg.getGrid(settings['origin'][0], settings['grid_width'][0], settings['grid_height'][0], *nbpj_pts[0],
+gx, gy, gz = bg.getGrid(settings['origin'], settings['grid_width'], settings['grid_height'], *nbpj_pts,
                         bg.heading if settings['rotate_grid'] else 0)
 gx_gpu = cupy.array(gx, dtype=np.float64)
 gy_gpu = cupy.array(gy, dtype=np.float64)
 gz_gpu = cupy.array(gz, dtype=np.float64)
-refgrid = bg.getRefGrid(settings['origin'][0], settings['grid_width'][0], settings['grid_height'][0],
-                        *nbpj_pts[0], bg.heading if settings['rotate_grid'] else 0)
+refgrid = bg.getRefGrid(settings['origin'], settings['grid_width'], settings['grid_height'],
+                        *nbpj_pts, bg.heading if settings['rotate_grid'] else 0)
 refgrid_gpu = cupy.array(refgrid, dtype=np.float64)
 
 if settings['debug']:
@@ -290,13 +265,13 @@ else:
 
 # Generate range/angle grid for a given position
 # First, get the center of the grid for angle calcs
-plat_to_grid = rpi.pos(rpi.gpst[0]) - llh2enu(*settings['origin'][0], bg.ref)
+plat_to_grid = rpi.pos(rpi.gpst[0]) - llh2enu(*settings['origin'], bg.ref)
 data = rpi.boresight(rpi.gpst)
 sorted_data = data[np.lexsort(data.T), :]
 row_mask = np.append([True], np.any(np.diff(sorted_data, axis=0), 1))
 unique_boresights = sorted_data[row_mask].T
-az_spread = np.linspace(rpi.pan(rpi.gpst).min(), rpi.pan(rpi.gpst).max(), nbpj_pts[0][0])
-im_ranges = np.linspace(2181 - 100., 2181 + 100., nbpj_pts[0][1])
+az_spread = np.linspace(rpi.pan(rpi.gpst).min(), rpi.pan(rpi.gpst).max(), nbpj_pts[0])
+im_ranges = np.linspace(2181 - 100., 2181 + 100., nbpj_pts[1])
 imgrid = np.hstack([azelToVec(az_spread, np.ones_like(az_spread) *
                               np.arcsin(plat_to_grid[2] / np.linalg.norm(plat_to_grid))) * g for g in im_ranges])
 im_x = (imgrid[0, :] + rpi.pos(rpi.gpst[0])[0]).reshape((len(az_spread), len(im_ranges)), order='F')
@@ -308,7 +283,7 @@ imz_gpu = cupy.array(gz, dtype=np.float64)
 
 # GPU device calculations
 threads_per_block = getMaxThreads()
-bpg_bpj = (max(1, (nbpj_pts[0][0]) // threads_per_block[0] + 1), (nbpj_pts[0][1]) // threads_per_block[1] + 1)
+bpg_bpj = (max(1, (nbpj_pts[0]) // threads_per_block[0] + 1), (nbpj_pts[1]) // threads_per_block[1] + 1)
 
 rng_states = create_xoroshiro128p_states(threads_per_block[0] * bpg_bpj[0], seed=1)
 
@@ -378,7 +353,8 @@ for tidx, ts in tqdm(enumerate(data_t), total=len(data_t)):
                                                     posrx_gpu, postx_gpu, panrx_gpu, elrx_gpu, panrx_gpu, elrx_gpu,
                                                     pd_r, pd_i, rng_states, pts_debug,
                                                     angs_debug, bpj_wavelength, near_range_s, rpref.fs,
-                                                    rpref.az_half_bw, rpref.el_half_bw, settings['pts_per_tri'][0],
+                                                    rpref.az_half_bw, rpref.el_half_bw, receive_power_scale,
+                                                    settings['pts_per_tri'],
                                                     settings['debug'])
         pdata = pd_r + 1j * pd_i
         if settings['ngrids'] > 1:
@@ -409,7 +385,7 @@ for tidx, ts in tqdm(enumerate(data_t), total=len(data_t)):
         # Get the angles this scan section covers
         angs = np.logical_and(az_spread <= panrx[gap_len // 2 - H.shape[0] // 2 - 1],
                               az_spread >= panrx[gap_len // 2 + H.shape[0] // 2])
-        bpj_grid = cupy.zeros((sum(angs), nbpj_pts[0][1]), dtype=np.complex128)
+        bpj_grid = cupy.zeros((sum(angs), nbpj_pts[1]), dtype=np.complex128)
         posrx_gpu = cupy.array(rpref.rxpos(ts), dtype=np.float64)
         postx_gpu = cupy.array(rpref.txpos(ts), dtype=np.float64)
 
@@ -439,8 +415,13 @@ anim = cam.animate()
 
 try:
     plt.figure('IMSHOW truth data')
-    plt.imshow(db(refgrid), origin='lower')
+    climage = db(refgrid)
+    clim_image = climage[climage > -299]
+    clims = (np.median(clim_image) - 3 * clim_image.std(),
+             max(np.median(clim_image) + 3 * clim_image.std(), np.max(clim_image) + 2))
+    plt.imshow(np.rot90(db(refgrid)), origin='lower', clim=clims, cmap='gray')
     plt.axis('tight')
+    plt.axis('off')
 except Exception as e:
     print(f'Error in generating background image: {e}')
 
@@ -478,8 +459,8 @@ plt.axis('tight')
 
 plt.figure('RBI cartesian')
 plt.imshow(climage.T, clim=clims,
-           extent=[az_spread[0] / DTR, az_spread[-1] / DTR, im_ranges[0], im_ranges[-1]])
-plt.scatter(np.arctan2(plane_vec[0], plane_vec[1]) / DTR, np.linalg.norm(plane_vec))
+           extent=(az_spread[0] / DTR, az_spread[-1] / DTR, im_ranges[0], im_ranges[-1]), cmap='gray')
+# plt.scatter(np.arctan2(plane_vec[0], plane_vec[1]) / DTR, np.linalg.norm(plane_vec))
 plt.axis('tight')
 
 pfig = px.imshow(db(refgrid), x=np.linspace(gx.min(), gx.max(), refgrid.shape[0]),

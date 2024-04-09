@@ -116,11 +116,18 @@ class GeneratorModel(FlatModule):
             nn.GELU(),
             nn.Conv1d(channel_sz, channel_sz, 3, 1, 1),
             nn.GELU(),
+            nn.Conv1d(channel_sz, channel_sz, 3, 1, 1),
+            nn.GELU(),
+            nn.Conv1d(channel_sz, channel_sz, 3, 1, 1),
+            nn.GELU(),
+            nn.Conv1d(channel_sz, channel_sz, 3, 1, 1),
+            nn.GELU(),
+            nn.BatchNorm1d(channel_sz),
             nn.Conv1d(channel_sz, 1, 1, 1, 0),
             nn.GELU(),
         )
 
-        self.lst_hop = nn.Transformer(self.stft_win_sz, num_decoder_layers=8, num_encoder_layers=8, activation='gelu',
+        self.lst_hop = nn.Transformer(self.stft_win_sz, num_decoder_layers=8, num_encoder_layers=8,
                                       batch_first=True)
 
         self.expand_to_ants = nn.Sequential(
@@ -195,17 +202,11 @@ class GeneratorModel(FlatModule):
         clutter_spectrum = torch.complex(args[1][:, :, 0], args[1][:, :, 1])
         clutter_spectrum = clutter_spectrum / torch.sqrt(torch.sum(clutter_spectrum * torch.conj(clutter_spectrum),
                                                                    dim=1))[:, None]
-        # clutter_psd = clutter_spectrum * clutter_spectrum.conj()
 
         # Get target spectrum into complex form and normalize to unit energy
         target_spectrum = torch.complex(args[2][:, :, 0], args[2][:, :, 1])
         target_spectrum = target_spectrum / torch.sqrt(torch.sum(target_spectrum * torch.conj(target_spectrum),
                                                                  dim=1))[:, None]
-        # target_psd = target_spectrum * target_spectrum.conj()
-
-        # This is the weights for a weighted average that emphasizes locations that have more
-        # energy difference between clutter and target
-        # left_sig_tc = torch.abs(clutter_psd - target_psd)
 
         # Get waveform into complex form and normalize it to unit energy
         gen_waveform = self.getWaveform(nn_output=args[0])
@@ -222,10 +223,6 @@ class GeneratorModel(FlatModule):
             # This is orthogonality losses, so we need a persistent value across the for loop
             if n > 0:
                 ortho_loss += torch.sum(torch.abs(g1 * gn)) / gen_waveform.shape[0]
-
-            # Power in the leftover signal for both clutter and target
-            # gen_psd = g1 * g1.conj()
-            # left_sig_c = torch.abs(gen_psd - clutter_psd)
 
             clutter_return = torch.abs(clutter_spectrum - g1) ** 2
             target_return = torch.abs(target_spectrum - g1) ** 2
