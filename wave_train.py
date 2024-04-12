@@ -65,12 +65,26 @@ if __name__ == '__main__':
         except yaml.YAMLError as exc:
             print(exc)
 
-    fft_len = config['generate_data_settings']['fft_sz']
+    fft_len = config['settings']['fft_len']
     nr = 5000  # int((config['perf_params']['vehicle_slant_range_min'] * 2 / c0 - 1 / TAC) * fs)
 
     print('Setting up wavemodel...')
+    # Get the model, experiment, logger set up
+    if config['exp_params']['model_type'] == 'InfoVAE':
+        decoder = InfoVAE(**config['model_params'])
+    elif config['exp_params']['model_type'] == 'WAE_MMD':
+        decoder = WAE_MMD(fft_len=config['settings']['fft_len'], **config['model_params'])
+    else:
+        decoder = BetaVAE(**config['model_params'])
+    print('Setting up model...')
+    try:
+        decoder.load_state_dict(torch.load('./model/inference_model.state'))
+    except RuntimeError:
+        print('Model save file does not match current structure. Re-running with new structure.')
+        decoder.apply(init_weights)
+    decoder.requires_grad = False
     warm_start = False
-    if config['settings']['warm_start']:
+    if config['wave_exp_params']['warm_start']:
         print('Wavemodel loaded from save state.')
         try:
             with open('./model/current_model_params.pic', 'rb') as f:
@@ -80,13 +94,13 @@ if __name__ == '__main__':
             warm_start = True
         except RuntimeError as e:
             print(f'Wavemodel save file does not match current structure. Re-running with new structure.\n{e}')
-            wave_mdl = GeneratorModel(fft_sz=fft_len,
+            wave_mdl = GeneratorModel(fft_sz=fft_len, decoder=decoder,
                                       stft_win_sz=config['settings']['stft_win_sz'],
                                       clutter_latent_size=config['model_params']['latent_dim'],
                                       target_latent_size=config['model_params']['latent_dim'], n_ants=2)
     else:
         print('Initializing new wavemodel...')
-        wave_mdl = GeneratorModel(fft_sz=fft_len,
+        wave_mdl = GeneratorModel(fft_sz=fft_len, decoder=decoder,
                                   stft_win_sz=config['settings']['stft_win_sz'],
                                   clutter_latent_size=config['model_params']['latent_dim'],
                                   target_latent_size=config['model_params']['latent_dim'], n_ants=2)
@@ -96,7 +110,8 @@ if __name__ == '__main__':
     config['dataset_params']['max_pulse_length'] = nr
     config['dataset_params']['min_pulse_length'] = 1000
 
-    data = WaveDataModule(latent_dim=config['model_params']['latent_dim'], device=device, **config["dataset_params"])
+    data = WaveDataModule(latent_dim=config['model_params']['latent_dim'], device=device, fft_sz=fft_len,
+                          **config["dataset_params"])
     data.setup()
 
     print('Setting up experiment...')
@@ -118,12 +133,12 @@ if __name__ == '__main__':
     # logger.experiment.add_graph(trainer, wave_mdl.example_input_array)
 
     expected_lr = max((config['wave_exp_params']['LR'] *
-                   config['wave_exp_params']['scheduler_gamma']**(config['train_params']['max_epochs'] * .8)), 1e-9)
-    trainer = Trainer(logger=logger, max_epochs=config['train_params']['max_epochs'],
-                      log_every_n_steps=config['exp_params']['log_epoch'], devices=2, callbacks=
+                   config['wave_exp_params']['scheduler_gamma']**(config['wave_exp_params']['max_epochs'] * config['wave_exp_params']['swa_start'])), 1e-9)
+    trainer = Trainer(logger=logger, max_epochs=config['wave_exp_params']['max_epochs'],
+                      log_every_n_steps=config['wave_exp_params']['log_epoch'], devices=1, callbacks=
                       [EarlyStopping(monitor='loss', patience=config['wave_exp_params']['patience'],
                                      check_finite=True),
-                       StochasticWeightAveraging(swa_lrs=expected_lr)])
+                       StochasticWeightAveraging(swa_lrs=expected_lr, swa_epoch_start=config['wave_exp_params']['swa_start'])])
 
     print("======= Training =======")
     try:
@@ -160,9 +175,9 @@ if __name__ == '__main__':
             print('Loaded waveforms...')
 
             clutter = cs.cpu().data.numpy()
-            clutter = normalize(clutter[:, :, 0] + 1j * clutter[:, :, 1])
+            clutter = normalize(clutter[:, 0, :] + 1j * clutter[:, 1, :])
             targets = ts.cpu().data.numpy()
-            targets = normalize(targets[:, :, 0] + 1j * targets[:, :, 1])
+            targets = normalize(targets[:, 0, :] + 1j * targets[:, 1, :])
             print('Loaded clutter and target data...')
 
             # Run some plots for an idea of what's going on

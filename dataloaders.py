@@ -12,118 +12,36 @@ import numpy as np
 from multiprocessing import cpu_count
 from scipy.ndimage import sobel
 from scipy.signal.windows import taylor
+from sklearn.model_selection import train_test_split
 
 from models import BaseVAE, InfoVAE, WAE_MMD, BetaVAE
 
 
-def transformCovData(vae_model, device, root_dir, mu, var):
-    assert Path(root_dir).is_dir()
-
-    clutter_cov_files = glob(f'{root_dir}/clutter_*.cov')
-    target_cov_files = glob(f'{root_dir}/targets.cov')
-    ccdata = np.fromfile(clutter_cov_files[0], dtype=np.float32).reshape(
-        (-1, 32, 32, 2)).swapaxes(1, 3)
-    tcdata = np.fromfile(target_cov_files[0], dtype=np.float32).reshape(
-        (-1, 32, 32, 2)).swapaxes(1, 3)
-    ccdata = (ccdata - mu) / var
-    tcdata = (tcdata - mu) / var
-    # Run through the VAE model
-    vae_model.to(device)
-
-    with open(f'{root_dir}/clutter.enc', 'ab') as f:
-        for i in range(0, ccdata.shape[0], 64):
-            ed = vae_model.encode(torch.tensor(ccdata[i:i + 64]).to(device)).detach().cpu().data.numpy().astype(
-                np.float32)
-            ed.tofile(f)
-    with open(f'{root_dir}/target.enc', 'ab') as f:
-        for i in range(0, tcdata.shape[0], 64):
-            ed = vae_model.encode(torch.tensor(tcdata[i:i + 64]).to(device)).detach().cpu().data.numpy().astype(
-                np.float32)
-            ed.tofile(f)
-
-
-class STFTDataset(Dataset):
-    def __init__(self, bwidth_min, bwidth_max, fs, nbins):
-        self.width = (bwidth_min, bwidth_max)
-
-        self.data = np.random.uniform(bwidth_min, bwidth_max, (2048, 1))
-        win_sz = (self.data / fs * nbins).astype(int)
-        win_sz[win_sz % 2 != 0] += 1
-        self.labels = np.zeros((2048, nbins))
-
-        for n in range(2048):
-            twin = taylor(win_sz[n][0], 15, 60)
-            self.labels[n, :win_sz[n][0] // 2] = twin[-win_sz[n][0] // 2:]
-            self.labels[n, -win_sz[n][0] // 2:] = twin[:win_sz[n][0] // 2]
-
-        self.data = torch.tensor(self.data, dtype=torch.float32)
-        self.labels = torch.tensor(self.labels, dtype=torch.float32)
-
-    def __len__(self):
-        return 2048
-
-    def __getitem__(self, idx):
-        return self.data[idx], self.labels[idx]
-
-
-class CovarianceDataset(Dataset):
-
-    def __init__(self, root_dir, transform=None, split: int = 32, single_example=False, mu=0., var=1., noise_level=0.):
-        if Path(root_dir).is_dir():
-            clutter_files = glob(f'{root_dir}/clutter_*.cov')
-            self.data = np.concatenate([np.fromfile(c,
-                                                    dtype=np.float32).reshape((-1, 32, 32, 2)) for c in clutter_files])
-        else:
-            self.data = np.fromfile(root_dir, dtype=np.float32).reshape((-1, 32, 32, 2))
-        # Do split
-        self.data = self.data[np.random.choice(np.arange(self.data.shape[0]), split), ...]
-        if single_example:
-            self.data[1:, ...] = self.data[0, ...]
-        if transform is not None:
-            self.transform = transform
-        else:
-            self.transform = transforms.Compose(
-                [
-                    transforms.ToTensor(),
-                    transforms.Normalize(mu, var),
-                ]
-            )
-
-        self.noise_level = noise_level
-
-    def __getitem__(self, idx):
-        img = self.data[idx, ...]
-        if self.transform is not None:
-            img = self.transform(img)
-        if self.noise_level > 0:
-            return img + torch.randn_like(img) * self.noise_level, img
-        return img, img
-
-    def __len__(self):
-        return self.data.shape[0]
-
-
 class PulseDataset(Dataset):
-    def __init__(self, root_dir, transform=None, split=1.):
-        if Path(root_dir).is_dir():
-            clutter_files = glob(f'{root_dir}/clutter_*.spec')
-            self.data = np.concatenate([np.fromfile(c,
-                                                    dtype=np.float32).reshape((-1, 6554, 1)) for c in clutter_files])
-        else:
-            self.data = np.fromfile(root_dir, dtype=np.float32).reshape((-1, 6554, 1))
+    def __init__(self, root_dir, fft_len, split=1., is_val=False, seed=42):
+        self.root_dir = root_dir
+        self.fft_len = fft_len
+        _, self.data = self.get_filedata()
         # Do split
         if split < 1:
-            self.data = self.data[np.random.choice(np.arange(self.data.shape[0]), int(self.data.shape[0] * split)), ...]
-        self.transform = transform
-
+            Xt, Xs, _, _ = train_test_split(np.arange(self.data.shape[0]), np.arange(self.data.shape[0]),
+                                            test_size=split, random_state=seed)
+            self.data = self.data[Xs] if is_val else self.data[Xt]
+        self.data = torch.tensor(self.data, dtype=torch.float32)
+        
     def __getitem__(self, idx):
         img = self.data[idx, ...]
-        if self.transform is not None:
-            img = self.transform(img)
         return img, img
 
     def __len__(self):
         return self.data.shape[0]
+
+    def get_filedata(self, concat=True):
+        if not Path(self.root_dir).is_dir():
+            return self.root_dir, np.fromfile(self.root_dir, dtype=np.float32).reshape((-1, 2, self.fft_len))
+        clutter_files = glob(f'{self.root_dir}/clutter_*.spec')
+        dt = [np.fromfile(c, dtype=np.float32).reshape((-1, 2, self.fft_len)) for c in clutter_files]
+        return clutter_files, np.concatenate(dt) if concat else dt
 
 
 class RCSDataset(Dataset):
@@ -155,164 +73,57 @@ class RCSDataset(Dataset):
         return self.optical_data.shape[0]
 
 
-class OldWaveDataset(Dataset):
-    def __init__(self, root_dir: str, vae_model, fft_sz: int, transform=None, spec_transform=None, split: int = 32,
-                 single_example: bool = False, device: str = 'cpu', min_pulse_length: int = 1,
-                 max_pulse_length: int = 2, mu: float = 0., var: float = 1.):
-        assert Path(root_dir).is_dir()
-
-        clutter_cov_files = glob(f'{root_dir}/clutter_*.cov')
-        clutter_spec_files = glob(f'{root_dir}/clutter_*.spec')
-        target_cov_files = glob(f'{root_dir}/targets.cov')
-        target_spec_files = glob(f'{root_dir}/targets.spec')
-        ccdata = np.fromfile(clutter_cov_files[0], dtype=np.float32).reshape(
-            (-1, 32, 32, 2))
-        tcdata = np.fromfile(target_cov_files[0], dtype=np.float32).reshape(
-            (-1, 32, 32, 2))
-        csdata = np.fromfile(clutter_spec_files[0], dtype=np.float32).reshape(
-            (-1, fft_sz, 2))
-        tsdata = np.fromfile(target_spec_files[0], dtype=np.float32).reshape(
-            (-1, fft_sz, 2))
-        per_file = int(split // len(clutter_cov_files))
-        for i in range(1, len(clutter_cov_files)):
-            tmp_cdata = np.fromfile(clutter_cov_files[i], dtype=np.float32).reshape(
-                (-1, 32, 32, 2))
-            ccs = np.random.choice(np.arange(tmp_cdata.shape[0]), per_file)
-            ccdata = np.concatenate([ccdata, tmp_cdata[ccs]])
-            csdata = np.concatenate([csdata, np.fromfile(clutter_spec_files[i], dtype=np.float32).reshape(
-                (-1, fft_sz, 2))[ccs]])
-
-        # Scale the data to get unit variance (this preserves phase, not magnitude)
-        ccdata = ccdata[:split, ...]
-        ccdata = (ccdata - mu) / var
-        tcdata = tcdata[:split, ...]
-        tcdata = (tcdata - mu) / var
-
-        # Spectrum doesn't need normalization as that occurs during training
-        csdata = csdata[:split, ...]
-        tsdata = tsdata[:split, ...]
-        ccdata = ccdata.swapaxes(1, 3)
-        tcdata = tcdata.swapaxes(1, 3)
-        if single_example:
-            ccdata[1:, ...] = ccdata[0, ...]
-            tcdata[1:, ...] = tcdata[0, ...]
-            csdata[1:, ...] = csdata[0, ...]
-            tsdata[1:, ...] = tsdata[0, ...]
-
-        self.spec_sz = tcdata.shape[0]
-
-        # Run through the VAE model
-        vae_model.to(device)
-
-        self.ccdata = torch.vstack([vae_model.encode(torch.tensor(ccdata[i:i + 64]).to(device)).detach().cpu()
-                                    for i in range(0, ccdata.shape[0], 64)])
-        self.tcdata = torch.vstack([vae_model.encode(torch.tensor(tcdata[i:i + 64]).to(device)).detach().cpu()
-                                    for i in range(0, tcdata.shape[0], 64)])
-        self.csdata = torch.tensor(csdata)
-        self.tsdata = torch.tensor(tsdata)
-
-        del ccdata
-        del tcdata
-
-        self.spec_transform = spec_transform
-        self.transform = transform
-        self.min_pulse_length = min_pulse_length
-        self.max_pulse_length = max_pulse_length
-
-    def __getitem__(self, idx):
-        ccd = self.ccdata[idx, ...]
-        csd = self.csdata[idx, ...]
-        if self.spec_sz < self.csdata.shape[0]:
-            tsd = self.tsdata[idx % self.spec_sz, ...]
-            tcd = self.tcdata[idx % self.spec_sz, ...]
-        else:
-            tsd = self.tsdata[idx, ...]
-            tcd = self.tcdata[idx, ...]
-        if self.transform is not None:
-            ccd = self.transform(ccd)
-            tcd = self.transform(tcd)
-        if self.spec_transform is not None:
-            csd = self.spec_transform(csd)
-            tsd = self.spec_transform(tsd)
-
-        return ccd, tcd, csd, tsd, np.random.randint(self.min_pulse_length, self.max_pulse_length)
-
-    def __len__(self):
-        return self.csdata.shape[0]
-
-
 class WaveDataset(Dataset):
-    def __init__(self, root_dir: str, latent_dim: int = 50, fft_sz: int = 4096, transform=None, spec_transform=None,
-                 split: int = 32,
-                 single_example: bool = False, device: str = 'cpu', min_pulse_length: int = 1,
-                 max_pulse_length: int = 2):
+    def __init__(self, root_dir: str, latent_dim: int = 50, fft_sz: int = 4096,
+                 split: float = 1., single_example: bool = False, min_pulse_length: int = 1,
+                 max_pulse_length: int = 2, seq_len: int = 32, is_val=False, seed=42):
         assert Path(root_dir).is_dir()
 
         clutter_spec_files = glob(f'{root_dir}/clutter_*.spec')
         target_spec_files = glob(f'{root_dir}/targets.spec')
-        ccdata = np.fromfile(f'{root_dir}/clutter.enc', dtype=np.float32).reshape(
-            (-1, latent_dim))
-        tcdata = np.fromfile(f'{root_dir}/target.enc', dtype=np.float32).reshape(
-            (-1, latent_dim))
-        csdata = np.fromfile(clutter_spec_files[0], dtype=np.float32).reshape(
-            (-1, fft_sz, 2))
-        tsdata = np.fromfile(target_spec_files[0], dtype=np.float32).reshape(
-            (-1, fft_sz, 2))
-        per_file = int(split // len(clutter_spec_files))
-        curr_i = csdata.shape[0]
-        total_idx = np.arange(csdata.shape[0])
-        for i in range(1, len(clutter_spec_files)):
-            cs_tmp = np.fromfile(clutter_spec_files[i], dtype=np.float32).reshape(
-                (-1, fft_sz, 2))
-            ccs = np.random.choice(cs_tmp.shape[0], per_file)
-            total_idx = np.concatenate((total_idx, ccs + curr_i))
-            curr_i += cs_tmp.shape[0]
-            csdata = np.concatenate([csdata, cs_tmp[ccs]])
+        clutter_enc_files = glob(f'{root_dir}/clutter_*.enc')
+        target_enc_files = glob(f'{root_dir}/targets.enc')
+        self.ccdata = np.concatenate(
+            [np.fromfile(c, dtype=np.float32).reshape((-1, latent_dim)) for c in clutter_enc_files])
+        self.tcdata = torch.tensor(np.concatenate(
+            [np.fromfile(c, dtype=np.float32).reshape((-1, latent_dim)) for c in target_enc_files]))
+        self.csdata = torch.tensor(
+            np.concatenate([np.fromfile(c, dtype=np.float32).reshape((-1, 2, fft_sz)) for c in clutter_spec_files]))
+        self.tsdata = torch.tensor(
+            np.concatenate([np.fromfile(c, dtype=np.float32).reshape((-1, 2, fft_sz)) for c in target_spec_files]))
+        if split < 1:
+            Xt, Xs, _, _ = train_test_split(np.arange(self.ccdata.shape[0] - seq_len),
+                                            np.arange(self.ccdata.shape[0] - seq_len),
+                                            test_size=split, random_state=seed)
+        else:
+            Xt = np.arange(self.ccdata.shape[0] - seq_len)
+            Xs = np.arange(self.ccdata.shape[0] - seq_len)
 
-        ccdata = ccdata[:split, ...]
-        tcdata = tcdata[:split, ...]
+        self.idxes = Xs if is_val else Xt
 
-        # Spectrum doesn't need normalization as that occurs during training
-        csdata = csdata[:split, ...]
-        tsdata = tsdata[:split, ...]
-        if single_example:
-            ccdata[1:, ...] = ccdata[0, ...]
-            tcdata[1:, ...] = tcdata[0, ...]
-            csdata[1:, ...] = csdata[0, ...]
-            tsdata[1:, ...] = tsdata[0, ...]
+        self.spec_sz = self.tcdata.shape[0]
+        self.data_sz = len(self.idxes)
+        self.seq_len = seq_len
 
-        self.spec_sz = tcdata.shape[0]
-
-        self.ccdata = torch.tensor(ccdata)
-        self.tcdata = torch.tensor(tcdata)
-        self.csdata = torch.tensor(csdata)
-        self.tsdata = torch.tensor(tsdata)
-
-        self.spec_transform = spec_transform
-        self.transform = transform
         self.min_pulse_length = min_pulse_length
         self.max_pulse_length = max_pulse_length
 
     def __getitem__(self, idx):
-        ccd = self.ccdata[idx, ...]
-        csd = self.csdata[idx, ...]
+        ccd = torch.cat([torch.tensor(self.ccdata[idx + n, ...],
+                                      dtype=torch.float32).unsqueeze(0) for n in range(self.seq_len)], dim=0)
+        csd = self.csdata[idx + self.seq_len, ...]
         if self.spec_sz < self.csdata.shape[0]:
-            tsd = self.tsdata[idx % self.spec_sz, ...]
-            tcd = self.tcdata[idx % self.spec_sz, ...]
+            true_idx = idx % self.spec_sz
+            tsd = self.tsdata[true_idx, ...]
+            tcd = self.tcdata[true_idx, ...]
         else:
             tsd = self.tsdata[idx, ...]
             tcd = self.tcdata[idx, ...]
-        if self.transform is not None:
-            ccd = self.transform(ccd)
-            tcd = self.transform(tcd)
-        if self.spec_transform is not None:
-            csd = self.spec_transform(csd)
-            tsd = self.spec_transform(tsd)
 
         return ccd, tcd, csd, tsd, np.random.randint(self.min_pulse_length, self.max_pulse_length)
 
     def __len__(self):
-        return self.csdata.shape[0]
+        return self.data_sz
 
 
 class BaseModule(LightningDataModule):
@@ -371,38 +182,6 @@ class BaseModule(LightningDataModule):
         )
 
 
-class CovDataModule(BaseModule):
-    def __init__(
-            self,
-            data_path: str,
-            train_batch_size: int = 8,
-            val_batch_size: int = 8,
-            pin_memory: bool = False,
-            train_split: int = 32,
-            val_split: int = 32,
-            single_example: bool = False,
-            mu: float = 0.,
-            var: float = 1.,
-            noise_level: float = 0.,
-            **kwargs,
-    ):
-        super().__init__(train_batch_size, val_batch_size, pin_memory, train_split, val_split, single_example, device)
-
-        self.data_dir = data_path
-        self.mu = mu
-        self.var = var
-        self.noise_level = noise_level
-
-    def setup(self, stage: Optional[str] = None) -> None:
-        self.train_dataset = CovarianceDataset(self.data_dir, split=self.train_split,
-                                               single_example=self.single_example, mu=self.mu, var=self.var,
-                                               noise_level=self.noise_level)
-
-        self.val_dataset = CovarianceDataset(self.data_dir, split=self.val_split,
-                                             single_example=self.single_example, mu=self.mu, var=self.var,
-                                             noise_level=self.noise_level)
-
-
 class WaveDataModule(BaseModule):
     def __init__(
             self,
@@ -411,8 +190,7 @@ class WaveDataModule(BaseModule):
             train_batch_size: int = 8,
             val_batch_size: int = 8,
             pin_memory: bool = False,
-            train_split: int = 1024,
-            val_split: int = 32,
+            split: float = 1.,
             single_example: bool = False,
             mu: float = 0.,
             var: float = 1.,
@@ -422,10 +200,11 @@ class WaveDataModule(BaseModule):
             max_pulse_length: int = 2,
             **kwargs,
     ):
-        super().__init__(train_batch_size, val_batch_size, pin_memory, train_split, val_split, single_example, device)
+        super().__init__(train_batch_size, val_batch_size, pin_memory, 1, 1, single_example, device)
 
         self.latent_dim = latent_dim
         self.data_dir = data_path
+        self.split = split
         self.min_pulse_length = min_pulse_length
         self.max_pulse_length = max_pulse_length
         self.device = device
@@ -434,14 +213,13 @@ class WaveDataModule(BaseModule):
         self.var = var
 
     def setup(self, stage: Optional[str] = None) -> None:
-        self.train_dataset = WaveDataset(self.data_dir, self.latent_dim, self.fft_sz, split=self.train_split,
+        self.train_dataset = WaveDataset(self.data_dir, self.latent_dim, self.fft_sz, split=self.split,
                                          single_example=self.single_example, min_pulse_length=self.min_pulse_length,
-                                         max_pulse_length=self.max_pulse_length,
-                                         device=self.device)
+                                         max_pulse_length=self.max_pulse_length)
 
-        self.val_dataset = WaveDataset(self.data_dir, self.latent_dim, self.fft_sz, split=self.val_split,
+        self.val_dataset = WaveDataset(self.data_dir, self.latent_dim, self.fft_sz, split=self.split,
                                        single_example=self.single_example, min_pulse_length=self.min_pulse_length,
-                                       max_pulse_length=self.max_pulse_length, device=self.device)
+                                       max_pulse_length=self.max_pulse_length, is_val=True)
 
 
 class RCSModule(BaseModule):
@@ -491,6 +269,35 @@ class STFTModule(BaseModule):
     def setup(self, stage: Optional[str] = None) -> None:
         self.train_dataset = STFTDataset(*self.params)
         self.val_dataset = STFTDataset(*self.params)
+
+
+class EncoderModule(BaseModule):
+    def __init__(
+            self,
+            fft_len,
+            data_path,
+            split: float = 1.,
+            dataset_size: int = 256,
+            train_batch_size: int = 8,
+            val_batch_size: int = 8,
+            pin_memory: bool = False,
+            train_split: int = 1024,
+            val_split: int = 32,
+            single_example: bool = False,
+            device: str = 'cpu',
+            **kwargs,
+    ):
+        super().__init__(train_batch_size, val_batch_size, pin_memory, train_split, val_split, single_example, device)
+
+        self.dataset_size = dataset_size
+        self.data_path = data_path
+        self.fft_len = fft_len
+        self.split = split
+
+    def setup(self, stage: Optional[str] = None) -> None:
+        self.train_dataset = PulseDataset(self.data_path, self.fft_len, self.split)
+        self.val_dataset = PulseDataset(self.data_path, self.fft_len, split=1 - self.split if self.split < 1 else 1.,
+                                        is_val=True)
 
 
 if __name__ == '__main__':

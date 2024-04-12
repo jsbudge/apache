@@ -83,7 +83,7 @@ class GeneratorModel(FlatModule):
                  clutter_latent_size: int,
                  target_latent_size: int,
                  n_ants: int,
-                 activation: str = 'leaky',
+                 decoder: LightningModule,
                  fs: float = 2e9,
                  channel_sz: int = 64,
                  **kwargs,
@@ -98,6 +98,7 @@ class GeneratorModel(FlatModule):
         self.target_latent_size = target_latent_size
         self.fs = fs
         self.overlap = self.stft_win_sz - self.hop
+        self.decoder = decoder
 
         # Both the clutter and target stack standardize the output for any latent size
         self.clutter_stack = nn.Sequential(
@@ -110,25 +111,12 @@ class GeneratorModel(FlatModule):
             nn.GELU(),
         )
 
-        # Mix together target and clutter
         self.mixture = nn.Sequential(
-            nn.Conv1d(2, channel_sz, 1, 1, 0),
-            nn.GELU(),
-            nn.Conv1d(channel_sz, channel_sz, 3, 1, 1),
-            nn.GELU(),
-            nn.Conv1d(channel_sz, channel_sz, 3, 1, 1),
-            nn.GELU(),
-            nn.Conv1d(channel_sz, channel_sz, 3, 1, 1),
-            nn.GELU(),
-            nn.Conv1d(channel_sz, channel_sz, 3, 1, 1),
-            nn.GELU(),
-            nn.BatchNorm1d(channel_sz),
-            nn.Conv1d(channel_sz, 1, 1, 1, 0),
+            nn.Conv1d(2, 1, 1, 1, 0),
             nn.GELU(),
         )
 
-        self.lst_hop = nn.Transformer(self.stft_win_sz, num_decoder_layers=8, num_encoder_layers=8,
-                                      batch_first=True)
+        self.transformer = nn.Transformer(clutter_latent_size, batch_first=True)
 
         self.expand_to_ants = nn.Sequential(
             nn.Conv1d(1, channel_sz, 1, 1, 0),
@@ -139,53 +127,20 @@ class GeneratorModel(FlatModule):
             nn.GELU(),
             nn.Conv1d(channel_sz, channel_sz, 3, 1, 1),
             nn.GELU(),
-            nn.Conv1d(channel_sz, self.n_ants * 2, 1, 1, 0),
+            nn.Conv1d(channel_sz, self.n_ants, 1, 1, 0),
         )
         self.expand_to_ants.apply(init_weights)
-
-        self.final = nn.Sequential(
-            nn.Conv2d(self.n_ants * 2, channel_sz, 1, 1, 0),
-            nn.GELU(),
-            Block(channel_sz),
-            Block(channel_sz),
-            Block(channel_sz),
-            Block(channel_sz),
-            nn.Conv2d(channel_sz, self.n_ants * 2, 1, 1, 0),
-        )
-        self.final.apply(init_weights)
-
-        # self.add_bw = ApplyBandwidth(fs)
 
         self.example_input_array = (torch.zeros((1, clutter_latent_size)), torch.zeros((1, target_latent_size)),
                                     torch.tensor([1250]), torch.tensor(400e6))
 
     def forward(self, inp: list) -> torch.tensor:
         clutter, target, pulse_length, bandwidth = inp
-        # Use only the first pulse_length because it gives batch_size random numbers as part of the dataloader
-        n_frames = 1 + (pulse_length[0] - self.stft_win_sz) // self.hop
-        n_windows = pulse_length[0] // self.stft_win_sz
 
-        # Get clutter and target features, for LSTM input
-        c_stack = self.clutter_stack(clutter).view(-1, 1, self.stft_win_sz)
-        t_stack = self.target_stack(target).view(-1, 1, self.stft_win_sz)
+        x = self.transformer(clutter, target.unsqueeze(1))
+        x = self.expand_to_ants(x)
 
-        # Shape is (batch, 1, stft_win_sz, 1) after mixture and add_bw
-        x = self.mixture(torch.concat([c_stack, t_stack], dim=1)).unsqueeze(3)
-        # x = self.add_bw(x, bandwidth[0])
-        for n in range(n_windows - 1):
-            # Target mask of the transformer is the last generated section
-            if n == 0:
-                l = self.lst_hop(x[:, :, :, n], torch.zeros((x.shape[0], x.shape[1], x.shape[2]), device=self.device))
-            else:
-                l = self.lst_hop(x[:, :, :, n], x[:, :, :, n - 1])
-            x = torch.cat([x, l.unsqueeze(3)], dim=3)
-        x = self.expand_to_ants(x.view(-1, 1, n_windows * self.stft_win_sz))
-        x = torch.cat(
-            [torch.view_as_real(torch.stft(torch.complex(x[:, n, :], x[:, n + 1, :]), self.stft_win_sz, self.hop,
-                                           window=torch.windows.hann(self.stft_win_sz, device=self.device),
-                                           center=True))
-             for n in range(0, self.n_ants * 2, 2)], dim=3).swapaxes(1, 3).swapaxes(2, 3)
-        return self.final(x)
+        return x
 
     def loss_function(self, *args, **kwargs) -> dict:
         # These values are set here purely for debugging purposes
@@ -199,12 +154,12 @@ class GeneratorModel(FlatModule):
         ortho_loss = torch.tensor(0., device=dev)
 
         # Get clutter spectrum into complex form and normalize to unit energy
-        clutter_spectrum = torch.complex(args[1][:, :, 0], args[1][:, :, 1])
+        clutter_spectrum = torch.complex(args[1][:, 0, :], args[1][:, 1, :])
         clutter_spectrum = clutter_spectrum / torch.sqrt(torch.sum(clutter_spectrum * torch.conj(clutter_spectrum),
                                                                    dim=1))[:, None]
 
         # Get target spectrum into complex form and normalize to unit energy
-        target_spectrum = torch.complex(args[2][:, :, 0], args[2][:, :, 1])
+        target_spectrum = torch.complex(args[2][:, 0, :], args[2][:, 1, :])
         target_spectrum = target_spectrum / torch.sqrt(torch.sum(target_spectrum * torch.conj(target_spectrum),
                                                                  dim=1))[:, None]
 
@@ -291,37 +246,15 @@ class GeneratorModel(FlatModule):
         """
         if pulse_length is None:
             pulse_length = [1]
-        n_ants = self.n_ants
-        stft_win = self.stft_win_sz
 
         # Get the STFT either from the clutter, target, and pulse length or directly from the neural net
         full_stft = self.forward([cc, tc, pulse_length, [bandwidth]]) if nn_output is None else nn_output
-        if scale:
-            gen_waveform = torch.zeros((full_stft.shape[0], self.n_ants, custom_fft_sz), dtype=torch.complex64,
-                                       device=self.device, requires_grad=False)
-        else:
-            gen_waveform = torch.zeros((full_stft.shape[0], self.n_ants, self.fft_sz), dtype=torch.complex64,
-                                       device=self.device, requires_grad=False)
-        for n in range(0, n_ants * 2, 2):
-            complex_stft = torch.complex(full_stft[:, n, :, :], full_stft[:, n + 1, :, :])
-
-            # Apply a window if wanted for actual simulation
-            if use_window:
-                g1 = torch.istft(complex_stft * self.getWindow(self.bin_bw)[None, :, None],
-                                 stft_win, hop_length=self.hop,
-                                 window=torch.windows.hann(self.stft_win_sz, device=self.device),
-                                 return_complex=True, onesided=False, center=True)
-            else:
-                # This is for training purposes
-                g1 = torch.istft(complex_stft, stft_win, hop_length=self.hop,
-                                 window=torch.windows.hann(self.stft_win_sz, device=self.device),
-                                 return_complex=True, onesided=False, center=True)
-            if scale:
-                g1 = torch.fft.fft(g1, custom_fft_sz, dim=-1)
-            else:
-                g1 = torch.fft.fft(g1, self.fft_sz, dim=-1)
+        gen_waveform = torch.zeros((full_stft.shape[0], self.n_ants, self.fft_sz), dtype=torch.complex64, device=self.device)
+        for n in range(self.n_ants):
+            dec = self.decoder.to('cpu').decode(full_stft[:, n, :].to('cpu')).to(self.device)
+            g1 = torch.complex(dec[:, 0, :], dec[:, 1, :])
             g1 = g1 / torch.sqrt(torch.sum(g1 * torch.conj(g1), dim=1))[:, None]  # Unit energy calculation
-            gen_waveform[:, n // 2, ...] = g1
+            gen_waveform[:, n, ...] = g1
         return gen_waveform
 
 
