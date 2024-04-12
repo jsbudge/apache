@@ -16,10 +16,13 @@ def calc_conv_size(inp_sz, kernel_sz, stride, padding):
 
 
 def init_weights(m):
-    if isinstance(m, (nn.Conv1d, nn.ConvTranspose1d, nn.Conv2d, nn.ConvTranspose2d)):
-        with contextlib.suppress(AttributeError):
+    with contextlib.suppress(ValueError):
+        if hasattr(m, 'weight'):
             torch.nn.init.xavier_normal_(m.weight)
-            m.bias.data.fill_(0.01)
+        # sourcery skip: merge-nested-ifs
+        if hasattr(m, 'bias'):
+            if m.bias is not None:
+                m.bias.data.fill_(.01)
 
 
 class BaseVAE(LightningModule):
@@ -497,6 +500,7 @@ class WAE_MMD(BaseVAE):
     def __init__(self,
                  in_channels: int,
                  latent_dim: int,
+                 fft_len: int,
                  channel_sz: int = 32,
                  reg_weight: int = 100,
                  kernel_type: str = 'imq',
@@ -508,65 +512,56 @@ class WAE_MMD(BaseVAE):
         self.reg_weight = reg_weight
         self.kernel_type = kernel_type
         self.z_var = latent_var
+        self.fft_len = fft_len
 
         self.final_sz = channel_sz
+        levels = [2, 4, 8, 8]
 
         # Encoder
-        modules = [
-            nn.Sequential(
-                nn.Conv2d(in_channels, channel_sz, 3, 1, 1),
-                nn.LeakyReLU(),
-                nn.Conv2d(channel_sz, channel_sz, 3, 1, 1),
-                nn.LeakyReLU(),
-                nn.Conv2d(channel_sz, channel_sz, 4, 2, 1),
-                nn.LeakyReLU(),
-                nn.BatchNorm2d(channel_sz),
-            )
-        ]
-        modules.extend(
-            nn.Sequential(
-                AttentionConv(channel_sz, channel_sz, 4, 2, 1, channel_sz // 4),
-                nn.Tanh(),
-                nn.Conv2d(channel_sz, channel_sz, 4, 2, 1),
-                nn.LeakyReLU(),
-            )
-            for _ in range(3)
+        self.init_encoder = nn.Sequential(
+            nn.Conv1d(in_channels, channel_sz, 4, 2, 1),
+            nn.GELU(),
+            nn.Conv1d(channel_sz, channel_sz, 3, 1, 1),
+            nn.GELU(),
+            nn.BatchNorm1d(channel_sz),
+            nn.Conv1d(channel_sz, channel_sz, 3, 1, 1),
+            nn.GELU(),
+            nn.Conv1d(channel_sz, 1, 1, 1, 0),
+            nn.GELU(),
         )
-        modules.append(nn.BatchNorm2d(channel_sz))
-
-        self.encoder = nn.Sequential(*modules)
-        self.encoder.apply(init_weights)
-        self.fc_z = nn.Linear(channel_sz * 4, latent_dim)
+        self.init_encoder.apply(init_weights)
+        self.encoder_body = nn.Sequential(*[
+            nn.Sequential(
+                nn.Linear(fft_len // levels[n - 1], fft_len // levels[n]),
+                nn.GELU(),
+            )
+            for n in range(1, len(levels))
+        ])
+        self.encoder_body.apply(init_weights)
+        self.fc_z = nn.Linear(fft_len // levels[-1], latent_dim)
 
         # Decoder
-        self.decoder_input = nn.Linear(latent_dim, channel_sz * 4)
-        modules = [nn.Sequential(
-            nn.ConvTranspose2d(channel_sz * 2, channel_sz, 1, 1, 0),
-            nn.LeakyReLU(),
-        )]
-
-        modules.extend(
+        dec_inp = [nn.Linear(latent_dim, fft_len // levels[-1])] + [
             nn.Sequential(
-                nn.ConvTranspose2d(channel_sz, channel_sz, 4, 2, 1),
-                nn.LeakyReLU(),
-                AttentionConv(channel_sz, channel_sz, 3, 1, 1, channel_sz // 4),
-                nn.LeakyReLU(),
+                nn.GELU(),
+                nn.Linear(fft_len // levels[n], fft_len // levels[n - 1]),
             )
-            for _ in range(3)
+            for n in range(len(levels) - 1, 0, -1)
+        ]
+        self.decoder_body = nn.Sequential(*dec_inp)
+        self.decoder_body.apply(init_weights)
+        self.decoder_output = nn.Sequential(
+            nn.GELU(),
+            nn.ConvTranspose1d(1, channel_sz, 1, 1, 0),
+            nn.GELU(),
+            nn.ConvTranspose1d(channel_sz, channel_sz, 3, 1, 1),
+            nn.BatchNorm1d(channel_sz),
+            nn.GELU(),
+            nn.ConvTranspose1d(channel_sz, channel_sz, 3, 1, 1),
+            nn.GELU(),
+            nn.ConvTranspose1d(channel_sz, in_channels, 4, 2, 1),
         )
-
-        modules.append(nn.Sequential(
-            nn.ConvTranspose2d(channel_sz, channel_sz, 4, 2, 1),
-            nn.LeakyReLU(),
-            nn.ConvTranspose2d(channel_sz, channel_sz, 3, 1, 1),
-            nn.LeakyReLU(),
-            nn.ConvTranspose2d(channel_sz, channel_sz, 3, 1, 1),
-            nn.Tanh(),
-            nn.Conv2d(channel_sz, out_channels=in_channels, kernel_size=1, stride=1, padding=0),
-            nn.Tanh(),
-        ))
-        self.decoder = nn.Sequential(*modules)
-        self.decoder.apply(init_weights)
+        self.decoder_output.apply(init_weights)
 
     def encode(self, input: Tensor) -> Tensor:
         """
@@ -575,25 +570,15 @@ class WAE_MMD(BaseVAE):
         :param input: (Tensor) Input tensor to encoder [N x C x H x W]
         :return: (Tensor) List of latent codes
         """
-        result = self.encoder(input)
-        result = torch.flatten(result, start_dim=1)
+        result = self.init_encoder(input)
+        result = self.encoder_body(result.view(-1, self.fft_len // 2))
 
         return self.fc_z(result)
 
     def decode(self, z: Tensor) -> Tensor:
-        result = self.decoder_input(z)
-        result = result.view(-1, self.final_sz, 2, 2)
-
-        # Get symmetric features
-        r_comp = torch.complex(result[:, :, 0, :], result[:, :, 1, :])
-        result = torch.einsum('abcd,abef->abcf', r_comp.view(-1, self.final_sz, 2, 1),
-                              r_comp.view(-1, self.final_sz, 1, 2))
-
-        # This re-stacks the complex features into real/imaginary pairs
-        x = result.real.unsqueeze(2)
-        y = result.imag.unsqueeze(2)
-        result = torch.concat([x, y], 2).reshape(-1, self.final_sz * 2, 2, 2)
-        result = self.decoder(result)
+        result = self.decoder_body(z)
+        result = result.view(-1, 1, self.fft_len // 2)
+        result = self.decoder_output(result)
         return result
 
     def forward(self, inp: Tensor, **kwargs) -> List[Tensor]:
@@ -606,7 +591,7 @@ class WAE_MMD(BaseVAE):
 
         batch_size = args[1].size(0)
         bias_corr = batch_size * (batch_size - 1)
-        reg_weight = self.reg_weight / bias_corr
+        reg_weight = self.reg_weight / max(1, bias_corr)
 
         recons_loss = F.mse_loss(args[0], args[1])
 

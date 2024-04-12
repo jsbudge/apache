@@ -5,6 +5,7 @@ from tqdm import tqdm
 from glob import glob
 from pathlib import Path
 import yaml
+import matplotlib.pyplot as plt
 
 fs = 2e9
 c0 = 299792458.0
@@ -74,26 +75,12 @@ def genTargetPSDSwerling1(bw, fc, rng_min, rng_max, spec_sz, fs, cpi_len, fft_sz
 
 
 def formatTargetClutterData(data: np.ndarray, bin_bandwidth: int):
-    split = np.zeros((data.shape[0], bin_bandwidth, 2), dtype=np.float64)
-    split[:, :bin_bandwidth // 2, :] = data[:, -bin_bandwidth // 2:, :]
-    split[:, -bin_bandwidth // 2:, :] = data[:, :bin_bandwidth // 2, :]
+    split = np.zeros((data.shape[0], 2, bin_bandwidth), dtype=np.float32)
+    split[:, 0, :bin_bandwidth // 2] = data[:, -bin_bandwidth // 2:].real
+    split[:, 0, -bin_bandwidth // 2:] = data[:, :bin_bandwidth // 2].real
+    split[:, 1, :bin_bandwidth // 2] = data[:, -bin_bandwidth // 2:].imag
+    split[:, 1, -bin_bandwidth // 2:] = data[:, :bin_bandwidth // 2].imag
     return split
-
-
-def getVAECov(data: np.ndarray, mfilt: np.ndarray = None, rollback: int = 0,
-              nsam: int = 0, fft_len: int = 32768, mu: float = 0., var: float = 1., apply_mfilt: bool = True):
-    if apply_mfilt:
-        pulses = np.fft.fft(data, fft_len, axis=0) * mfilt[:, None]
-        # If the pulses are offset video, shift to be centered around zero
-        pulses = np.roll(pulses, rollback, axis=0)
-    else:
-        pulses = np.fft.fft(data, fft_len, axis=0)
-    norm_energy = np.sqrt(np.sum(abs(pulses[:, 0] * pulses[:, 0].conj())))
-    pulses /= norm_energy  # Normalize everything to the first pulse
-    pmean = pulses.mean(axis=1)
-    cov_dt = np.corrcoef(pulses.T)
-    return (np.stack((pmean.real, pmean.imag), axis=1),
-            np.stack(((cov_dt.real - mu) / var, (cov_dt.imag - mu) / var), axis=2))
 
 
 sdr_fnmes = ['/data6/SAR_DATA/2023/06072023/SAR_06072023_111559.sar',
@@ -159,17 +146,15 @@ if __name__ == '__main__':
             except Exception:
                 print(f'{s} has broken XML.')
 
-    franges = np.linspace(config['perf_params']['vehicle_slant_range_min'],
-                          config['perf_params']['vehicle_slant_range_max'], 1000) * 2 / c0
+    '''franges = np.linspace(config['apache_params']['vehicle_slant_range_min'],
+                          config['apache_params']['vehicle_slant_range_max'], 1000) * 2 / c0
     nrange = franges[0]
     pulse_length = (nrange - 1 / TAC) * config['settings']['plp']
     duty_cycle_time_s = pulse_length + franges
-    nr = int(pulse_length * fs)
+    nr = int(pulse_length * fs)'''
 
     # Standardize the FFT length for training purposes (this may cause data loss)
-    fft_len = config['generate_data_settings']['fft_sz']
-    bin_bw = int(config['settings']['bandwidth'] // (fs / fft_len))
-    bin_bw += 1 if bin_bw % 2 != 0 else 0
+    fft_len = config['settings']['fft_len']
 
     if config['generate_data_settings']['run_clutter']:
         print('Running clutter data...')
@@ -183,58 +168,48 @@ if __name__ == '__main__':
             if sdr_f[0].fs != fs:
                 continue  # I'll work on this later
             mfilt = sdr_f.genMatchedFilter(0, fft_len=fft_len)
-            rollback = -int(np.round(sdr_f[0].baseband_fc / (fs / fft_len)))
             print('Matched filter loaded.')
 
             print(f'File is {fn}')
-            used_pts = []
-            for _ in range(config['generate_data_settings']['iterations']):
-                check_pts = np.random.choice(list(set(sdr_f[0].frame_num[:-config['settings']['batch_sz']]).difference(
-                    used_pts)),
-                    config['generate_data_settings']['iterations'])
-                used_pts.extend(check_pts)
-                inp_data = []
-                clutter_abs = []
-                for n in tqdm(check_pts):
-                    if n + config['settings']['cpi_len'] > sdr_f[0].nframes:
-                        break
-                    pnums = sdr_f[0].frame_num[n:n + config['settings']['cpi_len']]
-                    if np.diff(pnums).max() > 1:
-                        continue
-                    pulse_data = sdr_f.getPulses(pnums, 0)[1]
-                    pmean, cov_dt = getVAECov(pulse_data, mfilt, rollback, sdr_f[0].nsam, fft_len)
-                    clutter_abs.append(pmean)
-                    inp_data.append(cov_dt)
-                if not inp_data:
+            for n in range(config['generate_data_settings']['iterations']):
+                if n + config['settings']['cpi_len'] > sdr_f[0].nframes:
                     break
-                inp_data = np.array(inp_data, dtype=np.float32)
-                clutter_abs = np.array(clutter_abs)  #formatTargetClutterData(np.array(clutter_abs), bin_bw).astype(np.float32)
-                with open(
-                        f'{save_path}/clutter_{fn.split("/")[-1].split(".")[0]}.cov', 'ab') as writer:
-                    inp_data.tofile(writer)
+                pnums = sdr_f[0].frame_num[n:n + config['settings']['cpi_len']]
+                if np.diff(pnums).max() > 1:
+                    continue
+                pulse_data = np.fft.fft(sdr_f.getPulses(pnums, 0)[1], fft_len, axis=0) * mfilt[:, None]
+                pulse_data = (pulse_data - config['dataset_params']['mu']) / config['dataset_params']['var']
+                inp_data = formatTargetClutterData(pulse_data.T, fft_len).astype(np.float32)
                 with open(
                         f'{save_path}/clutter_{fn.split("/")[-1].split(".")[0]}.spec', 'ab') as writer:
-                    clutter_abs.tofile(writer)
+                    inp_data.tofile(writer)
+                '''if n == 0:
+                    out_data = np.fromfile(f'{save_path}/clutter_{fn.split("/")[-1].split(".")[0]}.spec',
+                                           dtype=np.float32).reshape((-1, 2, fft_len))
+                    plt.figure(f'{save_path}/clutter_{fn.split("/")[-1].split(".")[0]}.spec')
+                    plt.subplot(2, 2, 1)
+                    plt.title('Pulse_data')
+                    plt.plot(pulse_data[:, 0].real)
+                    plt.subplot(2, 2, 2)
+                    plt.title('inp_data')
+                    plt.plot(inp_data[0, 0, :])
+                    plt.subplot(2, 2, 3)
+                    plt.title('out_data')
+                    plt.plot(out_data[0, 0, :])'''
 
     if config['generate_data_settings']['run_targets']:
-        bin_bw = int(config['settings']['bandwidth'] // (fs / config['generate_data_settings']['fft_sz']))
-        bin_bw += 1 if bin_bw % 2 != 0 else 0
         print('Running targets...')
-        targs = []
-        targ_abs = []
-        for _ in tqdm(range(128)):
+        for _ in tqdm(range(config['generate_data_settings']['iterations'])):
             tpsd = genTargetPSDSwerling1(config['settings']['bandwidth'], config['settings']['fc'],
-                                         config['perf_params']['vehicle_slant_range_min'],
-                                         config['perf_params']['vehicle_slant_range_max'],
-                                         config['generate_data_settings']['fft_sz'], fs, 32,
-                                         config['generate_data_settings']['fft_sz'])
-            tp_mean = tpsd.mean(axis=0)
-            targ_abs.append(np.stack((tp_mean.real, tp_mean.imag), axis=1))
-            cov_dt = np.cov(tpsd)
-            targs.append(np.stack((cov_dt.real, cov_dt.imag), axis=2))
-        targs = np.array(targs).astype(np.float32)
-        targ_abs = formatTargetClutterData(np.array(targ_abs), bin_bw).astype(np.float32)
-        with open(f'{save_path}/targets.cov', 'ab') as writer:
-            targs.tofile(writer)
-        with open(f'{save_path}/targets.spec', 'ab') as writer:
-            targ_abs.tofile(writer)
+                                         config['apache_params']['vehicle_slant_range_min'],
+                                         config['apache_params']['vehicle_slant_range_max'],
+                                         config['settings']['fft_len'], fs, config['settings']['cpi_len'],
+                                         config['settings']['fft_len'])
+            tpsd = (tpsd - config['dataset_params']['mu']) / config['dataset_params']['var']
+            inp_data = formatTargetClutterData(tpsd, fft_len).astype(np.float32)
+            with open(
+                    f'{save_path}/targets.spec', 'ab') as writer:
+                inp_data.tofile(writer)
+    # plt.show()
+
+
