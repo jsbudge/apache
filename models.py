@@ -515,7 +515,7 @@ class WAE_MMD(BaseVAE):
         self.fft_len = fft_len
 
         self.final_sz = channel_sz
-        levels = [2, 4, 8, 8]
+        levels = [2, 2, 4, 4]
 
         # Encoder
         self.init_encoder = nn.Sequential(
@@ -530,6 +530,11 @@ class WAE_MMD(BaseVAE):
             nn.GELU(),
         )
         self.init_encoder.apply(init_weights)
+        self.encoder_attention = nn.Sequential(
+            nn.Linear(fft_len // levels[0], fft_len // levels[0]),
+            nn.Sigmoid(),
+        )
+        self.encoder_attention.apply(init_weights)
         self.encoder_body = nn.Sequential(*[
             nn.Sequential(
                 nn.Linear(fft_len // levels[n - 1], fft_len // levels[n]),
@@ -571,6 +576,7 @@ class WAE_MMD(BaseVAE):
         :return: (Tensor) List of latent codes
         """
         result = self.init_encoder(input)
+        result = result * self.encoder_attention(result)
         result = self.encoder_body(result.view(-1, self.fft_len // 2))
 
         return self.fc_z(result)
