@@ -18,7 +18,7 @@ from models import BaseVAE, InfoVAE, WAE_MMD, BetaVAE
 
 
 class PulseDataset(Dataset):
-    def __init__(self, root_dir, fft_len, split=1., is_val=False, seed=42):
+    def __init__(self, root_dir, fft_len, split=1., single_example=False, is_val=False, seed=42):
         self.root_dir = root_dir
         self.fft_len = fft_len
         _, self.data = self.get_filedata()
@@ -27,6 +27,8 @@ class PulseDataset(Dataset):
             Xs, Xt, _, _ = train_test_split(np.arange(self.data.shape[0]), np.arange(self.data.shape[0]),
                                             test_size=split, random_state=seed)
             self.data = self.data[Xs] if is_val else self.data[Xt]
+        if single_example:
+            self.data[1:] = self.data[0]
         self.data = torch.tensor(self.data, dtype=torch.float32)
         
     def __getitem__(self, idx):
@@ -272,9 +274,9 @@ class EncoderModule(BaseModule):
         self.split = split
 
     def setup(self, stage: Optional[str] = None) -> None:
-        self.train_dataset = PulseDataset(self.data_path, self.fft_len, self.split)
+        self.train_dataset = PulseDataset(self.data_path, self.fft_len, self.split, self.single_example)
         self.val_dataset = PulseDataset(self.data_path, self.fft_len, split=1 - self.split if self.split < 1 else 1.,
-                                        is_val=True)
+                                        single_example=self.single_example, is_val=True)
 
 
 if __name__ == '__main__':
