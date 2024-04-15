@@ -41,7 +41,7 @@ dataset_params:
   train_split: 8000
   val_split: 128
   split: .7
-  single_example: True
+  single_example: False
   # These values are taken from a sampling of data
   mu: 1764928360.1075766
   var: 521598045769.17664
@@ -49,9 +49,9 @@ dataset_params:
 
 # This is for setting up training of autoencoder
 exp_params:
-  LR: 0.001
+  LR: 0.0001
   weight_decay: 0.0
-  scheduler_gamma: 0.8
+  scheduler_gamma: 0.5
   kld_weight: .34
   swa_start: .8
   log_epoch: 10
@@ -63,7 +63,7 @@ exp_params:
   model_type: WAE_MMD
   patience: 150
   is_tuning: False
-  max_epochs: 15
+  max_epochs: 40
 
 # For training of wavemodel
 wave_exp_params:
@@ -98,9 +98,9 @@ rcs_exp_params:
 # This refers to the autoencoder compression params
 model_params:
   in_channels: 2
-  latent_dim: 1024
+  latent_dim: 512
   max_capacity: 25
-  channel_sz: 64
+  channel_sz: 8
   capacity_max_iter: 10000
   reg_weight: 7140.  # MMD weight
   kernel_type: 'rbf'

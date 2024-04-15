@@ -14,9 +14,6 @@ from numpy import log2, ceil
 from torchvision import transforms
 from scipy.signal import istft
 
-from dataloaders import STFTModule
-from layers import LSTMAttention, AttentionConv, ApplyBandwidth, Block
-
 
 def getTrainTransforms(var):
     return transforms.Compose(
@@ -92,29 +89,10 @@ class GeneratorModel(FlatModule):
 
         self.n_ants = n_ants
         self.fft_sz = fft_sz
-        self.stft_win_sz = stft_win_sz
-        self.hop = self.stft_win_sz // 2
         self.clutter_latent_size = clutter_latent_size
         self.target_latent_size = target_latent_size
         self.fs = fs
-        self.overlap = self.stft_win_sz - self.hop
         self.decoder = decoder
-
-        # Both the clutter and target stack standardize the output for any latent size
-        self.clutter_stack = nn.Sequential(
-            nn.Linear(clutter_latent_size, self.stft_win_sz),
-            nn.GELU(),
-        )
-
-        self.target_stack = nn.Sequential(
-            nn.Linear(target_latent_size, self.stft_win_sz),
-            nn.GELU(),
-        )
-
-        self.mixture = nn.Sequential(
-            nn.Conv1d(2, 1, 1, 1, 0),
-            nn.GELU(),
-        )
 
         self.transformer = nn.Transformer(clutter_latent_size, batch_first=True)
 
