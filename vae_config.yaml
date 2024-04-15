@@ -23,12 +23,12 @@ settings:
   stft_win_sz: 256
   plp: .5
   n_ants: 2
-  fft_len: 8192
+  fft_len: 4096
 
 generate_data_settings:
-  iterations: 300
-  run_clutter: False
-  run_targets: True
+  iterations: 500
+  run_clutter: True
+  run_targets: False
   use_local_storage: True
   local_path: ./data
 
@@ -51,19 +51,19 @@ dataset_params:
 exp_params:
   LR: 0.001
   weight_decay: 0.0
-  scheduler_gamma: 0.95
-  swa_start: .4
+  scheduler_gamma: 0.8
   kld_weight: .34
+  swa_start: .8
   log_epoch: 10
   save_model: True
-  transform_data: True
+  transform_data: False
   warm_start: True
   loss_landscape: False
   output_images: False
   model_type: WAE_MMD
   patience: 150
   is_tuning: False
-  max_epochs: 5
+  max_epochs: 15
 
 # For training of wavemodel
 wave_exp_params:

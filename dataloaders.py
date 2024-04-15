@@ -24,7 +24,7 @@ class PulseDataset(Dataset):
         _, self.data = self.get_filedata()
         # Do split
         if split < 1:
-            Xt, Xs, _, _ = train_test_split(np.arange(self.data.shape[0]), np.arange(self.data.shape[0]),
+            Xs, Xt, _, _ = train_test_split(np.arange(self.data.shape[0]), np.arange(self.data.shape[0]),
                                             test_size=split, random_state=seed)
             self.data = self.data[Xs] if is_val else self.data[Xt]
         self.data = torch.tensor(self.data, dtype=torch.float32)
@@ -79,26 +79,30 @@ class WaveDataset(Dataset):
         target_spec_files = glob(f'{root_dir}/targets.spec')
         clutter_enc_files = glob(f'{root_dir}/clutter_*.enc')
         target_enc_files = glob(f'{root_dir}/targets.enc')
-        self.ccdata = np.concatenate(
-            [np.fromfile(c, dtype=np.float32).reshape((-1, latent_dim)) for c in clutter_enc_files])
+        ccdata = []
+        csdata = []
+        for files in zip(clutter_spec_files, clutter_enc_files):
+            tmp_cs = np.fromfile(files[0], dtype=np.float32).reshape((-1, 2, fft_sz))
+            tmp_cc = np.fromfile(files[1], dtype=np.float32).reshape((-1, latent_dim))
+            if split < 1:
+                Xt, Xs, _, _ = train_test_split(np.arange(tmp_cc.shape[0] - seq_len),
+                                                np.arange(tmp_cc.shape[0] - seq_len),
+                                                test_size=split, random_state=seed)
+            else:
+                Xt = np.arange(tmp_cc.shape[0] - seq_len)
+                Xs = np.arange(tmp_cc.shape[0] - seq_len)
+            ccdata = np.concatenate((ccdata, tmp_cc[Xs])) if is_val else np.concatenate((ccdata, tmp_cc[Xt]))
+            csdata = np.concatenate((csdata, tmp_cs[Xs])) if is_val else np.concatenate((csdata, tmp_cs[Xt]))
+
+        self.ccdata = ccdata
         self.tcdata = torch.tensor(np.concatenate(
             [np.fromfile(c, dtype=np.float32).reshape((-1, latent_dim)) for c in target_enc_files]))
-        self.csdata = torch.tensor(
-            np.concatenate([np.fromfile(c, dtype=np.float32).reshape((-1, 2, fft_sz)) for c in clutter_spec_files]))
+        self.csdata = torch.tensor(csdata)
         self.tsdata = torch.tensor(
             np.concatenate([np.fromfile(c, dtype=np.float32).reshape((-1, 2, fft_sz)) for c in target_spec_files]))
-        if split < 1:
-            Xt, Xs, _, _ = train_test_split(np.arange(self.ccdata.shape[0] - seq_len),
-                                            np.arange(self.ccdata.shape[0] - seq_len),
-                                            test_size=split, random_state=seed)
-        else:
-            Xt = np.arange(self.ccdata.shape[0] - seq_len)
-            Xs = np.arange(self.ccdata.shape[0] - seq_len)
-
-        self.idxes = Xs if is_val else Xt
 
         self.spec_sz = self.tcdata.shape[0]
-        self.data_sz = len(self.idxes)
+        self.data_sz = csdata.shape[0]
         self.seq_len = seq_len
 
         self.min_pulse_length = min_pulse_length
@@ -240,33 +244,6 @@ class RCSModule(BaseModule):
         self.val_dataset = RCSDataset(split=self.val_split)
 
 
-class STFTModule(BaseModule):
-    def __init__(
-            self,
-            fs, end_sz, width_min, width_max,
-            dataset_size: int = 256,
-            train_batch_size: int = 8,
-            val_batch_size: int = 8,
-            pin_memory: bool = False,
-            train_split: int = 1024,
-            val_split: int = 32,
-            single_example: bool = False,
-            device: str = 'cpu',
-            **kwargs,
-    ):
-        super().__init__(train_batch_size, val_batch_size, pin_memory, train_split, val_split, single_example, device)
-
-        self.dataset_size = dataset_size
-        self.params = (width_min, width_max, fs, end_sz)
-        self.end_sz = end_sz
-        self.width_min = width_min
-        self.width_max = width_max
-
-    def setup(self, stage: Optional[str] = None) -> None:
-        self.train_dataset = STFTDataset(*self.params)
-        self.val_dataset = STFTDataset(*self.params)
-
-
 class EncoderModule(BaseModule):
     def __init__(
             self,
@@ -312,5 +289,3 @@ if __name__ == '__main__':
         model = BetaVAE(**param_dict['model_params'])
     print('Setting up model...')
     model.load_state_dict(torch.load('./model/inference_model.state'))
-    transformCovData(model, device, param_dict['dataset_params']['data_path'], param_dict['dataset_params']['mu'],
-                     param_dict['dataset_params']['var'])

@@ -72,6 +72,7 @@ if trainer.is_global_zero:
             print('Model saved to disk.')
         except Exception as e:
             print(f'Model not saved: {e}')
+    print('Plotting outputs...')
     plt.figure()
     plt.subplot(2, 2, 1)
     plt.title('Sample Real')
@@ -88,6 +89,7 @@ if trainer.is_global_zero:
     plt.show()
 
     if exp_params['transform_data']:
+        print('Running data transformation of files...')
         fnmes, fdata = data.train_dataset.get_filedata(concat=False)
         save_path = param_dict['generate_data_settings']['local_path'] if (
             param_dict)['generate_data_settings']['use_local_storage'] else param_dict['dataset_params']['data_path']
