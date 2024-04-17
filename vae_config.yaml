@@ -34,8 +34,8 @@ generate_data_settings:
 
 dataset_params:
   data_path: ./data
-  train_batch_size: 256
-  val_batch_size: 128
+  train_batch_size: 64
+  val_batch_size: 64
   num_workers: 0
   pin_memory: False
   train_split: 8000
@@ -51,19 +51,19 @@ dataset_params:
 exp_params:
   LR: 0.0001
   weight_decay: 0.0
-  scheduler_gamma: 0.5
-  kld_weight: .34
-  swa_start: .8
+  scheduler_gamma: 0.9
+  kld_weight: .01
+  swa_start: .7
   log_epoch: 10
   save_model: True
   transform_data: False
-  warm_start: True
+  warm_start: False
   loss_landscape: False
   output_images: False
   model_type: WAE_MMD
   patience: 150
   is_tuning: False
-  max_epochs: 40
+  max_epochs: 10
 
 # For training of wavemodel
 wave_exp_params:
@@ -102,8 +102,8 @@ model_params:
   max_capacity: 25
   channel_sz: 8
   capacity_max_iter: 10000
-  reg_weight: 7140.  # MMD weight
-  kernel_type: 'rbf'
+  reg_weight: 2870.  # MMD weight
+  kernel_type: 'imq'
   activation: leaky
 
 train_params:

@@ -514,9 +514,10 @@ class WAE_MMD(BaseVAE):
         self.z_var = latent_var
         self.fft_len = fft_len
 
-        self.final_sz = channel_sz
-        levels = 3
-        fft_scaling = 2**levels
+        self.channel_sz = channel_sz
+        self.in_channels = in_channels
+        levels = 2
+        fft_scaling = 2 ** levels
 
         # Encoder
         env = [
@@ -529,14 +530,13 @@ class WAE_MMD(BaseVAE):
                 nn.Conv1d(
                     channel_sz,
                     channel_sz,
-                    fft_len // (2**n) + 1,
+                    4,
+                    2,
                     1,
-                    0,
-                    padding_mode='circular',
                 ),
                 nn.GELU(),
             )
-            for n in range(1, levels + 1)
+            for _ in range(1, levels + 1)
         ]
         self.envelope_encoder = nn.Sequential(*env)
         self.envelope_encoder.apply(init_weights)
@@ -548,18 +548,17 @@ class WAE_MMD(BaseVAE):
         )
         self.encoder_attention.apply(init_weights)
         self.encoder_body = nn.Sequential(
-                nn.Conv1d(in_channels + channel_sz, 1, 1, 1, 0),
-                nn.GELU(),
-            )
+            nn.Conv1d(in_channels + channel_sz, 1, 1, 1, 0),
+            nn.GELU(),
+        )
         self.encoder_body.apply(init_weights)
         self.fc_z = nn.Linear(fft_len // fft_scaling, latent_dim)
 
         # Decoder
+        self.z_fc = nn.Linear(latent_dim, fft_len // fft_scaling)
         self.decoder_body = nn.Sequential(
             nn.GELU(),
-            nn.Linear(latent_dim, fft_len // fft_scaling),
-            nn.GELU(),
-            nn.Linear(fft_len // fft_scaling, fft_len // fft_scaling),
+            nn.Conv1d(1, in_channels + channel_sz, 1, 1, 0),
         )
         self.decoder_body.apply(init_weights)
         self.decoder_attention = nn.Sequential(
@@ -567,20 +566,23 @@ class WAE_MMD(BaseVAE):
             nn.Linear(fft_len // fft_scaling, fft_len // fft_scaling),
             nn.GELU(),
             nn.Linear(fft_len // fft_scaling, fft_len),
-            nn.ConvTranspose1d(1, in_channels, 1, 1, 0),
         )
         self.decoder_attention.apply(init_weights)
-        env = [nn.ConvTranspose1d(1, channel_sz, 1, 1, 0)] + [
-                  nn.Sequential(
-                      nn.GELU(),
-                      nn.ConvTranspose1d(channel_sz, channel_sz, fft_len // (2**n) + 1, 1, 0),
-                  )
-                  for n in range(1, levels + 1)
-              ]
+        env = [
+            nn.Sequential(
+                nn.GELU(),
+                nn.ConvTranspose1d(channel_sz, channel_sz, 4, 2, 1),
+            )
+            for _ in range(1, levels + 1)
+        ] + [
+            nn.Sequential(
+                nn.GELU(), nn.ConvTranspose1d(channel_sz, in_channels, 1, 1, 0)
+            )
+        ]
         self.envelope_decoder = nn.Sequential(*env)
         self.envelope_decoder.apply(init_weights)
         self.decoder_output = nn.Sequential(
-            nn.Conv1d(in_channels + channel_sz, 2, 1, 1, 0),
+            nn.Conv1d(in_channels * 2, 2, 1, 1, 0),
         )
 
     def encode(self, input: Tensor) -> Tensor:
@@ -596,9 +598,10 @@ class WAE_MMD(BaseVAE):
         return self.fc_z(result)
 
     def decode(self, z: Tensor) -> Tensor:
-        result = self.decoder_body(z).unsqueeze(1)
-        result = torch.cat([self.envelope_decoder(result),
-                            self.decoder_attention(result)], dim=1)
+        result = self.z_fc(z).unsqueeze(1)
+        result = self.decoder_body(result)
+        result = torch.cat([self.envelope_decoder(result[:, :self.channel_sz, :]),
+                            self.decoder_attention(result[:, -self.in_channels:, :])], dim=1)
         result = self.decoder_output(result)
         return result
 
