@@ -76,7 +76,7 @@ def objective(trial: optuna.Trial):
                        param_dict['exp_params']['scheduler_gamma'] ** (param_dict['exp_params']['max_epochs'] *
                                                          param_dict['exp_params']['swa_start'])), 1e-9)
     experiment = VAExperiment(model, param_dict['exp_params'])
-    trainer = Trainer(logger=False, max_epochs=40, enable_checkpointing=False,
+    trainer = Trainer(logger=False, max_epochs=10, enable_checkpointing=False,
                       strategy='ddp', deterministic=True, devices=1, callbacks=
                       [EarlyStopping(monitor='loss', patience=5,
                                      check_finite=True),
@@ -88,7 +88,7 @@ def objective(trial: optuna.Trial):
 
 
 study = optuna.create_study()
-study.optimize(objective, n_trials=5000, callbacks=[log_callback])
+study.optimize(objective, n_trials=140, callbacks=[log_callback])
 
 print(study.best_params)
 
