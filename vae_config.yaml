@@ -34,8 +34,8 @@ generate_data_settings:
 
 dataset_params:
   data_path: ./data
-  train_batch_size: 64
-  val_batch_size: 64
+  train_batch_size: 256
+  val_batch_size: 256
   num_workers: 0
   pin_memory: False
   train_split: 8000
@@ -49,10 +49,10 @@ dataset_params:
 
 # This is for setting up training of autoencoder
 exp_params:
-  LR: 0.0001
+  LR: 0.01
   weight_decay: 0.0
   scheduler_gamma: 0.9
-  kld_weight: .01
+  kld_weight: .34
   swa_start: .7
   log_epoch: 10
   save_model: True
@@ -63,7 +63,7 @@ exp_params:
   model_type: WAE_MMD
   patience: 150
   is_tuning: False
-  max_epochs: 10
+  max_epochs: 70
 
 # For training of wavemodel
 wave_exp_params:
@@ -100,10 +100,10 @@ model_params:
   in_channels: 2
   latent_dim: 512
   max_capacity: 25
-  channel_sz: 8
+  channel_sz: 4
   capacity_max_iter: 10000
-  reg_weight: 2870.  # MMD weight
-  kernel_type: 'imq'
+  reg_weight: 7840.  # MMD weight
+  kernel_type: 'rbf'
   activation: leaky
 
 train_params:

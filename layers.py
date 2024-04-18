@@ -5,8 +5,40 @@ import torch
 from torch import nn
 from pytorch_lightning import LightningModule
 from torch.nn import functional as F
+from torch.distributions import Normal
 
 Tensor = TypeVar('torch.tensor')
+
+
+def gaussian_kernel_1d(sigma: float, num_sigmas: float = 3.) -> torch.Tensor:
+    radius = math.ceil(num_sigmas * sigma)
+    support = torch.arange(-radius, radius + 1, dtype=torch.float)
+    kernel = Normal(loc=0, scale=sigma).log_prob(support).exp_()
+    # Ensure kernel weights sum to 1, so that image brightness is not altered
+    return kernel.mul_(1 / kernel.sum())
+
+
+def mu_2d(img: torch.Tensor, sigma: float) -> tuple[torch.Tensor, torch.Tensor]:
+    kernel_1d = gaussian_kernel_1d(sigma)  # Create 1D Gaussian kernel
+
+    padding = len(kernel_1d) // 2  # Ensure that image size does not change
+    # Convolve along columns and rows
+    mu_x = F.conv2d(img, weight=kernel_1d.view(1, 1, -1, 1), padding=(padding, 0))
+    mu_y = F.conv2d(img, weight=kernel_1d.view(1, 1, 1, -1), padding=(0, padding))
+    return mu_x, mu_y
+
+
+def std_2d(img: torch.Tensor, sigma: float) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    # First, std_x and std_y
+    mu_x, mu_y = mu_2d(img, sigma)
+    std_x = (img - mu_x)**2
+    std_y = (img - mu_y)**2
+    std_x, std_xy = mu_2d(std_x, sigma)
+    std_y, _ = mu_2d(std_y, sigma)
+    std_x = torch.sqrt(std_x)
+    std_y = torch.sqrt(std_y)
+    std_xy = torch.sqrt(std_xy)
+    return std_x, std_y, std_xy
 
 
 class RichConv1d(LightningModule):
