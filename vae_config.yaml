@@ -23,12 +23,12 @@ settings:
   stft_win_sz: 256
   plp: .5
   n_ants: 2
-  fft_len: 4096
+  fft_len: 8192
 
 generate_data_settings:
   iterations: 500
-  run_clutter: True
-  run_targets: False
+  run_clutter: False
+  run_targets: True
   use_local_storage: True
   local_path: ./data
 
@@ -43,16 +43,17 @@ dataset_params:
   split: .7
   single_example: False
   # These values are taken from a sampling of data
-  mu: 1764928360.1075766
-  var: 521598045769.17664
+  mu: 274662906.04691434
+  var: 49527137064.739006
   noise_level: 0.
 
 # This is for setting up training of autoencoder
 exp_params:
-  LR: 0.01
+  LR: 0.1
   weight_decay: 0.0
-  scheduler_gamma: 0.9
-  kld_weight: .34
+  scheduler_gamma: 0.1
+  betas: [ .56, .26 ]
+  step_size: 3
   swa_start: .7
   log_epoch: 10
   save_model: True
@@ -63,7 +64,7 @@ exp_params:
   model_type: WAE_MMD
   patience: 150
   is_tuning: False
-  max_epochs: 70
+  max_epochs: 20
 
 # For training of wavemodel
 wave_exp_params:
@@ -98,9 +99,9 @@ rcs_exp_params:
 # This refers to the autoencoder compression params
 model_params:
   in_channels: 2
-  latent_dim: 512
+  latent_dim: 1024
   max_capacity: 25
-  channel_sz: 4
+  channel_sz: 2
   capacity_max_iter: 10000
   reg_weight: 7840.  # MMD weight
   kernel_type: 'rbf'

@@ -164,7 +164,8 @@ class GeneratorModel(FlatModule):
             ratio[torch.logical_and(clutter_spectrum == 0, target_spectrum == 0)] = (
                 g1_return)[torch.logical_and(clutter_spectrum == 0, target_spectrum == 0)]
             ratio[torch.logical_and(clutter_spectrum == 0, target_spectrum != 0)] = 0.
-            I_k = torch.sum(torch.log(torch.nanmean(ratio, dim=1)))
+            ratio[torch.isnan(ratio)] = g1_return[torch.isnan(ratio)]
+            I_k = torch.exp(torch.sum(torch.log(torch.nanmean(ratio, dim=1))))
             target_loss += I_k / (gen_waveform.shape[0] * self.n_ants)
 
             # Get the ISLR for this waveform
