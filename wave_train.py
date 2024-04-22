@@ -8,7 +8,7 @@ import torch
 from pytorch_lightning import Trainer, loggers, seed_everything
 from pytorch_lightning.callbacks import EarlyStopping, StochasticWeightAveraging, ModelPruning
 import yaml
-from dataloaders import WaveDataModule, STFTModule
+from dataloaders import WaveDataModule
 from experiment import GeneratorExperiment
 from models import BetaVAE, InfoVAE, WAE_MMD
 from waveform_model import GeneratorModel, init_weights
@@ -56,8 +56,8 @@ if __name__ == '__main__':
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     # torch.cuda.empty_cache()
 
-    seed_everything(np.random.randint(1, 2048), workers=True)
-    # seed_everything(42, workers=True)
+    # seed_everything(np.random.randint(1, 2048), workers=True)
+    seed_everything(42, workers=True)
 
     with open('./vae_config.yaml', 'r') as file:
         try:

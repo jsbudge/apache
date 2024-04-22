@@ -158,6 +158,11 @@ if __name__ == '__main__':
 
     if config['generate_data_settings']['run_clutter']:
         print('Running clutter data...')
+        run_mu = 0
+        run_std = 0
+        max_mu = 0
+        max_std = 0
+        abs_idx = 0
 
         for fn in sdr_file:
             try:
@@ -168,6 +173,7 @@ if __name__ == '__main__':
             if sdr_f[0].fs != fs:
                 continue  # I'll work on this later
             mfilt = sdr_f.genMatchedFilter(0, fft_len=fft_len)
+            valids = mfilt != 0
             print('Matched filter loaded.')
 
             print(f'File is {fn}')
@@ -178,8 +184,21 @@ if __name__ == '__main__':
                 if np.diff(pnums).max() > 1:
                     continue
                 pulse_data = np.fft.fft(sdr_f.getPulses(pnums, 0)[1], fft_len, axis=0) * mfilt[:, None]
-                pulse_data = (pulse_data - config['dataset_params']['mu']) / config['dataset_params']['var']
+                mu = abs(pulse_data[valids, :].mean())
+                std = pulse_data[valids, :].std()
+                max_std = max(max_std, std)
+                if mu > max_mu:
+                    max_mu = mu
+                    print(f'Mu: {mu}' + (f'STD: {std}' if std > max_std else ''))
+                run_mu = (abs(pulse_data[valids, :].mean()) + abs_idx * run_mu) / (abs_idx + 1)
+                run_std = (abs(pulse_data[valids, :].std()) + abs_idx * run_std) / (abs_idx + 1)
+                # Get scaling parameters for storage
+                p_muscale = np.repeat(config['dataset_params']['mu'] / abs(pulse_data[valids, :].mean(axis=0)), 2).astype(np.float32)
+                p_stdscale = np.repeat(config['dataset_params']['var'] / abs(pulse_data[valids, :].std(axis=0)), 2).astype(np.float32)
+                # Normalize each pulse against itself; each one has mu of zero and std of one
+                pulse_data = (pulse_data - abs(pulse_data[valids, :].mean(axis=0))) / pulse_data[valids, :].std(axis=0)
                 inp_data = formatTargetClutterData(pulse_data.T, fft_len).astype(np.float32)
+                inp_data = np.concatenate((inp_data, p_muscale.reshape(-1, 2, 1), p_stdscale.reshape(-1, 2, 1)), axis=2)
                 with open(
                         f'{save_path}/clutter_{fn.split("/")[-1].split(".")[0]}.spec', 'ab') as writer:
                     inp_data.tofile(writer)
@@ -205,8 +224,13 @@ if __name__ == '__main__':
                                          config['apache_params']['vehicle_slant_range_max'],
                                          config['settings']['fft_len'], fs, config['settings']['cpi_len'],
                                          config['settings']['fft_len'])
+            p_muscale = np.repeat(config['dataset_params']['mu'] / abs(tpsd.mean(axis=1)), 2).astype(
+                np.float32)
+            p_stdscale = np.repeat(config['dataset_params']['var'] / abs(tpsd.std(axis=1)), 2).astype(
+                np.float32)
             tpsd = (tpsd - config['dataset_params']['mu']) / config['dataset_params']['var']
             inp_data = formatTargetClutterData(tpsd, fft_len).astype(np.float32)
+            inp_data = np.concatenate((inp_data, p_muscale.reshape(-1, 2, 1), p_stdscale.reshape(-1, 2, 1)), axis=2)
             with open(
                     f'{save_path}/targets.spec', 'ab') as writer:
                 inp_data.tofile(writer)

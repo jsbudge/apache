@@ -29,7 +29,8 @@ class PulseDataset(Dataset):
             self.data = self.data[Xs] if is_val else self.data[Xt]
         if single_example:
             self.data[1:] = self.data[0]
-        self.data = torch.tensor(self.data, dtype=torch.float32)
+        # Drop the scaling parameters for the encoding
+        self.data = torch.tensor(self.data[:, :, :-2], dtype=torch.float32)
         
     def __getitem__(self, idx):
         img = self.data[idx, ...]
@@ -39,10 +40,11 @@ class PulseDataset(Dataset):
         return self.data.shape[0]
 
     def get_filedata(self, concat=True):
+        # The extra +2 on the end is for scaling parameters mu and std. They are not needed for encoding.
         if not Path(self.root_dir).is_dir():
-            return self.root_dir, np.fromfile(self.root_dir, dtype=np.float32).reshape((-1, 2, self.fft_len))
+            return self.root_dir, np.fromfile(self.root_dir, dtype=np.float32).reshape((-1, 2, self.fft_len + 2))
         clutter_files = glob(f'{self.root_dir}/clutter_*.spec')
-        dt = [np.fromfile(c, dtype=np.float32).reshape((-1, 2, self.fft_len)) for c in clutter_files]
+        dt = [np.fromfile(c, dtype=np.float32).reshape((-1, 2, self.fft_len + 2)) for c in clutter_files]
         return clutter_files, np.concatenate(dt) if concat else dt
 
 
@@ -88,7 +90,9 @@ class WaveDataset(Dataset):
         ccdata = []
         csdata = []
         for files in zip(clutter_spec_files, clutter_enc_files):
-            tmp_cs = np.fromfile(files[0], dtype=np.float32).reshape((-1, 2, fft_sz))
+            tmp_cs = np.fromfile(files[0], dtype=np.float32).reshape((-1, 2, fft_sz + 2))
+            # Scale appropriately
+            tmp_cs = tmp_cs[:, :, :fft_sz] * tmp_cs[:, 0, fft_sz + 1][:, None, None] + tmp_cs[:, 0, fft_sz][:, None, None]
             tmp_cc = np.fromfile(files[1], dtype=np.float32).reshape((-1, latent_dim))
             if split < 1:
                 Xt, Xs, _, _ = train_test_split(np.arange(tmp_cc.shape[0] - seq_len),
@@ -97,18 +101,23 @@ class WaveDataset(Dataset):
             else:
                 Xt = np.arange(tmp_cc.shape[0] - seq_len)
                 Xs = np.arange(tmp_cc.shape[0] - seq_len)
-            ccdata = np.concatenate((ccdata, tmp_cc[Xs])) if is_val else np.concatenate((ccdata, tmp_cc[Xt]))
-            csdata = np.concatenate((csdata, tmp_cs[Xs])) if is_val else np.concatenate((csdata, tmp_cs[Xt]))
+            if len(ccdata) == 0:
+                ccdata = tmp_cc[Xs] if is_val else tmp_cc[Xt]
+                csdata = tmp_cs[Xs] if is_val else tmp_cs[Xt]
+            else:
+                ccdata = np.concatenate((ccdata, tmp_cc[Xs])) if is_val else np.concatenate((ccdata, tmp_cc[Xt]))
+                csdata = np.concatenate((csdata, tmp_cs[Xs])) if is_val else np.concatenate((csdata, tmp_cs[Xt]))
 
         self.ccdata = ccdata
         self.tcdata = torch.tensor(np.concatenate(
             [np.fromfile(c, dtype=np.float32).reshape((-1, latent_dim)) for c in target_enc_files]))
         self.csdata = torch.tensor(csdata)
         self.tsdata = torch.tensor(
-            np.concatenate([np.fromfile(c, dtype=np.float32).reshape((-1, 2, fft_sz)) for c in target_spec_files]))
+            np.concatenate([np.fromfile(c, dtype=np.float32).reshape((-1, 2, fft_sz + 2)) for c in target_spec_files]))
+        self.tsdata = self.tsdata[:, :, :fft_sz] * self.tsdata[:, 0, fft_sz + 1][:, None, None] + self.tsdata[:, 0, fft_sz][:, None, None]
 
         self.spec_sz = self.tcdata.shape[0]
-        self.data_sz = csdata.shape[0]
+        self.data_sz = csdata.shape[0] - seq_len
         self.seq_len = seq_len
 
         self.min_pulse_length = min_pulse_length

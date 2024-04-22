@@ -1,14 +1,13 @@
 import contextlib
-from typing import List, Any, TypeVar
-from layers import RichConv2d, RichConvTranspose2d, SelfAttention, AttentionConv
+from typing import List, Any
+from layers import RichConv2d, RichConvTranspose2d
 import torch
-from torch import nn
-from torch.nn import functional as F
+from torch import nn, optim, Tensor
+from torch.nn import functional as tf
 from abc import abstractmethod
 from pytorch_lightning import LightningModule
 import numpy as np
-
-Tensor = TypeVar('torch.tensor')
+from waveform_model import FlatModule
 
 
 def calc_conv_size(inp_sz, kernel_sz, stride, padding):
@@ -202,7 +201,7 @@ class BetaVAE(BaseVAE):
         log_var = args[3]
         kld_weight = kwargs['M_N']  # Account for the minibatch samples from the dataset
 
-        recons_loss = F.mse_loss(recons, input)
+        recons_loss = tf.mse_loss(recons, input)
 
         kld_loss = torch.mean(-0.5 * torch.sum(1 + log_var - mu ** 2 - log_var.exp(), dim=1), dim=0)
 
@@ -371,7 +370,7 @@ class InfoVAE(BaseVAE):
         bias_corr = batch_size * (batch_size - 1)
         kld_weight = kwargs['M_N']  # Account for the minibatch samples from the dataset
 
-        recons_loss = F.mse_loss(recons, input)
+        recons_loss = tf.mse_loss(recons, input)
         mmd_loss = self.compute_mmd(z)
         kld_loss = torch.mean(-0.5 * torch.sum(1 + log_var - mu ** 2 - log_var.exp(), dim=1), dim=0)
 
@@ -537,16 +536,6 @@ class WAE_MMD(BaseVAE):
                 nn.GELU(),
                 nn.Linear(fft_len // (2**n), fft_len // (2**n)),
                 nn.GELU(),
-                nn.Linear(fft_len // (2 ** n), fft_len // (2 ** n)),
-                nn.GELU(),
-                nn.Conv1d(channel_sz, channel_sz, 3, 1, 1),
-                nn.GELU(),
-                nn.Conv1d(channel_sz, channel_sz, 3, 1, 1),
-                nn.GELU(),
-                nn.Conv1d(channel_sz, channel_sz, 3, 1, 1),
-                nn.GELU(),
-                nn.Conv1d(channel_sz, channel_sz, 3, 1, 1),
-                nn.GELU(),
             )
             for n in range(1, levels + 1)
         ]
@@ -556,7 +545,10 @@ class WAE_MMD(BaseVAE):
             nn.Conv1d(channel_sz, 1, 1, 1, 0),
             nn.GELU(),
         )
-        self.fc_z = nn.Linear(fft_len // fft_scaling, latent_dim)
+        self.fc_z = nn.Sequential(
+            nn.Linear(fft_len // fft_scaling, latent_dim),
+            nn.Tanh(),
+        )
 
         # Decoder
         self.z_fc = nn.Linear(latent_dim, fft_len // fft_scaling)
@@ -572,16 +564,6 @@ class WAE_MMD(BaseVAE):
             )
         ] + [
             nn.Sequential(
-                nn.GELU(),
-                nn.ConvTranspose1d(channel_sz, channel_sz, 3, 1, 1),
-                nn.GELU(),
-                nn.ConvTranspose1d(channel_sz, channel_sz, 3, 1, 1),
-                nn.GELU(),
-                nn.ConvTranspose1d(channel_sz, channel_sz, 3, 1, 1),
-                nn.GELU(),
-                nn.ConvTranspose1d(channel_sz, channel_sz, 3, 1, 1),
-                nn.GELU(),
-                nn.Linear(fft_len // (2 ** n), fft_len // (2 ** n)),
                 nn.GELU(),
                 nn.Linear(fft_len // (2 ** n), fft_len // (2 ** n)),
                 nn.GELU(),
@@ -623,7 +605,7 @@ class WAE_MMD(BaseVAE):
         bias_corr = batch_size * (batch_size - 1)
         reg_weight = self.reg_weight / max(1, bias_corr)
 
-        recons_loss = F.mse_loss(args[0], args[1])
+        recons_loss = tf.mse_loss(args[0], args[1])
 
         mmd_loss = self.compute_mmd(args[2], reg_weight)
 
@@ -732,3 +714,155 @@ class WAE_MMD(BaseVAE):
         """
 
         return self.forward(x)[0]
+
+
+class Encoder(FlatModule):
+    def __init__(self,
+                 in_channels: int,
+                 latent_dim: int,
+                 fft_len: int,
+                 params: dict,
+                 channel_sz: int = 32,
+                 **kwargs) -> None:
+        super(Encoder, self).__init__()
+
+        self.latent_dim = latent_dim
+        self.fft_len = fft_len
+        self.params = params
+        self.channel_sz = channel_sz
+        self.in_channels = in_channels
+        levels = 3
+        fft_scaling = 2 ** levels
+
+        # Encoder
+        self.encoder_inflate = nn.Conv1d(in_channels, channel_sz, 3, 1, 1)
+        self.encoder_reduce = nn.ModuleList()
+        self.encoder_conv = nn.ModuleList()
+        self.encoder_attention = nn.ModuleList()
+        for n in range(levels):
+            ch0 = channel_sz * (2**n)
+            ch1 = channel_sz * (2**(n + 1))
+            self.encoder_reduce.append(nn.Sequential(
+                nn.BatchNorm1d(ch0),
+                nn.Conv1d(ch0, ch1, 4, 2, 1),
+                nn.GELU(),
+            ))
+            self.encoder_conv.append(nn.Sequential(
+                nn.Conv1d(ch0, ch0, 3, 1, 1),
+                nn.GELU(),
+                nn.Conv1d(ch0, ch0, 3, 1, 1),
+                nn.GELU(),
+                nn.Conv1d(ch0, ch0, 3, 1, 1),
+                nn.GELU(),
+                nn.Conv1d(ch0, ch0, 3, 1, 1),
+                nn.GELU(),
+            ))
+            self.encoder_attention.append(nn.Sequential(
+                nn.Conv1d(ch0, ch0, 3, 1, 1),
+                nn.Softmax(dim=1),
+            ))
+        self.encoder_squash = nn.Sequential(
+            nn.Conv1d(channel_sz * (2**levels), 1, 3, 1, 1),
+            nn.GELU(),
+        )
+        self.fc_z = nn.Sequential(
+            nn.Linear(fft_len // fft_scaling, latent_dim),
+            nn.Tanh(),
+        )
+
+        # Decoder
+        self.z_fc = nn.Linear(latent_dim, fft_len // fft_scaling)
+        self.decoder_inflate = nn.Conv1d(1, channel_sz * (2**levels), 3, 1, 1)
+        self.decoder_reduce = nn.ModuleList()
+        self.decoder_conv = nn.ModuleList()
+        self.decoder_attention = nn.ModuleList()
+        for n in range(levels, 0, -1):
+            ch0 = channel_sz * (2**n)
+            ch1 = channel_sz * (2 ** (n - 1))
+            self.decoder_reduce.append(nn.Sequential(
+                nn.BatchNorm1d(ch0),
+                nn.ConvTranspose1d(ch0, ch1, 4, 2, 1),
+                nn.GELU(),
+            ))
+            self.decoder_conv.append(nn.Sequential(
+                nn.ConvTranspose1d(ch0, ch0, 3, 1, 1),
+                nn.GELU(),
+                nn.ConvTranspose1d(ch0, ch0, 3, 1, 1),
+                nn.GELU(),
+                nn.ConvTranspose1d(ch0, ch0, 3, 1, 1),
+                nn.GELU(),
+                nn.ConvTranspose1d(ch0, ch0, 3, 1, 1),
+                nn.GELU(),
+
+            ))
+            self.decoder_attention.append(nn.Sequential(
+                nn.Conv1d(ch0, ch0, 3, 1, 1),
+                nn.Softmax(dim=1),
+            ))
+        self.decoder_output = nn.Conv1d(channel_sz, in_channels, 3, 1, 1)
+
+        self.loss_function = nn.MSELoss()
+
+    def encode(self, inp: Tensor) -> Tensor:
+        """
+        Encodes the input by passing through the encoder network
+        and returns the latent codes.
+        :param inp: (Tensor) Input tensor to encoder [N x C x H x W]
+        :return: (Tensor) List of latent codes
+        """
+        inp = self.encoder_inflate(inp)
+        for att, conv, red in zip(self.encoder_attention, self.encoder_conv, self.encoder_reduce):
+            inp = red(conv(inp) * att(inp))
+        inp = self.encoder_squash(inp).squeeze(1)
+        return self.fc_z(inp)
+
+    def decode(self, z: Tensor) -> Tensor:
+        result = self.z_fc(z).unsqueeze(1)
+        result = self.decoder_inflate(result)
+        for att, conv, red in zip(self.decoder_attention, self.decoder_conv, self.decoder_reduce):
+            result = red(conv(result) * att(result))
+        return self.decoder_output(result)
+
+    def forward(self, inp: Tensor, **kwargs) -> Tensor:
+        z = self.encode(inp)
+        return self.decode(z)
+
+    def on_fit_start(self) -> None:
+        if self.trainer.is_global_zero and self.logger:
+            self.logger.log_graph(self, self.example_input_array)
+
+    def training_step(self, batch, batch_idx):
+        return self.train_val_get(batch, batch_idx)
+
+    def validation_step(self, batch, batch_idx):
+        self.train_val_get(batch, batch_idx, 'val')
+
+    def on_validation_end(self) -> None:
+        if self.trainer.is_global_zero and not self.params['is_tuning']:
+            torch.save(self.state_dict(), './model/inference_model.state')
+            print('Model saved to disk.')
+
+    def configure_optimizers(self):
+        optimizer = optim.AdamW(self.parameters(),
+                                lr=self.params['LR'],
+                                weight_decay=self.params['weight_decay'],
+                                betas=self.params['betas'],
+                                eps=1e-7)
+        optims = [optimizer]
+        if self.params['scheduler_gamma'] is None:
+            return optims
+        scheduler = optim.lr_scheduler.StepLR(optims[0], step_size=self.params['step_size'],
+                                              gamma=self.params['scheduler_gamma'])
+        scheds = [scheduler]
+
+        return optims, scheds
+
+    def train_val_get(self, batch, batch_idx, kind='train'):
+        img, img = batch
+        self.automatic_optimization = True
+
+        results = self.forward(img)
+        train_loss = self.loss_function(results, img)
+
+        self.log_dict({f'{kind}_loss': train_loss}, sync_dist=True, prog_bar=True)
+        return train_loss
