@@ -4,15 +4,12 @@ import torch
 from pytorch_lightning import Trainer, loggers, seed_everything
 from pytorch_lightning.callbacks import EarlyStopping, StochasticWeightAveraging
 import yaml
-from pathlib import Path
 from dataloaders import EncoderModule
-from experiment import VAExperiment
-from models import BetaVAE, InfoVAE, WAE_MMD, init_weights, Encoder
+from models import init_weights, Encoder
 import matplotlib.pyplot as plt
 import numpy as np
 
 torch.set_float32_matmul_precision('medium')
-print(f'Cuda is available? {torch.cuda.is_available()}')
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 # seed_everything(np.random.randint(1, 2048), workers=True)
 seed_everything(8, workers=True)
@@ -95,15 +92,15 @@ if trainer.is_global_zero:
         save_path = param_dict['generate_data_settings']['local_path'] if (
             param_dict)['generate_data_settings']['use_local_storage'] else param_dict['dataset_params']['data_path']
         for fn, dt in zip(fnmes, fdata):
-            for chunk in np.arange(0, dt.shape[0], batch_sz):
-                out_data = model.encode(torch.tensor(dt[chunk:chunk + batch_sz, :, :-2], dtype=torch.float32)).data.numpy()
-                with open(
-                        f'{save_path}/{fn.split("/")[-1].split(".")[0]}.enc', 'ab') as writer:
+            with open(
+                    f'{save_path}/{fn.split("/")[-1].split(".")[0]}.enc', 'ab') as writer:
+                for chunk in np.arange(0, dt.shape[0], batch_sz):
+                    out_data = model.encode(torch.tensor(dt[chunk:chunk + batch_sz, :, :-2], dtype=torch.float32)).data.numpy()
                     out_data.tofile(writer)
         target_spec_files = glob(f'{save_path}/targets.spec')[0]
         target_data = np.fromfile(target_spec_files, dtype=np.float32).reshape((-1, 2, param_dict['settings']['fft_len'] + 2))[:, :, :-2]
-        for td in np.arange(0, target_data.shape[0], batch_sz):
-            out_data = model.encode(torch.tensor(target_data[td:td + batch_sz, ...])).data.numpy()
-            with open(
-                    f'{save_path}/targets.enc', 'ab') as writer:
+        with open(
+                f'{save_path}/targets.enc', 'ab') as writer:
+            for td in np.arange(0, target_data.shape[0], batch_sz):
+                out_data = model.encode(torch.tensor(target_data[td:td + batch_sz, ...])).data.numpy()
                 out_data.tofile(writer)

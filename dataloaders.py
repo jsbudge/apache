@@ -92,15 +92,15 @@ class WaveDataset(Dataset):
         for files in zip(clutter_spec_files, clutter_enc_files):
             tmp_cs = np.fromfile(files[0], dtype=np.float32).reshape((-1, 2, fft_sz + 2))
             # Scale appropriately
-            tmp_cs = tmp_cs[:, :, :fft_sz] * tmp_cs[:, 0, fft_sz + 1][:, None, None] + tmp_cs[:, 0, fft_sz][:, None, None]
+            tmp_cs = tmp_cs[:, :, :fft_sz] # * tmp_cs[:, 0, fft_sz + 1][:, None, None] + tmp_cs[:, 0, fft_sz][:, None, None]
             tmp_cc = np.fromfile(files[1], dtype=np.float32).reshape((-1, latent_dim))
             if split < 1:
-                Xt, Xs, _, _ = train_test_split(np.arange(tmp_cc.shape[0] - seq_len),
-                                                np.arange(tmp_cc.shape[0] - seq_len),
+                Xt, Xs, _, _ = train_test_split(np.arange(tmp_cs.shape[0] - seq_len),
+                                                np.arange(tmp_cs.shape[0] - seq_len),
                                                 test_size=split, random_state=seed)
             else:
-                Xt = np.arange(tmp_cc.shape[0] - seq_len)
-                Xs = np.arange(tmp_cc.shape[0] - seq_len)
+                Xt = np.arange(tmp_cs.shape[0] - seq_len)
+                Xs = np.arange(tmp_cs.shape[0] - seq_len)
             if len(ccdata) == 0:
                 ccdata = tmp_cc[Xs] if is_val else tmp_cc[Xt]
                 csdata = tmp_cs[Xs] if is_val else tmp_cs[Xt]
@@ -114,7 +114,7 @@ class WaveDataset(Dataset):
         self.csdata = torch.tensor(csdata)
         self.tsdata = torch.tensor(
             np.concatenate([np.fromfile(c, dtype=np.float32).reshape((-1, 2, fft_sz + 2)) for c in target_spec_files]))
-        self.tsdata = self.tsdata[:, :, :fft_sz] * self.tsdata[:, 0, fft_sz + 1][:, None, None] + self.tsdata[:, 0, fft_sz][:, None, None]
+        self.tsdata = self.tsdata[:, :, :fft_sz] #* self.tsdata[:, 0, fft_sz + 1][:, None, None] + self.tsdata[:, 0, fft_sz][:, None, None]
 
         self.spec_sz = self.tcdata.shape[0]
         self.data_sz = csdata.shape[0] - seq_len

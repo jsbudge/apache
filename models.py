@@ -731,7 +731,7 @@ class Encoder(FlatModule):
         self.params = params
         self.channel_sz = channel_sz
         self.in_channels = in_channels
-        levels = 3
+        levels = 4
         fft_scaling = 2 ** levels
 
         # Encoder
@@ -796,12 +796,13 @@ class Encoder(FlatModule):
 
             ))
             self.decoder_attention.append(nn.Sequential(
-                nn.Conv1d(ch0, ch0, 3, 1, 1),
+                nn.ConvTranspose1d(ch0, ch0, 3, 1, 1),
                 nn.Softmax(dim=1),
             ))
         self.decoder_output = nn.Conv1d(channel_sz, in_channels, 3, 1, 1)
 
         self.loss_function = nn.MSELoss()
+        self.example_input_array = torch.randn((1, 2, self.fft_len))
 
     def encode(self, inp: Tensor) -> Tensor:
         """
@@ -836,6 +837,11 @@ class Encoder(FlatModule):
 
     def validation_step(self, batch, batch_idx):
         self.train_val_get(batch, batch_idx, 'val')
+
+    def on_after_backward(self) -> None:
+        if self.trainer.is_global_zero and self.global_step % 100 == 0 and self.logger:
+            for name, params in self.named_parameters():
+                self.logger.experiment.add_histogram(name, params, self.global_step)
 
     def on_validation_end(self) -> None:
         if self.trainer.is_global_zero and not self.params['is_tuning']:
