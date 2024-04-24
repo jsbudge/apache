@@ -354,51 +354,52 @@ class RCSModel(FlatModule):
                  ) -> None:
         super(RCSModel, self).__init__()
 
-        nchan = 32
+        nchan = 12
 
         self.optical_stack = nn.Sequential(
-            nn.Conv2d(3, nchan, 129, 1, 64),
-            nn.LeakyReLU(),
-            nn.Conv2d(nchan, nchan, 65, 1, 32),
-            nn.LeakyReLU(),
             nn.Conv2d(nchan, nchan, 3, 1, 1),
-            nn.LeakyReLU(),
-            nn.Conv2d(nchan, nchan, 1, 1, 0),
-            nn.LeakyReLU(),
-            nn.BatchNorm2d(nchan),
+            nn.GELU(),
+            nn.Conv2d(nchan, nchan, 4, 2, 1),
+            nn.GELU(),
+            nn.Conv2d(nchan, nchan, 4, 2, 1),
+            nn.GELU(),
+            nn.Conv2d(nchan, nchan, 3, 1, 1),
+            nn.GELU(),
+        )
+
+        self.optical_input = nn.Conv2d(3, nchan, 1, 1, 0)
+
+        self.optical_attention = nn.Sequential(
+            AttentionConv(3, nchan, 3, 1, 1),
         )
 
         self.pose_stack = nn.Sequential(
-            nn.Linear(7, 64),
-            nn.LeakyReLU(),
-        )
-
-        self.pose_inflate = nn.Sequential(
-            nn.ConvTranspose2d(1, 1, 4, 2, 1),
-            nn.ConvTranspose2d(1, 1, 4, 2, 1),
-            nn.ConvTranspose2d(1, 1, 4, 2, 1),
-            nn.ConvTranspose2d(1, 1, 4, 2, 1),
-            nn.ConvTranspose2d(1, 1, 4, 2, 1),
-            nn.LeakyReLU(),
+            nn.Linear(7 * 6, nchan),
+            nn.GELU(),
+            nn.Linear(nchan, nchan),
+            nn.Tanh(),
         )
 
         self.comb_stack = nn.Sequential(
-            nn.Conv2d(nchan + 1, nchan, 3, 1, 1),
-            nn.Tanh(),
             nn.Conv2d(nchan, nchan, 3, 1, 1),
-            nn.Tanh(),
+            nn.GELU(),
             nn.Conv2d(nchan, nchan, 3, 1, 1),
-            nn.Tanh(),
+            nn.GELU(),
+            nn.ConvTranspose2d(nchan, nchan, 4, 2, 1),
+            nn.GELU(),
+            nn.ConvTranspose2d(nchan, nchan, 4, 2, 1),
+            nn.GELU(),
             nn.Conv2d(nchan, 1, 1, 1, 0),
             nn.Sigmoid(),
         )
 
-        self.loss = nn.MSELoss()
+        self.loss = nn.BCELoss()
+        self.nchan = nchan
 
     def forward(self, opt_data: torch.tensor, pose_data: torch.tensor) -> torch.tensor:
-        w = self.pose_stack(pose_data)
-        w = self.pose_inflate(w.view(-1, 1, 8, 8))
-        x = torch.concat((self.optical_stack(opt_data), w), dim=1)
+        w = self.pose_stack(pose_data).view(-1, self.nchan, 1, 1)
+        x = self.optical_stack(self.optical_input(opt_data) * self.optical_attention(opt_data))
+        x = x * w
         return self.comb_stack(x).swapaxes(2, 3)
 
     def loss_function(self, *args, **kwargs) -> dict:

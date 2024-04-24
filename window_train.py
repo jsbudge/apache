@@ -26,7 +26,7 @@ if __name__ == '__main__':
     torch.set_float32_matmul_precision('medium')
     # torch.cuda.empty_cache()
 
-    seed_everything(43, workers=True)
+    seed_everything(np.random.randint(1, 2048), workers=True)
 
     with open('./vae_config.yaml', 'r') as file:
         try:
@@ -44,12 +44,12 @@ if __name__ == '__main__':
     print('Setting up experiment...')
     experiment = RCSExperiment(win_mdl, config['rcs_exp_params'])
     logger = loggers.TensorBoardLogger(config['train_params']['log_dir'],
-                                       name="WinModel")
+                                       name="RCSModel")
     trainer = Trainer(logger=logger, max_epochs=config['train_params']['max_epochs'],
                       log_every_n_steps=config['exp_params']['log_epoch'],
-                      strategy='ddp',
-                      callbacks=[EarlyStopping(monitor='loss', patience=30,
-                                               check_finite=True), StochasticWeightAveraging(swa_lrs=1e-5)])
+                      strategy='ddp', devices=1,
+                      callbacks=[EarlyStopping(monitor='val_loss', patience=30,
+                                               check_finite=True)])
 
     print("======= Training =======")
     trainer.fit(experiment, datamodule=data)

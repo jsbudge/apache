@@ -134,9 +134,13 @@ class RCSDataset(Dataset):
         sar_data = 10 * np.log(np.fromfile('/home/jeff/repo/apache/data/sar_img.dat',
                                            dtype=np.float32).reshape((-1, 1, 256, 256)))
         param_data = np.fromfile('/home/jeff/repo/apache/data/params.dat', dtype=np.float32).reshape((-1, 7))
+        # Insert some fourier featurization to try and get a better gradient
+        pfourier = np.zeros((param_data.shape[0], 7 * 6), dtype=np.float32)
+        for n in range(7):
+            pfourier[:, n * 6:(n + 1) * 6] = np.array([np.sin(2 * np.pi * 2**m * param_data[:, m]) for m in range(6)]).T
         self.optical_data = torch.tensor(optical_data)
         self.sar_data = torch.tensor(1 - sar_data / sar_data.min())
-        self.param_data = torch.tensor(param_data)
+        self.param_data = torch.tensor(pfourier)
 
         if split:
             idxes = np.random.choice(np.arange(self.optical_data.shape[0]), split)
@@ -329,7 +333,7 @@ class BaseModule(LightningDataModule):
         self.train_dataset = None
         self.train_batch_size = train_batch_size
         self.val_batch_size = val_batch_size
-        self.num_workers = cpu_count() // 2
+        self.num_workers = 0  #cpu_count() // 2
         self.pin_memory = pin_memory
         self.train_split = train_split
         self.val_split = val_split
