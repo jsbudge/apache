@@ -2,16 +2,15 @@ import pickle
 
 import numpy as np
 import torch
+from numba.cuda.random import create_xoroshiro128p_states
 
 from apache_helper import ApachePlatform
 from generate_trainingdata import getVAECov
 from models import InfoVAE, BetaVAE, WAE_MMD
 from simulib.simulation_functions import getElevation, llh2enu, findPowerOf2, db, enu2llh, azelToVec, genPulse
 from data_converter.aps_io import loadCorrectionGPSData, loadGPSData, loadGimbalData
-from simulib import getMaxThreads, backproject, range_profile_vectorized, applyRadiationPattern, real_beam_image
-import jax.numpy as jnp
-import jax.scipy.ndimage as jimage
-import jax
+from simulib import getMaxThreads, backproject, genRangeProfile, applyRadiationPatternCPU
+from simulib.mimo_functions import genChirpAndMatchedFilters, genChannels
 from simulib.grid_helper import SDREnvironment
 from simulib.platform_helper import SDRPlatform, RadarPlatform
 import cupy as cupy
@@ -27,6 +26,7 @@ from scipy.interpolate import RectBivariateSpline
 from scipy.linalg import convolution_matrix
 from itertools import permutations
 import imageio.v2 as imageio
+from celluloid import Camera
 
 from waveform_model import GeneratorModel, getTrainTransforms
 
@@ -41,21 +41,16 @@ def getFootprint(pos, az, el, az_bw, el_bw, near_range, far_range):
     return np.array(footprint)
 
 
-def reloadWaveforms(model, device, wave_mdl, pulse_data, mfilt, rollback, nsam, nr, fft_len, tc_d, train_transforms, rps,
-                    cpi_len, taytay):
+def reloadWaveforms(model, device, wave_mdl, pulse_data, mfilt, rollback, nsam, nr, fft_len, tc_d, train_transforms,
+                    rps,
+                    cpi_len, bwidth):
     _, cov_dt = getVAECov(pulse_data, mfilt, rollback, nsam, fft_len)
     dt = train_transforms(cov_dt.astype(np.float32)).unsqueeze(0)
     waves = wave_mdl.getWaveform(model.forward(dt.to(device))[2].to(wave_mdl.device),
-                                 model.forward(tc_d)[2].to(wave_mdl.device), pulse_length=[nr]
-                                 ).data.numpy().squeeze(0) * 1e4
-    chirps = []
-    mfilt_jax = []
-    for rp in rps:
-        chirp = jnp.array(waves[rp.tx_num, :])
-        new_mfilt = chirp.conj() * taytay
-        chirps.append(jnp.tile(chirp, (cpi_len, 1)).T)
-        mfilt_jax.append(np.tile(new_mfilt, (cpi_len, 1)).T)
-    return chirps, mfilt_jax
+                                 model.forward(tc_d)[2].to(wave_mdl.device), pulse_length=[nr], bandwidth=bwidth,
+                                 scale=True, custom_fft_sz=fft_len).data.numpy().squeeze(0) * 1e4
+    _, chirps, mfilts = genChirpAndMatchedFilters(waves, rps, bwidth, fs, fc, fft_len, cpi_len)
+    return chirps, mfilts
 
 
 # pio.renderers.default = 'svg'
@@ -76,8 +71,7 @@ with open('./vae_config.yaml', 'r') as file:
     except yaml.YAMLError as exc:
         print(exc)
 
-nbpj_pts = [(int(settings['grid_height'][i] * settings['pts_per_m'][i]),
-             int(settings['grid_width'][i] * settings['pts_per_m'][i])) for i in range(settings['ngrids'])]
+nbpj_pts = (int(settings['grid_height'] * settings['pts_per_m']), int(settings['grid_width'] * settings['pts_per_m']))
 sim_settings = settings['simulation_params']
 
 print('Loading SDR file...')
@@ -116,20 +110,18 @@ if sim_settings['use_sdr_gps']:
     grot = np.array([sdr.gim.roll * DTR, sdr.gim.pitch * DTR, sdr.gim.yaw * DTR])
     rpi.fc = sdr[settings['channel']].fc
     rpi.bwidth = sdr[settings['channel']].bw
-    nsam = rpi.calcNumSamples(settings['fdelay'], settings['plp'])
-    nr = rpi.calcPulseLength(settings['fdelay'], settings['plp'], True)
-    ranges = rpi.calcRangeBins(settings['fdelay'], settings['upsample'], settings['plp'])
-    ranges_sampled = rpi.calcRangeBins(settings['fdelay'], 1, settings['plp'])
-    fft_len = findPowerOf2(nsam + rpi.calcPulseLength(settings['fdelay'], settings['plp'], use_tac=True))
+    nsam, nr, ranges, ranges_sampled, near_range_s, granges, fft_len, up_fft_len = (
+        rpi.getRadarParams(settings['fdelay'], settings['plp'], settings['upsample']))
 else:
     # Run directly at the plane from the south
     grid_origin = plane_pos  # llh2enu(*bg.origin, bg.ref)
     full_scan = int(sim_settings['az_bw'] / sim_settings['scan_rate'] * sim_settings['prf'])
+    full_scan -= 0 if full_scan % 2 == 0 else 1
     # Get parameters for the Apache specs
     req_slant_range = sim_settings['standoff_range']
     req_alt = wave_config['apache_params']['alt_max']
     ground_range = np.sqrt(req_slant_range ** 2 - req_alt ** 2)
-    req_dep_ang = np.arccos(req_alt / req_slant_range) + sim_settings['el_bw'] * DTR * 9
+    req_dep_ang = np.arccos(req_alt / req_slant_range) + sim_settings['el_bw'] * DTR
     ngpssam = int(sim_settings['collect_duration'] * GPS_UPDATE_RATE_HZ)
     e = np.linspace(ground_range + .01, ground_range, ngpssam) + grid_origin[0]
     n = np.linspace(0, 0, ngpssam) + grid_origin[1]
@@ -142,40 +134,28 @@ else:
                         np.arange(ngpssam) / GPS_UPDATE_RATE_HZ, .5)
                * sim_settings['scan_angle'] / 2 * DTR)
     gim_el = np.zeros_like(gim_pan) + np.arccos(req_alt / req_slant_range)
-    goff = np.array([wave_config['apache_params']['phase_center_offset_m'], 0., wave_config['apache_params']['wheel_height_m']])
+    goff = np.array(
+        [wave_config['apache_params']['phase_center_offset_m'], 0., wave_config['apache_params']['wheel_height_m']])
     grot = np.array([0., 0., 0.])
     rpi = ApachePlatform(wave_config['apache_params'], e, n, u, r, p, y, t, dep_angle=req_dep_ang / DTR,
-                            gimbal=np.array([gim_pan, gim_el]).T, gimbal_rotations=grot, gimbal_offset=goff, fs=2e9)
+                         gimbal=np.array([gim_pan, gim_el]).T, gimbal_rotations=grot, gimbal_offset=goff, fs=2e9)
     rpi.fc = 9.6e9
     rpi.bwidth = 400e6
-    ranges = rpi.calcRangeBins(u.mean(), settings['upsample'], settings['plp'], ranges=(1500, 1800))
-    ranges_sampled = rpi.calcRangeBins(u.mean(), 1, settings['plp'], ranges=(1500, 1800))
-    nsam = len(ranges_sampled)
-    nr = rpi.calcPulseLength(u.mean(), settings['plp'], True)
-    fft_len = findPowerOf2(nsam + nr)
+    nsam, nr, ranges, ranges_sampled, near_range_s, granges, fft_len, up_fft_len = (
+        rpi.getRadarParams(u.mean(), settings['plp'], settings['upsample']))
     print(f'Plane slant range is {np.linalg.norm(plane_pos - rpi.pos(rpi.gpst), axis=1).mean()}')
 wave_fft_len = wave_config['generate_data_settings']['fft_sz']
+rbins_gpu = cupy.array(ranges, dtype=np.float64)
 
 plat_e, plat_n, plat_u = rpi.pos(rpi.gpst).T
 plat_r, plat_p, plat_y = rpi.att(rpi.gpst).T
 gimbal = np.array([rpi.pan(rpi.gpst), rpi.tilt(rpi.gpst)]).T
 cpi_len = settings['cpi_len']
 
-rps = []
-vx_array = []
-vx_perm = [(n, q) for q in range(settings['antenna_params']['n_tx']) for n in range(settings['antenna_params']['n_rx'])]
-for tx, rx in vx_perm:
-    txpos = np.array(settings['antenna_params']['tx_pos'][tx])
-    rxpos = np.array(settings['antenna_params']['rx_pos'][rx])
-    vx_pos = rxpos + txpos
-    rps.append(RadarPlatform(plat_e, plat_n, plat_u, plat_r, plat_p, plat_y, rpi.gpst, txpos, rxpos, gimbal, goff,
-                             grot, rpi.dep_ang, 0., rpi.az_half_bw * 2 / DTR, rpi.el_half_bw * 2 / DTR,
-                             rpi.fs, tx_num=tx, rx_num=rx))
-    vx_array.append(rxpos + txpos)
-rpref = RadarPlatform(plat_e, plat_n, plat_u, plat_r, plat_p, plat_y, rpi.gpst, np.array([0., 0., 0.]),
-                      np.array([0., 0., 0.]), gimbal, goff, grot, rpi.dep_ang, 0.,
-                      rpi.az_half_bw * 2 / DTR, rpi.el_half_bw * 2 / DTR, rpi.fs)
-vx_array = np.array(vx_array)
+rpref, rps, vx_array = genChannels(settings['antenna_params']['n_tx'], settings['antenna_params']['n_rx'],
+                                   settings['antenna_params']['tx_pos'], settings['antenna_params']['rx_pos'],
+                                   plat_e, plat_n, plat_u, plat_r, plat_p, plat_y, rpi.gpst, gimbal, goff, grot,
+                                   rpi.dep_ang, rpi.az_half_bw, rpi.el_half_bw, rpi.fs)
 
 # Get reference data
 fs = rpi.fs
@@ -185,20 +165,21 @@ print('Done.')
 
 # Generate values needed for backprojection
 print('Calculating grid parameters...')
-near_range_s = ranges[0] / c0
-granges = ranges * np.cos(rpi.dep_ang)
-up_fft_len = fft_len * settings['upsample']
 
 # Chirp and matched filter calculations
 bpj_wavelength = c0 / fc
 
-# Get Taylor window of appropriate length and shift it to the aliased frequency of fc
-taywin = int(bwidth / rpi.fs * fft_len)
-taywin = taywin + 1 if taywin % 2 != 0 else taywin
-taytay = np.zeros(fft_len, dtype=np.complex128)
-twin_tmp = taylor(taywin, nbar=10, sll=60)
-taytay[:taywin // 2] = twin_tmp[taywin // 2:]
-taytay[-taywin // 2:] = twin_tmp[:taywin // 2]
+# Run through loop to get data simulated
+gap_len = cpi_len
+if settings['simulation_params']['use_sdr_gps']:
+    data_t = sdr[settings['channel']].pulse_time
+    idx_t = sdr[settings['channel']].frame_num
+else:
+    data_t = rpi.getValidPulseTimings(settings['simulation_params']['prf'], nr / TAC, cpi_len, as_blocks=True)
+    data_t = [d for d in data_t if len(d) > 0]
+    gap_len = len(data_t[0])
+
+ang_dist_traveled_over_cpi = gap_len / sim_settings['prf'] * sim_settings['scan_rate'] * DTR
 
 # Chirps and Mfilts for each channe
 if sim_settings['use_sdr_waveform']:
@@ -207,15 +188,7 @@ if sim_settings['use_sdr_waveform']:
                       np.fft.fft(genPulse(np.linspace(0, 1, 10),
                                           np.linspace(1, 0, 10), nr, fs, fc, bwidth), fft_len)]
                      )
-    alias_shift = int(fft_len + (fc % (fs / 2) - fs / 2) / fs * fft_len)
-    taytay = np.roll(taytay, alias_shift).astype(np.complex128)
-    chirps = []
-    mfilt_jax = []
-    for rp in rps:
-        chirp = jnp.array(waves[rp.tx_num, :])
-        mfilt = chirp.conj() * taytay
-        chirps.append(jnp.tile(chirp, (cpi_len, 1)).T)
-        mfilt_jax.append(np.tile(mfilt, (cpi_len, 1)).T)
+    _, chirps, mfilts = genChirpAndMatchedFilters(waves, rps, bwidth, fs, fc, fft_len, cpi_len)
 else:
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     mfilt = sdr.genMatchedFilter(0, fft_len=fft_len)
@@ -236,6 +209,7 @@ else:
         (-1, 32, 32, 2))
 
     try:
+        print(f'Wavemodel save file loading...')
         with open('./model/current_model_params.pic', 'rb') as f:
             generator_params = pickle.load(f)
         wave_mdl = GeneratorModel(**generator_params)
@@ -249,24 +223,22 @@ else:
     wave_mdl.eval()
 
     active_clutter = sdr.getPulses(sdr[0].frame_num[:wave_config['settings']['cpi_len']], 0)[1]
+    bandwidth_model = torch.tensor(400e6, device=wave_mdl.device)
 
-    chirps, mfilt_jax = reloadWaveforms(model, device, wave_mdl, active_clutter, mfilt, rollback, nsam, nr, fft_len,
-                                        train_transforms(tcdata[0, ...]).unsqueeze(0).to(device), train_transforms,
-                                        rps, cpi_len, taytay)
-
-# Get all the JAX info ready for random point generation
-mapped_rpg = jax.vmap(range_profile_vectorized,
-                      in_axes=[None, None, None, None, 0, 0, 0, 0, 0, 0,
-                               None, None, None, None, None, None, None, None])
-mapped_rbi = jax.vmap(real_beam_image,
-                      in_axes=[None, None, None, None, 0, 0, None, None, None, None, None])
+    chirps, mfilts = reloadWaveforms(model, device, wave_mdl, active_clutter, mfilt, rollback, nsam, nr, fft_len,
+                                     train_transforms(tcdata[0, ...]).unsqueeze(0).to(device), train_transforms,
+                                     rps, cpi_len, bandwidth_model)
 
 # This replaces the ASI background with a custom image
-bg_image = imageio.imread('/data6/Jeff_Backup/Pictures/josh.png').sum(axis=2)
+bg.resampleGrid(settings['origin'], settings['grid_width'], settings['grid_height'],
+                        *nbpj_pts, bg.heading if settings['rotate_grid'] else 0)
+'''bg_image = imageio.imread('/data6/Jeff_Backup/Pictures/josh.png').sum(axis=2)
 bg_image = RectBivariateSpline(np.arange(bg_image.shape[0]), np.arange(bg_image.shape[1]), bg_image)(
-    np.linspace(0, bg_image.shape[0], nbpj_pts[0][0]), np.linspace(0, bg_image.shape[1], nbpj_pts[0][1])) / 750
-# bg_image = np.zeros(nbpj_pts[0])
-# bg_image[::50, ::50] = 1
+    np.linspace(0, bg_image.shape[0], bg.refgrid.shape[0]), np.linspace(0, bg_image.shape[1], bg.refgrid.shape[1])) / 750'''
+'''bg_image = np.zeros(bg.refgrid.shape)
+bg_image[125, 125] = 100
+bg_image[150, 150] = 10
+bg._refgrid = bg_image'''
 
 # Constant part of the radar equation
 receive_power_scale = (settings['antenna_params']['transmit_power'][0] / .01 *
@@ -275,67 +247,63 @@ receive_power_scale = (settings['antenna_params']['transmit_power'][0] / .01 *
 noise_level = 10 ** (settings['noise_level'] / 20) / np.sqrt(2)
 
 # Calculate out points on the ground
-grid_z = list()
-bg_transforms = list()
-bg_refgrid = list()
-# These are only used for plotting, transforms are all we need for the actual simulation
-grid_y = list()
-grid_x = list()
-for n in range(settings['ngrids']):
-    gx, gy, gz = bg.getGrid(settings['origin'][n], settings['grid_width'][n], settings['grid_height'][n], *nbpj_pts[n],
-                            bg.heading if settings['rotate_grid'] else 0)
-    grid_z.append(gz)
-    grid_x.append(gx)
-    grid_y.append(gy)
-    bg_transforms.append(bg.getGridParams(settings['origin'][n], settings['grid_width'][n], settings['grid_height'][n],
-                                          nbpj_pts[n], bg.heading if settings['rotate_grid'] else 0))
-    if n == 0:
-        bg_refgrid.append(bg_image)
-    else:
-        bg_refgrid.append(bg.getRefGrid(settings['origin'][n], settings['grid_width'][n], settings['grid_height'][n],
-                                        *nbpj_pts[n], bg.heading if settings['rotate_grid'] else 0))
-    bg_refgrid[-1] = (bg_refgrid[-1] - bg_refgrid[-1].mean()) / bg_refgrid[-1].std()
-    bg_refgrid[-1] += abs(bg_refgrid[-1].min())
-    bg_refgrid[-1] *= 1e7
+gx, gy, gz = bg.getGrid(settings['origin'], settings['grid_width'], settings['grid_height'], *nbpj_pts,
+                        bg.heading if settings['rotate_grid'] else 0)
+gx_gpu = cupy.array(gx, dtype=np.float64)
+gy_gpu = cupy.array(gy, dtype=np.float64)
+gz_gpu = cupy.array(gz, dtype=np.float64)
+refgrid = bg.getRefGrid(settings['origin'], settings['grid_width'], settings['grid_height'],
+                        *nbpj_pts, bg.heading if settings['rotate_grid'] else 0)
+refgrid_gpu = cupy.array(refgrid, dtype=np.float64)
+
+if settings['debug']:
+    pts_debug = cupy.zeros((3, *gx.shape), dtype=np.float64)
+    angs_debug = cupy.zeros((3, *gx.shape), dtype=np.float64)
+else:
+    pts_debug = cupy.zeros((1, 1), dtype=np.float64)
+    angs_debug = cupy.zeros((1, 1), dtype=np.float64)
 
 # Generate range/angle grid for a given position
 # First, get the center of the grid for angle calcs
-plat_to_grid = rpi.pos(rpi.gpst[0]) - llh2enu(*settings['origin'][0], bg.ref)
+plat_to_grid = rpi.pos(rpi.gpst[0]) - llh2enu(*settings['origin'], bg.ref)
 data = rpi.boresight(rpi.gpst)
 sorted_data = data[np.lexsort(data.T), :]
 row_mask = np.append([True], np.any(np.diff(sorted_data, axis=0), 1))
 unique_boresights = sorted_data[row_mask].T
-az_spread = np.linspace(rpi.pan(rpi.gpst).min(), rpi.pan(rpi.gpst).max(), 200)
-im_ranges = np.linspace(2181 - 100., 2181 + 100., 200)
+az_spread = np.linspace(rpi.pan(rpi.gpst).min(), rpi.pan(rpi.gpst).max(), nbpj_pts[0])
+im_ranges = np.linspace(2181 - 100., 2181 + 100., nbpj_pts[1])
 imgrid = np.hstack([azelToVec(az_spread, np.ones_like(az_spread) *
                               np.arcsin(plat_to_grid[2] / np.linalg.norm(plat_to_grid))) * g for g in im_ranges])
 im_x = (imgrid[0, :] + rpi.pos(rpi.gpst[0])[0]).reshape((len(az_spread), len(im_ranges)), order='F')
 im_y = (imgrid[1, :] + rpi.pos(rpi.gpst[0])[1]).reshape((len(az_spread), len(im_ranges)), order='F')
 im_z = (imgrid[2, :] + rpi.pos(rpi.gpst[0])[2]).reshape((len(az_spread), len(im_ranges)), order='F')
+imx_gpu = cupy.array(gx, dtype=np.float64)
+imy_gpu = cupy.array(gy, dtype=np.float64)
+imz_gpu = cupy.array(gz, dtype=np.float64)
+
+# GPU device calculations
+threads_per_block = getMaxThreads()
+bpg_bpj = (max(1, (nbpj_pts[0]) // threads_per_block[0] + 1), (nbpj_pts[1]) // threads_per_block[1] + 1)
+
+rng_states = create_xoroshiro128p_states(threads_per_block[0] * bpg_bpj[0], seed=1)
 
 # Get pointing vector for MIMO consolidation
-ublock = np.array([azelToVec(n, 0) for n in np.linspace(-sim_settings['az_bw'] / 2, sim_settings['az_bw'] / 2, full_scan)]).T
+ublock = np.array(
+    [azelToVec(n, 0) for n in np.linspace(-ang_dist_traveled_over_cpi / 2, ang_dist_traveled_over_cpi / 2, cpi_len)]).T
 fine_ucavec = np.exp(-1j * 2 * np.pi * sdr[0].fc / c0 * vx_array.dot(ublock))
 array_factor = fine_ucavec.conj().T.dot(np.eye(vx_array.shape[0])).dot(fine_ucavec)[:, 0] / vx_array.shape[0]
 
-# Run through loop to get data simulated
-if settings['simulation_params']['use_sdr_gps']:
-    data_t = sdr[settings['channel']].pulse_time
-    idx_t = sdr[settings['channel']].frame_num
-else:
-    data_t = rpi.getValidPulseTimings(settings['simulation_params']['prf'], 1e-6, cpi_len)
-    data_t = data_t[data_t < data_t[0] + settings['simulation_params']['collect_duration']]
-    idx_t = np.arange(len(data_t))
 test = None
 print('Running simulation...')
 pulse_pos = 0
 # Data blocks for imaging
-rbi_image = np.zeros((len(az_spread), len(im_ranges)), dtype=np.complex128)
+rbi_image = np.zeros(im_x.shape, dtype=np.complex128)
 
-nz = np.zeros(full_scan)
-tx_pattern = applyRadiationPattern(nz, np.linspace(-sim_settings['az_bw'] / 2, sim_settings['az_bw'] / 2, full_scan),
-                                   nz, nz, nz, nz, rpi.az_half_bw, rpi.el_half_bw)
-H = convolution_matrix(tx_pattern * array_factor, cpi_len, 'valid').T
+nz = np.zeros(cpi_len)
+tx_pattern = applyRadiationPatternCPU(nz, np.linspace(-ang_dist_traveled_over_cpi / 2, ang_dist_traveled_over_cpi / 2,
+                                                      cpi_len),
+                                      nz, nz, nz, nz, rpref.az_half_bw, rpref.el_half_bw)
+H = convolution_matrix(tx_pattern * array_factor, gap_len, 'valid')
 
 # Truncated SVD for superresolution
 U, eig, Vt = np.linalg.svd(H, full_matrices=False)
@@ -345,22 +313,26 @@ eig[:knee] = 1 / eig[:knee]
 Hinv = Vt.T.dot(np.diag(eig)).dot(U.T)
 
 # Hinv = np.linalg.pinv(H)
-overlap_pan = (cpi_len - H.shape[1]) // 2 + 1
+
+H_w = np.fft.fft(tx_pattern * array_factor, gap_len)
 abs_range_min = np.linalg.norm(grid_origin - rpi.pos(rpi.gpst), axis=1).min()
 det_pts = list()
 ex_chirps = list()
-frame_gen_pts = np.arange(0, len(data_t), cpi_len - overlap_pan * 2)
-for tidx, frames in tqdm(enumerate(idx_t[pos:pos + cpi_len] for pos in frame_gen_pts), total=len(frame_gen_pts)):
-    ts = data_t[frames]
+
+camfig, camax = plt.subplots(1, 1)
+cam = Camera(camfig)
+for tidx, ts in tqdm(enumerate(data_t), total=len(data_t)):
     tmp_len = len(ts)
-    ex_chirps.append(np.array(chirps[0][:, 0]))
-    if not sim_settings['use_sdr_waveform'] and tmp_len == cpi_len:
-        chirps, mfilt_jax = reloadWaveforms(model, device, wave_mdl, active_clutter, mfilt, rollback, nsam, nr, fft_len,
-                                            train_transforms(tcdata[tidx, ...]).unsqueeze(0).to(device),
-                                            train_transforms, rps, cpi_len, taytay)
+    ex_chirps.append(np.array(chirps[0].get()))
+    if not sim_settings['use_sdr_waveform'] and tmp_len == gap_len:
+        chirps, mfilts = reloadWaveforms(model, device, wave_mdl, active_clutter, mfilt, rollback, nsam, nr, fft_len,
+                                         train_transforms(tcdata[0, ...]).unsqueeze(0).to(device), train_transforms,
+                                         rps, cpi_len, bandwidth_model)
     # Pan and Tilt are shared by each channel, antennas are all facing the same way
     panrx = rpi.pan(ts)
     elrx = rpi.tilt(ts)
+    panrx_gpu = cupy.array(panrx, dtype=np.float64)
+    elrx_gpu = cupy.array(elrx, dtype=np.float64)
     # These are relative to the origin
     posrx = rpref.rxpos(ts)
     postx = rpref.txpos(ts)
@@ -371,19 +343,23 @@ for tidx, frames in tqdm(enumerate(idx_t[pos:pos + cpi_len] for pos in frame_gen
     for ch_idx, rp in enumerate(rps):
         posrx = rp.rxpos(ts)
         postx = rp.txpos(ts)
+        posrx_gpu = cupy.array(posrx, dtype=np.float64)
+        postx_gpu = cupy.array(postx, dtype=np.float64)
 
-        pdata = mapped_rpg(bg_transforms[0][0], bg_transforms[0][1], grid_z[0], bg_refgrid[0],
-                           postx, posrx, panrx, elrx, panrx, elrx,
-                           bpj_wavelength, near_range_s, rp.fs, rp.az_half_bw, rp.el_half_bw,
-                           ranges_sampled, settings['pts_per_tri'][0], receive_power_scale)
+        pd_r = cupy.zeros((nsam, tmp_len), dtype=np.float64)
+        pd_i = cupy.zeros((nsam, tmp_len), dtype=np.float64)
+
+        genRangeProfile[bpg_bpj, threads_per_block](gx_gpu, gy_gpu, gz_gpu, refgrid_gpu,
+                                                    posrx_gpu, postx_gpu, panrx_gpu, elrx_gpu, panrx_gpu, elrx_gpu,
+                                                    pd_r, pd_i, rng_states, pts_debug,
+                                                    angs_debug, bpj_wavelength, near_range_s, rpref.fs,
+                                                    rpref.az_half_bw, rpref.el_half_bw, receive_power_scale,
+                                                    settings['pts_per_tri'],
+                                                    settings['debug'])
+        pdata = pd_r + 1j * pd_i
         if settings['ngrids'] > 1:
-            for ng in range(1, settings['ngrids']):
-                pdata += mapped_rpg(bg_transforms[ng][0], bg_transforms[ng][1], grid_z[ng], bg_refgrid[ng],
-                                    postx, posrx, panrx, elrx, panrx, elrx,
-                                    bpj_wavelength, near_range_s, rp.fs, rp.az_half_bw, rp.el_half_bw,
-                                    ranges_sampled, settings['pts_per_tri'][ng], receive_power_scale)
-        rtdata = cupy.array(np.array(jnp.fft.fft(pdata, fft_len, axis=1).T *
-                                     chirps[ch_idx][:, :tmp_len] * mfilt_jax[ch_idx][:, :tmp_len]), dtype=np.complex128)
+            pass
+        rtdata = cupy.fft.fft(pdata, fft_len, axis=0) * chirps[ch_idx][:, None] * mfilts[ch_idx][:, None]
         upsample_data = cupy.array(np.random.normal(0, noise_level, (up_fft_len, tmp_len)) +
                                    1j * np.random.normal(0, noise_level, (up_fft_len, tmp_len)),
                                    dtype=np.complex128)
@@ -398,25 +374,33 @@ for tidx, frames in tqdm(enumerate(idx_t[pos:pos + cpi_len] for pos in frame_gen
 
     # Real-beam imaging
     range_walk = np.linalg.norm(pt_ref, axis=1) - abs_range_min
-    if tmp_len == cpi_len:
+    if tmp_len == gap_len:
+
         rbi_y = beamform_data.get()  # * np.exp(-1j * 2 * np.pi * fc / c0 * range_walk)
         '''g_k = np.zeros((H.shape[1], nsam))
         b_k = np.zeros_like(g_k)
         sig_k = np.linalg.pinv(.01 * H.T.dot(H) + 10 * np.eye(H.shape[1])).dot(.01 * H.T.dot(rbi_y.T) + 10 * (g_k - b_k))'''
-        sig_k = rbi_y.dot(Hinv.T)
-        rbi_image += jnp.sum(mapped_rbi(sig_k, im_x, im_y, im_z,
-                                        postx[cpi_len // 2 - H.shape[1] // 2 - 1:cpi_len // 2 + H.shape[1] // 2, :],
-                                        posrx[cpi_len // 2 - H.shape[1] // 2 - 1:cpi_len // 2 + H.shape[1] // 2, :],
-                                        panrx[cpi_len // 2 - H.shape[1] // 2 - 1:cpi_len // 2 + H.shape[1] // 2],
-                                        near_range_s, fs * settings['upsample'], 2 * np.pi * (fc / c0),
-                                        nsam), axis=0)
-        '''rbi_image += jnp.sum(mapped_rbi(sig_k, grid_x[0], grid_y[0], grid_z[0],
-                                        postx,
-                                        posrx,
-                                        panrx,
-                                        near_range_s, fs * settings['upsample'], 2 * np.pi * (fc / c0),
-                                        elrx,
-                                        rpi.az_half_bw, rpi.el_half_bw), axis=0)'''
+        # sig_k = np.fft.ifft(np.fft.fft(rbi_y, axis=1) / H_w)[:, cpi_len // 2:-cpi_len // 2 + 1]
+        sig_k = rbi_y.dot(Hinv)
+        # Get the angles this scan section covers
+        angs = np.logical_and(az_spread <= panrx[gap_len // 2 - H.shape[0] // 2 - 1],
+                              az_spread >= panrx[gap_len // 2 + H.shape[0] // 2])
+        bpj_grid = cupy.zeros((sum(angs), nbpj_pts[1]), dtype=np.complex128)
+        posrx_gpu = cupy.array(rpref.rxpos(ts), dtype=np.float64)
+        postx_gpu = cupy.array(rpref.txpos(ts), dtype=np.float64)
+
+        # Backprojection only for beamformed final data
+        backproject[bpg_bpj, threads_per_block](postx_gpu, posrx_gpu, imx_gpu[angs, :], imy_gpu[angs, :], imz_gpu[angs, :], rbins_gpu, panrx_gpu,
+                                                elrx_gpu, panrx_gpu, elrx_gpu, beamform_data, bpj_grid,
+                                                bpj_wavelength, near_range_s, rpref.fs * settings['upsample'], bwidth,
+                                                rpref.az_half_bw,
+                                                rpref.el_half_bw, settings['poly_num'], pts_debug, angs_debug,
+                                                settings['debug'])
+        cupy.cuda.Device().synchronize()
+        rbi_image[angs, :] += bpj_grid.get()
+        camax.imshow(db(np.array(sig_k)))
+        plt.axis('tight')
+        cam.snap()
         if not sim_settings['use_sdr_waveform']:
             active_clutter = rbi_y.T[:, :32]
 
@@ -427,11 +411,17 @@ del upsample_data
 """
 ----------------------------PLOTS-------------------------------
 """
+anim = cam.animate()
 
 try:
     plt.figure('IMSHOW truth data')
-    plt.imshow(db(bg_refgrid[0]), origin='lower')
+    climage = db(refgrid)
+    clim_image = climage[climage > -299]
+    clims = (np.median(clim_image) - 3 * clim_image.std(),
+             max(np.median(clim_image) + 3 * clim_image.std(), np.max(clim_image) + 2))
+    plt.imshow(np.rot90(db(refgrid)), origin='lower', clim=clims, cmap='gray')
     plt.axis('tight')
+    plt.axis('off')
 except Exception as e:
     print(f'Error in generating background image: {e}')
 
@@ -453,12 +443,13 @@ plt.show()
 rbi_image = np.array(rbi_image)
 
 plane_vec = plane_pos - rpi.pos(rpi.gpst).mean(axis=0)
-clims = abs(rbi_image)
-clims = (max(np.median(clims) - 3 * clims.std(), 0),
-         np.median(clims) + 3 * clims.std() - min(0, np.median(clims) - 3 * clims.std()))
+climage = db(rbi_image)
+clim_image = climage[climage > -299]
+clims = (np.median(clim_image) - 3 * clim_image.std(),
+         max(np.median(clim_image) + 3 * clim_image.std(), np.max(clim_image) + 2))
 fig = plt.figure('RBI image')
 ax = fig.add_subplot(111, projection='polar')
-ax.pcolormesh(az_spread, np.flip(im_ranges), abs(rbi_image),
+ax.pcolormesh(az_spread, np.flip(im_ranges), climage.T,
               clim=clims, edgecolors='face')
 ax.scatter(np.arctan2(plane_vec[0], plane_vec[1]), np.linalg.norm(plane_vec))
 ax.set_ylim(0, ranges[-1])
@@ -467,13 +458,13 @@ ax.grid(False)
 plt.axis('tight')
 
 plt.figure('RBI cartesian')
-plt.imshow(abs(rbi_image), clim=clims,
-           extent=[az_spread[0] / DTR, az_spread[-1] / DTR, im_ranges[0], im_ranges[-1]])
-plt.scatter(np.arctan2(plane_vec[0], plane_vec[1]) / DTR, np.linalg.norm(plane_vec))
+plt.imshow(climage.T, clim=clims,
+           extent=(az_spread[0] / DTR, az_spread[-1] / DTR, im_ranges[0], im_ranges[-1]), cmap='gray')
+# plt.scatter(np.arctan2(plane_vec[0], plane_vec[1]) / DTR, np.linalg.norm(plane_vec))
 plt.axis('tight')
 
-pfig = px.imshow(db(bg_refgrid[0]), x=np.linspace(grid_x[0].min(), grid_x[0].max(), bg_refgrid[0].shape[0]),
-                 y=np.linspace(grid_y[0].min(), grid_y[0].max(), bg_refgrid[0].shape[1]),
+pfig = px.imshow(db(refgrid), x=np.linspace(gx.min(), gx.max(), refgrid.shape[0]),
+                 y=np.linspace(gy.min(), gy.max(), refgrid.shape[1]),
                  color_continuous_scale=px.colors.sequential.gray, zmin=130, zmax=180)
 if settings['ngrids'] > 1:
     pfig.add_scatter(x=grid_x[1].flatten(), y=grid_y[1].flatten(),
@@ -484,8 +475,12 @@ pfig.show()
 
 plt.show()
 
-pfig = px.scatter_3d(x=grid_x[0].flatten(), y=grid_y[0].flatten(), z=grid_z[0].flatten())
+pfig = px.scatter_3d(x=gx.flatten(), y=gy.flatten(), z=gz.flatten())
 pfig.add_scatter3d(x=im_x.flatten(), y=im_y.flatten(), z=im_z.flatten())
 pfig.show()
+
+'''plt.figure('Target Angles')
+plt.plot(az_spread / DTR, db(np.sum(bg_image, axis=1)))
+plt.plot(az_spread / DTR, db(np.sum(rbi_image, axis=0)))'''
 
 # px.imshow(abs(rbi_image), zmin=clims.mean() - 3 * clims.std(), zmax=clims.mean() + 3 * clims.std()).show()

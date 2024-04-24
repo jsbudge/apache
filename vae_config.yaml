@@ -12,8 +12,8 @@ apache_params:
   vehicle_slant_range_max: 25000
   alt_min: 30.48
   alt_max: 1524.
-  az_min_bw: .0130899
-  el_min_bw: .034906
+  az_min_bw: .866
+  el_min_bw: 8.
 
 settings:
   cpi_len: 32
@@ -55,7 +55,7 @@ exp_params:
   scheduler_gamma: 0.95
   kld_weight: .34
   log_epoch: 10
-  save_model: False
+  save_model: True
   loss_landscape: False
   output_images: False
   model_type: WAE_MMD
@@ -64,17 +64,16 @@ exp_params:
 
 # For training of wavemodel
 wave_exp_params:
-  window_path: ./model/wmdl
-  LR: 0.001
-  weight_decay: 0.02
-  scheduler_gamma: 0.1
-  betas: [.6, .6]
-  step_size: 5
+  LR: 0.0001
+  weight_decay: 0.35
+  scheduler_gamma: 0.25
+  betas: [.56, .26]
+  step_size: 8
   log_epoch: 10
   is_tuning: False
   save_model: False
   loss_landscape: False
-  patience: 150
+  patience: 15
   bandwidth: 400000000.
 
 # For training of rcs model
@@ -103,4 +102,4 @@ model_params:
 
 train_params:
   log_dir: ./logs
-  max_epochs: 25
+  max_epochs: 1

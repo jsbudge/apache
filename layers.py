@@ -247,6 +247,29 @@ class AttentionConv(LightningModule):
         return out
 
 
+class Block(LightningModule):
+
+    def __init__(self, channel_sz):
+        super(Block, self).__init__()
+        self.channel_sz = channel_sz
+        self.block = nn.Sequential(
+            nn.Conv2d(channel_sz, channel_sz, (5, 1), 1, (2, 0)),
+            nn.GELU(),
+            nn.Conv2d(channel_sz, channel_sz, (3, 1), 1, (1, 0)),
+            nn.GELU(),
+            nn.Conv2d(channel_sz, channel_sz, (3, 1), 1, (1, 0)),
+            nn.GELU(),
+            nn.Conv2d(channel_sz, channel_sz, (3, 1), 1, (1, 0)),
+            nn.GELU(),
+            nn.BatchNorm2d(channel_sz),
+        )
+
+    def forward(self, x):
+        return self.block(x)
+
+
+
+
 """
 These attention layers were taken from 
 An Apache 2.0 PyTorch implementation of some attentions for Deep Learning Researchers. 

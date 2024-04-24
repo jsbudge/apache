@@ -38,7 +38,7 @@ config['dataset_params']['min_pulse_length'] = 1000
 def log_callback(curr_study: optuna.Study, trial: optuna.Trial):
     if curr_study.best_trial.number == trial.number:
         params = trial.params
-        param_str = ' '.join([f'{key} {val:.03f}' for key, val in params.items()])
+        param_str = ' '.join([f'{key} {val}' for key, val in params.items()])
         with open(opt_study, 'a') as f:
             f.write(f'Trial {trial.number}: {param_str} ({curr_study.best_value})\n')
 
@@ -83,7 +83,7 @@ def objective(trial: optuna.Trial):
 
 
 study = optuna.create_study()
-study.optimize(objective, n_trials=500, callbacks=[log_callback])
+study.optimize(objective, n_trials=1500, callbacks=[log_callback])
 
 print(study.best_params)
 
