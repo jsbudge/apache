@@ -1,6 +1,6 @@
 import contextlib
 from typing import List, Any
-from layers import RichConv2d, RichConvTranspose2d
+from layers import RichConv2d, RichConvTranspose2d, Block1d
 import torch
 from torch import nn, optim, Tensor
 from torch.nn import functional as tf
@@ -748,17 +748,12 @@ class Encoder(FlatModule):
                 nn.GELU(),
             ))
             self.encoder_conv.append(nn.Sequential(
-                nn.Conv1d(ch0, ch0, 3, 1, 1),
-                nn.GELU(),
-                nn.Conv1d(ch0, ch0, 3, 1, 1),
-                nn.GELU(),
-                nn.Conv1d(ch0, ch0, 3, 1, 1),
-                nn.GELU(),
-                nn.Conv1d(ch0, ch0, 3, 1, 1),
-                nn.GELU(),
+                Block1d(ch0),
+                Block1d(ch0),
+                Block1d(ch0),
             ))
             self.encoder_attention.append(nn.Sequential(
-                nn.Conv1d(ch0, ch0, 3, 1, 1),
+                Block1d(ch0),
                 nn.Softmax(dim=1),
             ))
         self.encoder_squash = nn.Sequential(
@@ -767,7 +762,6 @@ class Encoder(FlatModule):
         )
         self.fc_z = nn.Sequential(
             nn.Linear(fft_len // fft_scaling, latent_dim),
-            nn.Tanh(),
         )
 
         # Decoder
@@ -785,18 +779,12 @@ class Encoder(FlatModule):
                 nn.GELU(),
             ))
             self.decoder_conv.append(nn.Sequential(
-                nn.ConvTranspose1d(ch0, ch0, 3, 1, 1),
-                nn.GELU(),
-                nn.ConvTranspose1d(ch0, ch0, 3, 1, 1),
-                nn.GELU(),
-                nn.ConvTranspose1d(ch0, ch0, 3, 1, 1),
-                nn.GELU(),
-                nn.ConvTranspose1d(ch0, ch0, 3, 1, 1),
-                nn.GELU(),
-
+                Block1d(ch0, transpose=True),
+                Block1d(ch0, transpose=True),
+                Block1d(ch0, transpose=True),
             ))
             self.decoder_attention.append(nn.Sequential(
-                nn.ConvTranspose1d(ch0, ch0, 3, 1, 1),
+                Block1d(ch0, transpose=True),
                 nn.Softmax(dim=1),
             ))
         self.decoder_output = nn.Conv1d(channel_sz, in_channels, 3, 1, 1)

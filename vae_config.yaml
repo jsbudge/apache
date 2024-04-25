@@ -32,21 +32,6 @@ generate_data_settings:
   use_local_storage: True
   local_path: ./data
 
-dataset_params:
-  data_path: ./data
-  train_batch_size: 256
-  val_batch_size: 256
-  num_workers: 0
-  pin_memory: False
-  train_split: 8000
-  val_split: 128
-  split: .7
-  single_example: False
-  # These values are taken from a sampling of data
-  mu: 274662906.04691434
-  var: 49527137064.739006
-  noise_level: 0.
-
 # This is for setting up training of autoencoder
 exp_params:
   LR: 0.0001
@@ -57,31 +42,55 @@ exp_params:
   swa_start: .9
   log_epoch: 10
   save_model: True
-  transform_data: True
+  transform_data: False
   warm_start: True
   loss_landscape: False
   output_images: False
-  model_type: WAE_MMD
+  model_type: Encoder
   patience: 150
   is_tuning: False
   max_epochs: 15
+  dataset_params:
+    data_path: ./data
+    train_batch_size: 256
+    val_batch_size: 256
+    num_workers: 0
+    pin_memory: False
+    split: .7
+    single_example: False
+    # These values are taken from a sampling of data
+    mu: 274662906.04691434
+    var: 49527137064.739006
+    noise_level: 0.
 
 # For training of wavemodel
 wave_exp_params:
-  LR: 0.001
-  weight_decay: 0.35
-  scheduler_gamma: 0.25
+  LR: 0.00001
+  weight_decay: 0.1
+  scheduler_gamma: 0.9
   swa_start: .6
   warm_start: False
   betas: [.56, .26]
-  step_size: 8
+  step_size: 4
   log_epoch: 10
   is_tuning: False
   save_model: False
   loss_landscape: False
   patience: 15
   bandwidth: 400000000.
-  max_epochs: 5
+  max_epochs: 10
+  dataset_params:
+    data_path: ./data
+    train_batch_size: 64
+    val_batch_size: 256
+    num_workers: 0
+    pin_memory: False
+    split: .7
+    single_example: False
+    # These values are taken from a sampling of data
+    mu: 274662906.04691434
+    var: 49527137064.739006
+    noise_level: 0.
 
 # For training of rcs model
 rcs_exp_params:

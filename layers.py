@@ -41,6 +41,21 @@ def std_2d(img: torch.Tensor, sigma: float) -> tuple[torch.Tensor, torch.Tensor,
     return std_x, std_y, std_xy
 
 
+class FourierFeature(LightningModule):
+    def __init__(self, in_features, n_fourier: int = 6, *args: Any, **kwargs: Any):
+        super().__init__(*args, **kwargs)
+        self.out_features = in_features * n_fourier
+        self.in_features = in_features
+        self.n_fourier = n_fourier
+
+    def forward(self, x):
+        out = torch.zeros((x.shape[0], self.out_features), device=self.device)
+        for f in range(self.in_features):
+            for n in range(self.n_fourier):
+                out[:, f * self.in_features + n] = torch.sin(2 * np.pi * (2**n) * x[:, f])
+        return out
+
+
 class RichConv1d(LightningModule):
     def __init__(self, in_channels, out_channels, out_layer_sz, activation='leaky'):
         super(RichConv1d, self).__init__()
@@ -278,10 +293,10 @@ class AttentionConv(LightningModule):
         return out
 
 
-class Block(LightningModule):
+class Block2d(LightningModule):
 
     def __init__(self, channel_sz):
-        super(Block, self).__init__()
+        super(Block2d, self).__init__()
         self.channel_sz = channel_sz
         self.block = nn.Sequential(
             nn.Conv2d(channel_sz, channel_sz, (5, 1), 1, (2, 0)),
@@ -294,6 +309,40 @@ class Block(LightningModule):
             nn.GELU(),
             nn.BatchNorm2d(channel_sz),
         )
+
+    def forward(self, x):
+        return self.block(x)
+
+
+class Block1d(LightningModule):
+
+    def __init__(self, channel_sz, transpose=False):
+        super(Block1d, self).__init__()
+        self.channel_sz = channel_sz
+        if transpose:
+            self.block = nn.Sequential(
+                nn.ConvTranspose1d(channel_sz, channel_sz, 3, 1, 1),
+                nn.GELU(),
+                nn.ConvTranspose1d(channel_sz, channel_sz, 3, 1, 1),
+                nn.GELU(),
+                nn.ConvTranspose1d(channel_sz, channel_sz, 3, 1, 1),
+                nn.GELU(),
+                nn.ConvTranspose1d(channel_sz, channel_sz, 3, 1, 1),
+                nn.GELU(),
+                nn.BatchNorm1d(channel_sz),
+            )
+        else:
+            self.block = nn.Sequential(
+                nn.Conv1d(channel_sz, channel_sz, 3, 1, 1),
+                nn.GELU(),
+                nn.Conv1d(channel_sz, channel_sz, 3, 1, 1),
+                nn.GELU(),
+                nn.Conv1d(channel_sz, channel_sz, 3, 1, 1),
+                nn.GELU(),
+                nn.Conv1d(channel_sz, channel_sz, 3, 1, 1),
+                nn.GELU(),
+                nn.BatchNorm1d(channel_sz),
+            )
 
     def forward(self, x):
         return self.block(x)
