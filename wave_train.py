@@ -10,7 +10,7 @@ from pytorch_lightning.callbacks import EarlyStopping, StochasticWeightAveraging
 import yaml
 from dataloaders import WaveDataModule
 from experiment import GeneratorExperiment
-from models import BetaVAE, InfoVAE, WAE_MMD
+from models import Encoder
 from waveform_model import GeneratorModel, init_weights
 from os import listdir
 import torch.nn as nn
@@ -70,18 +70,12 @@ if __name__ == '__main__':
 
     print('Setting up wavemodel...')
     # Get the model, experiment, logger set up
-    if config['exp_params']['model_type'] == 'InfoVAE':
-        decoder = InfoVAE(**config['model_params'])
-    elif config['exp_params']['model_type'] == 'WAE_MMD':
-        decoder = WAE_MMD(fft_len=config['settings']['fft_len'], **config['model_params'])
-    else:
-        decoder = BetaVAE(**config['model_params'])
-    print('Setting up model...')
+    decoder = Encoder(**config['model_params'], fft_len=config['settings']['fft_len'], params=config['exp_params'])
+    print('Setting up decoder...')
     try:
         decoder.load_state_dict(torch.load('./model/inference_model.state'))
     except RuntimeError:
-        print('Model save file does not match current structure. Re-running with new structure.')
-        decoder.apply(init_weights)
+        print('Decoder save file does not match current structure. Re-running with new structure.')
     decoder.requires_grad = False
     warm_start = False
     if config['wave_exp_params']['warm_start']:
@@ -107,11 +101,11 @@ if __name__ == '__main__':
 
     # Since these are dependent on apache params, we set them up here instead of in the yaml file
     print('Setting up data generator...')
-    config['dataset_params']['max_pulse_length'] = nr
-    config['dataset_params']['min_pulse_length'] = 1000
+    config['wave_exp_params']['dataset_params']['max_pulse_length'] = nr
+    config['wave_exp_params']['dataset_params']['min_pulse_length'] = 1000
 
     data = WaveDataModule(latent_dim=config['model_params']['latent_dim'], device=device, fft_sz=fft_len,
-                          **config["dataset_params"])
+                          **config['wave_exp_params']["dataset_params"])
     data.setup()
 
     print('Setting up experiment...')
@@ -168,7 +162,7 @@ if __name__ == '__main__':
             cs = cs.to(device)
             ts = ts.to(device)
 
-            nn_output = wave_mdl([cc, tc, [nr], torch.tensor([config['settings']['bandwidth']])])
+            nn_output = wave_mdl([cc[0, ...].unsqueeze(0), tc[0, ...].unsqueeze(0), torch.tensor([nr]), torch.tensor([[config['settings']['bandwidth']]])])
             nn_numpy = nn_output[0, 0, ...].cpu().data.numpy()
 
             waves = wave_mdl.getWaveform(nn_output=nn_output).cpu().data.numpy()
@@ -220,8 +214,8 @@ if __name__ == '__main__':
             plt.legend(['Waveform 1', 'Waveform 2', 'Cross Correlation', 'Linear Chirp'])
             plt.xlabel('Lag')
 
-            waves = wave_mdl.getWaveform(cc, tc, [nr], torch.tensor([config['settings']['bandwidth']]),
-                                         scale=True, custom_fft_sz=8192).cpu().data.numpy()
+            # waves = wave_mdl.getWaveform(cc, tc, torch.tensor([nr]), torch.tensor([[config['settings']['bandwidth']]]),
+            #                              scale=True, custom_fft_sz=8192).cpu().data.numpy()
 
             plt.figure('Time Series')
             wave1 = waves.copy()

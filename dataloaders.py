@@ -147,8 +147,6 @@ class BaseModule(LightningDataModule):
             train_batch_size: int = 8,
             val_batch_size: int = 8,
             pin_memory: bool = False,
-            train_split: int = 1024,
-            val_split: int = 32,
             single_example: bool = False,
             device: str = 'cpu',
             **kwargs,
@@ -161,8 +159,6 @@ class BaseModule(LightningDataModule):
         self.val_batch_size = val_batch_size
         self.num_workers = 0  #cpu_count() // 2
         self.pin_memory = pin_memory
-        self.train_split = train_split
-        self.val_split = val_split
         self.single_example = single_example
         self.device = device
 
@@ -215,7 +211,7 @@ class WaveDataModule(BaseModule):
             max_pulse_length: int = 2,
             **kwargs,
     ):
-        super().__init__(train_batch_size, val_batch_size, pin_memory, 1, 1, single_example, device)
+        super().__init__(train_batch_size, val_batch_size, pin_memory, single_example, device)
 
         self.latent_dim = latent_dim
         self.data_dir = data_path
@@ -244,13 +240,11 @@ class RCSModule(BaseModule):
             train_batch_size: int = 8,
             val_batch_size: int = 8,
             pin_memory: bool = False,
-            train_split: int = 1024,
-            val_split: int = 32,
             single_example: bool = False,
             device: str = 'cpu',
             **kwargs,
     ):
-        super().__init__(train_batch_size, val_batch_size, pin_memory, train_split, val_split, single_example, device)
+        super().__init__(train_batch_size, val_batch_size, pin_memory, single_example, device)
 
         self.dataset_size = dataset_size
 
@@ -269,13 +263,11 @@ class EncoderModule(BaseModule):
             train_batch_size: int = 8,
             val_batch_size: int = 8,
             pin_memory: bool = False,
-            train_split: int = 1024,
-            val_split: int = 32,
             single_example: bool = False,
             device: str = 'cpu',
             **kwargs,
     ):
-        super().__init__(train_batch_size, val_batch_size, pin_memory, train_split, val_split, single_example, device)
+        super().__init__(train_batch_size, val_batch_size, pin_memory, single_example, device)
 
         self.dataset_size = dataset_size
         self.data_path = data_path

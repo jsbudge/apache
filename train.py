@@ -20,7 +20,7 @@ with open('./vae_config.yaml') as y:
 exp_params = param_dict['exp_params']
 # hparams = make_dataclass('hparams', param_dict.items())(**param_dict)
 
-data = EncoderModule(fft_len=param_dict['settings']['fft_len'], **param_dict["dataset_params"])
+data = EncoderModule(fft_len=param_dict['settings']['fft_len'], **exp_params["dataset_params"])
 data.setup()
 
 # Get the model, experiment, logger set up
@@ -87,10 +87,10 @@ if trainer.is_global_zero:
 
     if exp_params['transform_data']:
         print('Running data transformation of files...')
-        batch_sz = param_dict['dataset_params']['train_batch_size']
+        batch_sz = exp_params['dataset_params']['train_batch_size']
         fnmes, fdata = data.train_dataset.get_filedata(concat=False)
         save_path = param_dict['generate_data_settings']['local_path'] if (
-            param_dict)['generate_data_settings']['use_local_storage'] else param_dict['dataset_params']['data_path']
+            param_dict)['generate_data_settings']['use_local_storage'] else exp_params['dataset_params']['data_path']
         for fn, dt in zip(fnmes, fdata):
             with open(
                     f'{save_path}/{fn.split("/")[-1].split(".")[0]}.enc', 'ab') as writer:
