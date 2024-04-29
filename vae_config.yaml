@@ -34,16 +34,16 @@ generate_data_settings:
 
 # This is for setting up training of autoencoder
 exp_params:
-  LR: 0.0001
+  LR: 0.00001
   weight_decay: 0.01
-  scheduler_gamma: 0.16
-  betas: [ .29, .86 ]
-  step_size: 5
-  swa_start: .9
+  scheduler_gamma: 0.8
+  betas: [.9, .9]
+  step_size: 1
+  swa_start: .5
   log_epoch: 10
   save_model: True
   transform_data: False
-  warm_start: True
+  warm_start: False
   loss_landscape: False
   output_images: False
   model_type: Encoder
@@ -110,7 +110,7 @@ model_params:
   in_channels: 2
   latent_dim: 512
   max_capacity: 25
-  channel_sz: 4
+  channel_sz: 6
   capacity_max_iter: 10000
   reg_weight: 7840.  # MMD weight
   kernel_type: 'rbf'
