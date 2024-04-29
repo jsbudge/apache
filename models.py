@@ -743,17 +743,14 @@ class Encoder(FlatModule):
             ch0 = channel_sz * (2**n)
             ch1 = channel_sz * (2**(n + 1))
             self.encoder_reduce.append(nn.Sequential(
-                nn.BatchNorm1d(ch0),
                 nn.Conv1d(ch0, ch1, 4, 2, 1),
                 nn.GELU(),
             ))
             self.encoder_conv.append(nn.Sequential(
                 Block1d(ch0),
-                Block1d(ch0),
-                Block1d(ch0),
             ))
             self.encoder_attention.append(nn.Sequential(
-                Block1d(ch0),
+                nn.Conv1d(ch0, ch0, 7, 1, 3),
                 nn.Softmax(dim=1),
             ))
         self.encoder_squash = nn.Sequential(
@@ -766,7 +763,7 @@ class Encoder(FlatModule):
 
         # Decoder
         self.z_fc = nn.Linear(latent_dim, fft_len // fft_scaling)
-        self.decoder_inflate = nn.Conv1d(1, channel_sz * (2**levels), 3, 1, 1)
+        self.decoder_inflate = nn.ConvTranspose1d(1, channel_sz * (2**levels), 3, 1, 1)
         self.decoder_reduce = nn.ModuleList()
         self.decoder_conv = nn.ModuleList()
         self.decoder_attention = nn.ModuleList()
@@ -774,22 +771,21 @@ class Encoder(FlatModule):
             ch0 = channel_sz * (2**n)
             ch1 = channel_sz * (2 ** (n - 1))
             self.decoder_reduce.append(nn.Sequential(
-                nn.BatchNorm1d(ch0),
                 nn.ConvTranspose1d(ch0, ch1, 4, 2, 1),
                 nn.GELU(),
             ))
             self.decoder_conv.append(nn.Sequential(
                 Block1d(ch0, transpose=True),
-                Block1d(ch0, transpose=True),
-                Block1d(ch0, transpose=True),
             ))
             self.decoder_attention.append(nn.Sequential(
-                Block1d(ch0, transpose=True),
+                nn.ConvTranspose1d(ch0, ch0, 7, 1, 3),
                 nn.Softmax(dim=1),
             ))
-        self.decoder_output = nn.Conv1d(channel_sz, in_channels, 3, 1, 1)
+        self.decoder_output = nn.Sequential(
+            nn.ConvTranspose1d(channel_sz, channel_sz, 3, 1, 1),
+            nn.Conv1d(channel_sz, in_channels, 1, 1, 0),
+        )
 
-        self.loss_function = nn.MSELoss()
         self.example_input_array = torch.randn((1, 2, self.fft_len))
 
     def encode(self, inp: Tensor) -> Tensor:
@@ -815,6 +811,9 @@ class Encoder(FlatModule):
     def forward(self, inp: Tensor, **kwargs) -> Tensor:
         z = self.encode(inp)
         return self.decode(z)
+
+    def loss_function(self, y, y_pred):
+        return tf.mse_loss(y, y_pred)
 
     def on_fit_start(self) -> None:
         if self.trainer.is_global_zero and self.logger:

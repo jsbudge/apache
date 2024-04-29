@@ -12,7 +12,7 @@ import numpy as np
 torch.set_float32_matmul_precision('medium')
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 # seed_everything(np.random.randint(1, 2048), workers=True)
-seed_everything(8, workers=True)
+seed_everything(16, workers=True)
 
 with open('./vae_config.yaml') as y:
     param_dict = yaml.safe_load(y.read())
@@ -42,8 +42,8 @@ expected_lr = max((exp_params['LR'] *
                    exp_params['scheduler_gamma'] ** (exp_params['max_epochs'] *
                                                      exp_params['swa_start'])), 1e-9)
 trainer = Trainer(logger=logger, max_epochs=exp_params['max_epochs'],
-                  log_every_n_steps=exp_params['log_epoch'],
-                  strategy='ddp', devices=1, callbacks=
+                  log_every_n_steps=exp_params['log_epoch'], gradient_clip_val=.5,
+                  strategy='ddp', devices=2, callbacks=
                   [EarlyStopping(monitor='val_loss', patience=exp_params['patience'],
                                  check_finite=True),
                    StochasticWeightAveraging(swa_lrs=expected_lr, swa_epoch_start=exp_params['swa_start'])])
@@ -56,8 +56,10 @@ except KeyboardInterrupt:
     if trainer.is_global_zero:
         print('Training interrupted.')
     else:
+        print('adios!')
         exit(0)
 
+model.to('cpu')
 model.eval()
 sample = data.val_dataset[0][0].data.numpy()
 recon = model(data.val_dataset[0][0].unsqueeze(0))[0].squeeze(0).data.numpy()

@@ -48,10 +48,10 @@ def objective(trial: optuna.Trial):
     param_dict['exp_params']['betas'] = [beta0, beta1]
     param_dict['exp_params']['step_size'] = step_size
 
-    param_dict['dataset_params']['train_batch_size'] = batch_sz
-    param_dict['dataset_params']['val_batch_size'] = batch_sz
+    param_dict['exp_params']['dataset_params']['train_batch_size'] = batch_sz
+    param_dict['exp_params']['dataset_params']['val_batch_size'] = batch_sz
 
-    data = EncoderModule(fft_len=param_dict['settings']['fft_len'], **param_dict["dataset_params"])
+    data = EncoderModule(fft_len=param_dict['settings']['fft_len'], **param_dict['exp_params']["dataset_params"])
     data.setup()
     param_dict['exp_params']['is_tuning'] = True
 
