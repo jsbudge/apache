@@ -1,3 +1,4 @@
+import contextlib
 import pickle
 
 import numpy as np
@@ -5,8 +6,8 @@ import torch
 from numba.cuda.random import create_xoroshiro128p_states
 
 from apache_helper import ApachePlatform
-from generate_trainingdata import getVAECov
-from models import InfoVAE, BetaVAE, WAE_MMD
+from generate_trainingdata import getVAECov, formatTargetClutterData
+from models import InfoVAE, BetaVAE, WAE_MMD, Encoder
 from simulib.simulation_functions import getElevation, llh2enu, findPowerOf2, db, enu2llh, azelToVec, genPulse
 from data_converter.aps_io import loadCorrectionGPSData, loadGPSData, loadGimbalData
 from simulib import getMaxThreads, backproject, genRangeProfile, applyRadiationPatternCPU
@@ -41,14 +42,11 @@ def getFootprint(pos, az, el, az_bw, el_bw, near_range, far_range):
     return np.array(footprint)
 
 
-def reloadWaveforms(model, device, wave_mdl, pulse_data, mfilt, rollback, nsam, nr, fft_len, tc_d, train_transforms,
-                    rps,
-                    cpi_len, bwidth):
-    _, cov_dt = getVAECov(pulse_data, mfilt, rollback, nsam, fft_len)
-    dt = train_transforms(cov_dt.astype(np.float32)).unsqueeze(0)
-    waves = wave_mdl.getWaveform(model.forward(dt.to(device))[2].to(wave_mdl.device),
-                                 model.forward(tc_d)[2].to(wave_mdl.device), pulse_length=[nr], bandwidth=bwidth,
-                                 scale=True, custom_fft_sz=fft_len).data.numpy().squeeze(0) * 1e4
+def reloadWaveforms(wave_mdl, pulse_data, nr, fft_len, tc_d, rps, cpi_len, bwidth):
+    pdata = torch.tensor(formatTargetClutterData(pulse_data, fft_len), device=wave_mdl.device)
+    nn_output = wave_mdl([wave_mdl.decoder.encode(pdata).to(wave_mdl.device).unsqueeze(0), tc_d.to(wave_mdl.device).unsqueeze(0),
+                          torch.tensor([nr]), torch.tensor([[bwidth]])])
+    waves = wave_mdl.getWaveform(nn_output=nn_output).cpu().data.numpy().squeeze(0) * 1e4
     _, chirps, mfilts = genChirpAndMatchedFilters(waves, rps, bwidth, fs, fc, fft_len, cpi_len)
     return chirps, mfilts
 
@@ -144,7 +142,7 @@ else:
     nsam, nr, ranges, ranges_sampled, near_range_s, granges, fft_len, up_fft_len = (
         rpi.getRadarParams(u.mean(), settings['plp'], settings['upsample']))
     print(f'Plane slant range is {np.linalg.norm(plane_pos - rpi.pos(rpi.gpst), axis=1).mean()}')
-wave_fft_len = wave_config['generate_data_settings']['fft_sz']
+wave_fft_len = wave_config['settings']['fft_len']
 rbins_gpu = cupy.array(ranges, dtype=np.float64)
 
 plat_e, plat_n, plat_u = rpi.pos(rpi.gpst).T
@@ -192,27 +190,22 @@ if sim_settings['use_sdr_waveform']:
 else:
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     mfilt = sdr.genMatchedFilter(0, fft_len=fft_len)
-    rollback = -int(np.round(sdr[0].baseband_fc / (sdr[0].fs / fft_len)))
-    # Get the model, experiment, logger set up
-    if wave_config['exp_params']['model_type'] == 'InfoVAE':
-        model = InfoVAE(**wave_config['model_params'])
-    elif wave_config['exp_params']['model_type'] == 'WAE_MMD':
-        model = WAE_MMD(**wave_config['model_params'])
-    else:
-        model = BetaVAE(**wave_config['model_params'])
-    train_transforms = getTrainTransforms(wave_config['dataset_params']['var'])
-    model.load_state_dict(torch.load('./model/inference_model.state'))
-    model.eval()  # Set to inference mode
-    model.to(device)
+    print('Setting up decoder...')
+    decoder = Encoder(**wave_config['model_params'], fft_len=wave_config['settings']['fft_len'],
+                      params=wave_config['exp_params'])
+    with contextlib.suppress(RuntimeError):
+        decoder.load_state_dict(torch.load('./model/inference_model.state'))
+    decoder.requires_grad = False
+    decoder.eval()
 
-    tcdata = np.fromfile(f'{wave_config["dataset_params"]["data_path"]}/targets.cov', dtype=np.float32).reshape(
-        (-1, 32, 32, 2))
+    tcdata = torch.tensor(np.fromfile(f'{wave_config["dataset_params"]["data_path"]}/targets.enc', dtype=np.float32).reshape(
+        (-1, wave_config['model_params']['latent_dim'])))
 
     try:
         print(f'Wavemodel save file loading...')
         with open('./model/current_model_params.pic', 'rb') as f:
             generator_params = pickle.load(f)
-        wave_mdl = GeneratorModel(**generator_params)
+        wave_mdl = GeneratorModel(**generator_params, decoder=decoder)
         wave_mdl.load_state_dict(torch.load(generator_params['state_file']))
     except RuntimeError as e:
         print(f'Wavemodel save file does not match current structure. Re-running with new structure.\n{e}')
@@ -225,9 +218,8 @@ else:
     active_clutter = sdr.getPulses(sdr[0].frame_num[:wave_config['settings']['cpi_len']], 0)[1]
     bandwidth_model = torch.tensor(400e6, device=wave_mdl.device)
 
-    chirps, mfilts = reloadWaveforms(model, device, wave_mdl, active_clutter, mfilt, rollback, nsam, nr, fft_len,
-                                     train_transforms(tcdata[0, ...]).unsqueeze(0).to(device), train_transforms,
-                                     rps, cpi_len, bandwidth_model)
+    chirps, mfilts = reloadWaveforms(wave_mdl, active_clutter, nr, fft_len,
+                                     tcdata[0, ...], rps, cpi_len, bandwidth_model)
 
 # This replaces the ASI background with a custom image
 bg.resampleGrid(settings['origin'], settings['grid_width'], settings['grid_height'],
@@ -325,9 +317,8 @@ for tidx, ts in tqdm(enumerate(data_t), total=len(data_t)):
     tmp_len = len(ts)
     ex_chirps.append(np.array(chirps[0].get()))
     if not sim_settings['use_sdr_waveform'] and tmp_len == gap_len:
-        chirps, mfilts = reloadWaveforms(model, device, wave_mdl, active_clutter, mfilt, rollback, nsam, nr, fft_len,
-                                         train_transforms(tcdata[0, ...]).unsqueeze(0).to(device), train_transforms,
-                                         rps, cpi_len, bandwidth_model)
+        chirps, mfilts = reloadWaveforms(wave_mdl, active_clutter, nr, fft_len,
+                                     tcdata[0, ...], rps, cpi_len, bandwidth_model)
     # Pan and Tilt are shared by each channel, antennas are all facing the same way
     panrx = rpi.pan(ts)
     elrx = rpi.tilt(ts)
