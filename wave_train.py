@@ -56,8 +56,8 @@ if __name__ == '__main__':
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     # torch.cuda.empty_cache()
 
-    seed_everything(np.random.randint(1, 2048), workers=True)
-    # seed_everything(42, workers=True)
+    # seed_everything(np.random.randint(1, 2048), workers=True)
+    seed_everything(43, workers=True)
 
     with open('./vae_config.yaml', 'r') as file:
         try:
@@ -83,19 +83,17 @@ if __name__ == '__main__':
         try:
             with open('./model/current_model_params.pic', 'rb') as f:
                 generator_params = pickle.load(f)
-            wave_mdl = GeneratorModel(**generator_params)
+            wave_mdl = GeneratorModel(**generator_params, decoder=decoder)
             wave_mdl.load_state_dict(torch.load(generator_params['state_file']))
             warm_start = True
         except RuntimeError as e:
             print(f'Wavemodel save file does not match current structure. Re-running with new structure.\n{e}')
             wave_mdl = GeneratorModel(fft_sz=fft_len, decoder=decoder,
-                                      stft_win_sz=config['settings']['stft_win_sz'],
                                       clutter_latent_size=config['model_params']['latent_dim'],
                                       target_latent_size=config['model_params']['latent_dim'], n_ants=2)
     else:
         print('Initializing new wavemodel...')
         wave_mdl = GeneratorModel(fft_sz=fft_len, decoder=decoder,
-                                  stft_win_sz=config['settings']['stft_win_sz'],
                                   clutter_latent_size=config['model_params']['latent_dim'],
                                   target_latent_size=config['model_params']['latent_dim'], n_ants=2)
 
@@ -129,7 +127,8 @@ if __name__ == '__main__':
     expected_lr = max((config['wave_exp_params']['LR'] *
                    config['wave_exp_params']['scheduler_gamma']**(config['wave_exp_params']['max_epochs'] * config['wave_exp_params']['swa_start'])), 1e-9)
     trainer = Trainer(logger=logger, max_epochs=config['wave_exp_params']['max_epochs'],
-                      log_every_n_steps=config['wave_exp_params']['log_epoch'], devices=1, callbacks=
+                      strategy='ddp_find_unused_parameters_true',
+                      log_every_n_steps=config['wave_exp_params']['log_epoch'], devices=2, callbacks=
                       [EarlyStopping(monitor='loss', patience=config['wave_exp_params']['patience'],
                                      check_finite=True),
                        StochasticWeightAveraging(swa_lrs=expected_lr, swa_epoch_start=config['wave_exp_params']['swa_start'])])

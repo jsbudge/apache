@@ -731,7 +731,7 @@ class Encoder(FlatModule):
         self.params = params
         self.channel_sz = channel_sz
         self.in_channels = in_channels
-        levels = 4
+        levels = 3
         fft_scaling = 2 ** levels
 
         # Encoder
@@ -739,22 +739,18 @@ class Encoder(FlatModule):
         self.encoder_reduce = nn.ModuleList()
         self.encoder_conv = nn.ModuleList()
         self.encoder_attention = nn.ModuleList()
-        for n in range(levels):
-            ch0 = channel_sz * (2**n)
-            ch1 = channel_sz * (2**(n + 1))
+        for n in range(1, levels + 1):
+            lin_sz = fft_len // (2**n)
             self.encoder_reduce.append(nn.Sequential(
-                nn.Conv1d(ch0, ch1, 4, 2, 1),
+                nn.Conv1d(channel_sz, channel_sz, 4, 2, 1),
                 nn.GELU(),
             ))
             self.encoder_conv.append(nn.Sequential(
-                Block1d(ch0),
-            ))
-            self.encoder_attention.append(nn.Sequential(
-                nn.Conv1d(ch0, ch0, 7, 1, 3),
-                nn.Softmax(dim=1),
+                nn.Linear(lin_sz, lin_sz),
+                nn.GELU(),
             ))
         self.encoder_squash = nn.Sequential(
-            nn.Conv1d(channel_sz * (2**levels), 1, 3, 1, 1),
+            nn.Conv1d(channel_sz, 1, 3, 1, 1),
             nn.GELU(),
         )
         self.fc_z = nn.Sequential(
@@ -763,23 +759,19 @@ class Encoder(FlatModule):
 
         # Decoder
         self.z_fc = nn.Linear(latent_dim, fft_len // fft_scaling)
-        self.decoder_inflate = nn.ConvTranspose1d(1, channel_sz * (2**levels), 3, 1, 1)
+        self.decoder_inflate = nn.ConvTranspose1d(1, channel_sz, 3, 1, 1)
         self.decoder_reduce = nn.ModuleList()
         self.decoder_conv = nn.ModuleList()
         self.decoder_attention = nn.ModuleList()
         for n in range(levels, 0, -1):
-            ch0 = channel_sz * (2**n)
-            ch1 = channel_sz * (2 ** (n - 1))
+            lin_sz = fft_len // (2**n)
             self.decoder_reduce.append(nn.Sequential(
-                nn.ConvTranspose1d(ch0, ch1, 4, 2, 1),
+                nn.ConvTranspose1d(channel_sz, channel_sz, 4, 2, 1),
                 nn.GELU(),
             ))
             self.decoder_conv.append(nn.Sequential(
-                Block1d(ch0, transpose=True),
-            ))
-            self.decoder_attention.append(nn.Sequential(
-                nn.ConvTranspose1d(ch0, ch0, 7, 1, 3),
-                nn.Softmax(dim=1),
+                nn.Linear(lin_sz, lin_sz),
+                nn.GELU(),
             ))
         self.decoder_output = nn.Sequential(
             nn.ConvTranspose1d(channel_sz, channel_sz, 3, 1, 1),
@@ -796,16 +788,16 @@ class Encoder(FlatModule):
         :return: (Tensor) List of latent codes
         """
         inp = self.encoder_inflate(inp)
-        for att, conv, red in zip(self.encoder_attention, self.encoder_conv, self.encoder_reduce):
-            inp = red(conv(inp) * att(inp))
+        for conv, red in zip(self.encoder_conv, self.encoder_reduce):
+            inp = conv(red(inp))
         inp = self.encoder_squash(inp).squeeze(1)
         return self.fc_z(inp)
 
     def decode(self, z: Tensor) -> Tensor:
         result = self.z_fc(z).unsqueeze(1)
         result = self.decoder_inflate(result)
-        for att, conv, red in zip(self.decoder_attention, self.decoder_conv, self.decoder_reduce):
-            result = red(conv(result) * att(result))
+        for conv, red in zip(self.decoder_conv, self.decoder_reduce):
+            result = red(conv(result))
         return self.decoder_output(result)
 
     def forward(self, inp: Tensor, **kwargs) -> Tensor:

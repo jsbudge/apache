@@ -34,22 +34,22 @@ generate_data_settings:
 
 # This is for setting up training of autoencoder
 exp_params:
-  LR: 0.00001
+  LR: 0.001
   weight_decay: 0.01
   scheduler_gamma: 0.8
-  betas: [.9, .9]
+  betas: [.07, .9]
   step_size: 1
   swa_start: .5
   log_epoch: 10
   save_model: True
   transform_data: False
-  warm_start: False
+  warm_start: True
   loss_landscape: False
   output_images: False
   model_type: Encoder
   patience: 150
   is_tuning: False
-  max_epochs: 15
+  max_epochs: 10
   dataset_params:
     data_path: ./data
     train_batch_size: 256
@@ -65,7 +65,7 @@ exp_params:
 
 # For training of wavemodel
 wave_exp_params:
-  LR: 0.00001
+  LR: 0.0001
   weight_decay: 0.1
   scheduler_gamma: 0.9
   swa_start: .6
@@ -74,11 +74,11 @@ wave_exp_params:
   step_size: 4
   log_epoch: 10
   is_tuning: False
-  save_model: False
+  save_model: True
   loss_landscape: False
   patience: 15
   bandwidth: 400000000.
-  max_epochs: 10
+  max_epochs: 100
   dataset_params:
     data_path: ./data
     train_batch_size: 64
@@ -108,9 +108,9 @@ rcs_exp_params:
 # This refers to the autoencoder compression params
 model_params:
   in_channels: 2
-  latent_dim: 512
+  latent_dim: 684
   max_capacity: 25
-  channel_sz: 6
+  channel_sz: 2
   capacity_max_iter: 10000
   reg_weight: 7840.  # MMD weight
   kernel_type: 'rbf'

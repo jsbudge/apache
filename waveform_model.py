@@ -77,7 +77,6 @@ class FlatModule(LightningModule):
 class GeneratorModel(FlatModule):
     def __init__(self,
                  fft_sz: int,
-                 stft_win_sz: int,
                  clutter_latent_size: int,
                  target_latent_size: int,
                  n_ants: int,
@@ -95,13 +94,15 @@ class GeneratorModel(FlatModule):
         self.fs = fs
         self.decoder = decoder
 
-        self.transformer = nn.Transformer(clutter_latent_size, num_decoder_layers=6, num_encoder_layers=6,
+        self.transformer = nn.Transformer(clutter_latent_size, nhead=12, num_decoder_layers=6, num_encoder_layers=6,
                                           activation='gelu', batch_first=True)
 
         self.expand_to_ants = nn.Sequential(
-            nn.BatchNorm1d(1),
+            nn.Conv1d(1, channel_sz, 3, 1, 1),
+            nn.GELU(),
+            nn.BatchNorm1d(channel_sz),
             nn.Linear(clutter_latent_size, clutter_latent_size),
-            nn.Conv1d(1, self.n_ants, 1, 1, 0),
+            nn.Conv1d(channel_sz, self.n_ants, 1, 1, 0),
         )
         self.expand_to_ants.apply(init_weights)
         self.fourier = nn.Sequential(
@@ -117,8 +118,7 @@ class GeneratorModel(FlatModule):
         clutter, target, pulse_length, bandwidth = inp
         params = self.fourier(torch.cat([pulse_length.view(-1, 1), bandwidth], dim=1)).view(
             -1, 1, self.clutter_latent_size)
-        x = self.transformer(clutter, target.unsqueeze(1))
-        x = x + params
+        x = self.transformer(clutter + params, target.unsqueeze(1))
         x = self.expand_to_ants(x)
 
         return x
@@ -141,7 +141,7 @@ class GeneratorModel(FlatModule):
 
         # Initialize losses to zero and place on correct device
         sidelobe_loss = torch.tensor(0., device=dev, requires_grad=False)
-        bandwidth_loss = torch.tensor(0., device=dev, requires_grad=False)
+        bandwidth_loss = torch.tensor(0., device=dev)
         target_loss = torch.tensor(0., device=dev)
         mainlobe_loss = torch.tensor(0., device=dev, requires_grad=False)
         ortho_loss = torch.tensor(0., device=dev)
@@ -211,7 +211,7 @@ class GeneratorModel(FlatModule):
     def save(self, fpath, model_name='current'):
         torch.save(self.state_dict(), f'{fpath}/{model_name}_wave_model.state')
         with open(f'{fpath}/{model_name}_model_params.pic', 'wb') as f:
-            pickle.dump({'fft_sz': self.fft_sz, 'stft_win_sz': self.stft_win_sz,
+            pickle.dump({'fft_sz': self.fft_sz,
                          'clutter_latent_size': self.clutter_latent_size,
                          'target_latent_size': self.target_latent_size, 'n_ants': self.n_ants,
                          'state_file': f'{fpath}/{model_name}_wave_model.state'}, f)

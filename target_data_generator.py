@@ -16,14 +16,13 @@ from data_converter.SDRParsing import load
 # pio.renderers.default = 'svg'
 pio.renderers.default = 'browser'
 
-
 c0 = 299792458.0
 TAC = 125e6
 DTR = np.pi / 180
 inch_to_m = .0254
 
 if __name__ == '__main__':
-    
+
     with open('./vae_config.yaml', 'r') as file:
         try:
             config = yaml.safe_load(file)
@@ -74,6 +73,8 @@ if __name__ == '__main__':
     bg, rp = getRadarAndEnvironment(sdr, channel)
     print('Done.')
 
+    min_poss = -config['exp_params']['dataset_params']['mu'] / config['exp_params']['dataset_params']['var']
+
     # cust_grid = np.zeros_like(bg.refgrid)
     # cust_grid[100, 100] = 10
     # bg._refgrid = cust_grid
@@ -81,21 +82,25 @@ if __name__ == '__main__':
         rp.getRadarParams(fdelay, plp, upsample))
     pulse = np.fft.fft(sdr[0].cal_chirp, fft_len)
     mfilt = sdr.genMatchedFilter(0, fft_len=fft_len)
-    for idx, tpsd in enumerate(genSimPulseData(rp, bg, fdelay, plp, upsample, grid_width, grid_height,
-                                               pts_per_m, cpi_len, a_chirp=pulse, a_sdr=sdr, a_noise_level=-300,
-                                               a_rotate_grid=rotate_grid, a_fft_len=fft_len, a_debug=debug, a_origin=origin)):
+    for tpsd in genSimPulseData(rp, bg, fdelay, plp, upsample, grid_width, grid_height,
+                                pts_per_m, cpi_len, a_chirp=pulse, a_sdr=sdr, a_noise_level=-300,
+                                a_rotate_grid=rotate_grid, a_fft_len=fft_len, a_debug=debug, a_origin=origin):
+        tpsd *= 4000.
         p_muscale = np.repeat(config['exp_params']['dataset_params']['mu'] / abs(tpsd.mean(axis=0)), 2).astype(
             np.float32)
         p_stdscale = np.repeat(config['exp_params']['dataset_params']['var'] / abs(tpsd.std(axis=0)), 2).astype(
             np.float32)
         tpsd = (tpsd - config['exp_params']['dataset_params']['mu']) / config['exp_params']['dataset_params']['var']
         inp_data = formatTargetClutterData(tpsd.T, fft_len).astype(np.float32)
-        enc_data = decoder.encode(torch.tensor(inp_data).to(decoder.device)).cpu().data.numpy()
-        inp_data = np.concatenate((inp_data, p_muscale.reshape(-1, 2, 1), p_stdscale.reshape(-1, 2, 1)), axis=2)
+        if p_muscale.mean() < 2.:
+            enc_data = decoder.encode(torch.tensor(inp_data).to(decoder.device)).cpu().data.numpy()
+            inp_data = np.concatenate((inp_data, p_muscale.reshape(-1, 2, 1), p_stdscale.reshape(-1, 2, 1)), axis=2)
 
-        with open(
-                f'{save_path}/targets.spec', 'ab') as writer:
-            inp_data.tofile(writer)
-        with open(
-                f'{save_path}/targets.enc', 'ab') as writer:
-            enc_data.tofile(writer)
+            with open(
+                    f'{save_path}/targets.spec', 'ab') as writer:
+                inp_data.tofile(writer)
+            with open(
+                    f'{save_path}/targets.enc', 'ab') as writer:
+                enc_data.tofile(writer)
+        else:
+            print(f'{inp_data.mean()}')
