@@ -6,6 +6,7 @@ from torch import nn
 from pytorch_lightning import LightningModule
 from torch.nn import functional as F
 from torch.distributions import Normal
+from simulib import genPulse
 
 Tensor = TypeVar('torch.tensor')
 
@@ -31,8 +32,8 @@ def mu_2d(img: torch.Tensor, sigma: float) -> tuple[torch.Tensor, torch.Tensor]:
 def std_2d(img: torch.Tensor, sigma: float) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     # First, std_x and std_y
     mu_x, mu_y = mu_2d(img, sigma)
-    std_x = (img - mu_x)**2
-    std_y = (img - mu_y)**2
+    std_x = (img - mu_x) ** 2
+    std_y = (img - mu_y) ** 2
     std_x, std_xy = mu_2d(std_x, sigma)
     std_y, _ = mu_2d(std_y, sigma)
     std_x = torch.sqrt(std_x)
@@ -52,7 +53,7 @@ class FourierFeature(LightningModule):
         out = torch.zeros((x.shape[0], self.out_features), device=self.device)
         for f in range(self.in_features):
             for n in range(self.n_fourier):
-                out[:, f * self.in_features + n] = torch.sin(2 * np.pi * (2**n) * x[:, f])
+                out[:, f * self.in_features + n] = torch.sin(2 * np.pi * (2 ** n) * x[:, f])
         return out
 
 
@@ -293,6 +294,22 @@ class AttentionConv(LightningModule):
         return out
 
 
+class BandwidthEncoding(LightningModule):
+
+    def __init__(self, fs, fft_len, *args: Any, **kwargs: Any):
+        super().__init__(*args, **kwargs)
+        self.ramp = np.linspace(0, 1, 10)
+        self.fs = fs
+        self.fft_len = fft_len
+
+    def forward(self, encoder, bandwidth, pulse_length):
+        info = torch.tensor(np.array([np.fft.fft(genPulse(self.ramp, self.ramp, p, self.fs, 0, b), self.fft_len) for p, b in
+                                      zip(pulse_length.to('cpu'), bandwidth.to('cpu'))]), dtype=torch.complex64, device=self.device)
+        info = torch.view_as_real(torch.fft.fftshift(info))
+        info = info.swapaxes(1, 2)
+        return encoder.encode(info)
+
+
 class Block2d(LightningModule):
 
     def __init__(self, channel_sz):
@@ -346,8 +363,6 @@ class Block1d(LightningModule):
 
     def forward(self, x):
         return self.block(x)
-
-
 
 
 """

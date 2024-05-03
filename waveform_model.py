@@ -2,18 +2,11 @@ import contextlib
 import pickle
 from typing import Optional, Union, Tuple, Dict
 import torch
-import yaml
-from lightning_fabric import seed_everything
-from pytorch_lightning.callbacks import EarlyStopping, StochasticWeightAveraging
-from pytorch_lightning.utilities.types import STEP_OUTPUT, OptimizerLRScheduler
-from torch import nn, Tensor, optim
-from pytorch_lightning import LightningModule, Trainer
+from torch import nn, Tensor
+from pytorch_lightning import LightningModule
 from torch.nn import functional as nn_func
-from torchaudio.functional import inverse_spectrogram
-from numpy import log2, ceil
 from torchvision import transforms
-from scipy.signal import istft
-from layers import FourierFeature
+from layers import FourierFeature, BandwidthEncoding
 
 
 def getTrainTransforms(var):
@@ -94,7 +87,7 @@ class GeneratorModel(FlatModule):
         self.fs = fs
         self.decoder = decoder
 
-        self.transformer = nn.Transformer(clutter_latent_size, nhead=12, num_decoder_layers=6, num_encoder_layers=6,
+        self.transformer = nn.Transformer(clutter_latent_size, nhead=12, num_decoder_layers=7, num_encoder_layers=7,
                                           activation='gelu', batch_first=True)
 
         self.expand_to_ants = nn.Sequential(
@@ -111,15 +104,18 @@ class GeneratorModel(FlatModule):
             nn.Tanh(),
         )
 
+        self.inject_bw = BandwidthEncoding(self.fs, self.fft_sz)
+
         self.example_input_array = (torch.zeros((1, 32, clutter_latent_size)), torch.zeros((1, target_latent_size)),
                                     torch.tensor([1250]), torch.tensor(400e6))
 
     def forward(self, inp: list) -> torch.tensor:
         clutter, target, pulse_length, bandwidth = inp
-        params = self.fourier(torch.cat([pulse_length.view(-1, 1), bandwidth], dim=1)).view(
+        bw_params = self.fourier(torch.cat([pulse_length.view(-1, 1), bandwidth], dim=1)).view(
             -1, 1, self.clutter_latent_size)
-        x = self.transformer(clutter + params, target.unsqueeze(1))
-        x = self.expand_to_ants(x)
+        params = self.inject_bw(self.decoder, bandwidth, pulse_length).unsqueeze(1)
+        x = self.transformer(clutter, target.unsqueeze(1) + bw_params)
+        x = self.expand_to_ants(x + params)
 
         return x
 

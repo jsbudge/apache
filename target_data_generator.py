@@ -85,7 +85,8 @@ if __name__ == '__main__':
     for tpsd in genSimPulseData(rp, bg, fdelay, plp, upsample, grid_width, grid_height,
                                 pts_per_m, cpi_len, a_chirp=pulse, a_sdr=sdr, a_noise_level=-300,
                                 a_rotate_grid=rotate_grid, a_fft_len=fft_len, a_debug=debug, a_origin=origin):
-        tpsd *= 4000.
+        tpsd = tpsd * mfilt[:, None]
+        # tpsd *= 4000.
         p_muscale = np.repeat(config['exp_params']['dataset_params']['mu'] / abs(tpsd.mean(axis=0)), 2).astype(
             np.float32)
         p_stdscale = np.repeat(config['exp_params']['dataset_params']['var'] / abs(tpsd.std(axis=0)), 2).astype(

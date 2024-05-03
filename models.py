@@ -431,7 +431,7 @@ class InfoVAE(BaseVAE):
         Computes the Inverse Multi-Quadratics Kernel between x1 and x2,
         given by
 
-                k(x_1, x_2) = \sum \frac{C}{C + \|x_1 - x_2 \|^2}
+                k(x_1, x_2) = sum \frac{C}{C + |x_1 - x_2 |^2}
         :param x1: (Tensor)
         :param x2: (Tensor)
         :param eps: (Float)
@@ -534,7 +534,7 @@ class WAE_MMD(BaseVAE):
                     1,
                 ),
                 nn.GELU(),
-                nn.Linear(fft_len // (2**n), fft_len // (2**n)),
+                nn.Linear(fft_len // (2 ** n), fft_len // (2 ** n)),
                 nn.GELU(),
             )
             for n in range(1, levels + 1)
@@ -558,19 +558,19 @@ class WAE_MMD(BaseVAE):
         )
         self.decoder_reduce.apply(init_weights)
         env = [
-            nn.Sequential(
-                nn.GELU(),
-                nn.ConvTranspose1d(channel_sz, channel_sz, 1, 1, 0),
-            )
-        ] + [
-            nn.Sequential(
-                nn.GELU(),
-                nn.Linear(fft_len // (2 ** n), fft_len // (2 ** n)),
-                nn.GELU(),
-                nn.ConvTranspose1d(channel_sz, channel_sz, 4, 2, 1),
-            )
-            for n in range(levels, 0, -1)
-        ]
+                  nn.Sequential(
+                      nn.GELU(),
+                      nn.ConvTranspose1d(channel_sz, channel_sz, 1, 1, 0),
+                  )
+              ] + [
+                  nn.Sequential(
+                      nn.GELU(),
+                      nn.Linear(fft_len // (2 ** n), fft_len // (2 ** n)),
+                      nn.GELU(),
+                      nn.ConvTranspose1d(channel_sz, channel_sz, 4, 2, 1),
+                  )
+                  for n in range(levels, 0, -1)
+              ]
         self.envelope_decoder = nn.Sequential(*env)
         self.envelope_decoder.apply(init_weights)
         self.decoder_output = nn.Conv1d(channel_sz, in_channels, 1, 1, 0)
@@ -740,7 +740,7 @@ class Encoder(FlatModule):
         self.encoder_conv = nn.ModuleList()
         self.encoder_attention = nn.ModuleList()
         for n in range(1, levels + 1):
-            lin_sz = fft_len // (2**n)
+            lin_sz = fft_len // (2 ** n)
             self.encoder_reduce.append(nn.Sequential(
                 nn.Conv1d(channel_sz, channel_sz, 4, 2, 1),
                 nn.GELU(),
@@ -764,7 +764,7 @@ class Encoder(FlatModule):
         self.decoder_conv = nn.ModuleList()
         self.decoder_attention = nn.ModuleList()
         for n in range(levels, 0, -1):
-            lin_sz = fft_len // (2**n)
+            lin_sz = fft_len // (2 ** n)
             self.decoder_reduce.append(nn.Sequential(
                 nn.ConvTranspose1d(channel_sz, channel_sz, 4, 2, 1),
                 nn.GELU(),
