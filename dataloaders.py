@@ -5,7 +5,6 @@ import yaml
 from pytorch_lightning import LightningDataModule
 from torch.utils.data import DataLoader, Dataset
 import torch
-from torchdata.datapipes.iter import FileLister, FileOpener
 from torchvision import transforms
 from pathlib import Path
 import numpy as np

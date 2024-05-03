@@ -38,7 +38,7 @@ exp_params:
   weight_decay: 0.01
   scheduler_gamma: 0.8
   betas: [.07, .9]
-  step_size: 1
+  step_size: 10
   swa_start: .5
   log_epoch: 10
   save_model: True
@@ -49,7 +49,7 @@ exp_params:
   model_type: Encoder
   patience: 150
   is_tuning: False
-  max_epochs: 10
+  max_epochs: 40
   dataset_params:
     data_path: ./data
     train_batch_size: 256
