@@ -3,10 +3,79 @@ import os
 import torch
 from torch import optim, Tensor
 from models import BaseVAE
-from typing import TypeVar
+from typing import TypeVar, Union, List
 import pytorch_lightning as pl
 from pathlib import Path
 import torchvision.utils as vutils
+from torch.nn import functional as nn_func
+
+
+class FAMO:
+    """
+    Fast Adaptive Multitask Optimization.
+    """
+    prev_loss: float = 0.
+
+    def __init__(
+            self,
+            n_tasks: int,
+            device: torch.device,
+            gamma: float = 0.01,  # the regularization coefficient
+            w_lr: float = 0.025,  # the learning rate of the task logits
+            max_norm: float = 1.0,  # the maximum gradient norm
+    ):
+        self.min_losses = torch.zeros(n_tasks).to(device)
+        self.w = torch.tensor([0.0] * n_tasks, device=device, requires_grad=True)
+        self.w_opt = torch.optim.Adam([self.w], lr=w_lr, weight_decay=gamma)
+        self.max_norm = max_norm
+        self.n_tasks = n_tasks
+        self.device = device
+
+    def set_min_losses(self, losses):
+        self.min_losses = losses
+
+    def get_weighted_loss(self, losses):
+        self.prev_loss = losses
+        z = nn_func.softmax(self.w, -1)
+        D = losses - self.min_losses + 1e-8
+        c = (z / D).sum().detach()
+        return (D.log() * z / c).sum()
+
+    def update(self, curr_loss):
+        delta = (self.prev_loss - self.min_losses + 1e-8).log() - \
+                (curr_loss - self.min_losses + 1e-8).log()
+        with torch.enable_grad():
+            d = torch.autograd.grad(nn_func.softmax(self.w, -1),
+                                    self.w,
+                                    grad_outputs=delta.detach())[0]
+        self.w_opt.zero_grad()
+        self.w.grad = d
+        self.w_opt.step()
+
+    def backward(
+            self,
+            losses: torch.Tensor,
+            shared_parameters: Union[
+                List[torch.nn.parameter.Parameter], torch.Tensor
+            ] = None,
+    ) -> Union[torch.Tensor, None]:
+        """
+
+        Parameters
+        ----------
+        losses :
+        shared_parameters :
+        task_specific_parameters :
+        last_shared_parameters : parameters of last shared layer/block
+        Returns
+        -------
+        Loss, extra outputs
+        """
+        loss = self.get_weighted_loss(losses=losses)
+        loss.backward()
+        if self.max_norm > 0 and shared_parameters is not None:
+            torch.nn.utils.clip_grad_norm_(shared_parameters, self.max_norm)
+        return loss
 
 
 class VAExperiment(pl.LightningModule):
@@ -142,18 +211,39 @@ class GeneratorExperiment(pl.LightningModule):
         self.params = params
         self.hold_graph = False
         self.optim_path = []
+        # self.famo = FAMO(n_tasks=4, device='cpu')
         if 'retain_first_backpass' in self.params:
             self.hold_graph = self.params['retain_first_backpass']
+
+        # Set automatic optimization to false for FAMO
+        self.automatic_optimization = False
+        self.example_input_array = wave_model.example_input_array
 
     def forward(self, inp: list) -> Tensor:
         return self.model(inp)
 
     def training_step(self, batch, batch_idx):
+        opt = self.optimizers()
         train_loss = self.train_val_get(batch, batch_idx)
-        return train_loss['loss']
+        # loss = torch.tensor([val for key, val in train_loss.items()], device='cpu')
+        loss = torch.abs(
+            train_loss['target_loss'] * (1. + train_loss['sidelobe_loss'] + train_loss['ortho_loss']) + train_loss[
+                'bandwidth_loss'])
+        opt.zero_grad()
+        self.manual_backward(loss)
+        # self.famo.backward(loss)
+        opt.step()
+        '''with torch.no_grad():
+            new_loss = torch.tensor([val for key, val in self.train_val_get(batch, batch_idx).items()], device='cpu')
+            self.famo.update(new_loss)'''
+        self.log_dict({key: val.item() for key, val in train_loss.items()}, sync_dist=True, prog_bar=True)
+        # sch = self.lr_schedulers()
+        # sch.step()
+        # return train_loss['loss']
 
     def validation_step(self, batch, batch_idx):
-        self.train_val_get(batch, batch_idx)
+        losses = self.train_val_get(batch, batch_idx)
+        self.log_dict({key: val.item() for key, val in losses.items()}, sync_dist=True, prog_bar=True)
 
     def on_validation_end(self) -> None:
         if self.trainer.is_global_zero and not self.params['is_tuning'] and self.params['save_model']:
@@ -161,6 +251,11 @@ class GeneratorExperiment(pl.LightningModule):
             print('Model saved to disk.')
 
     def on_train_epoch_end(self) -> None:
+        sch = self.lr_schedulers()
+
+        # If the selected scheduler is a ReduceLROnPlateau scheduler.
+        if isinstance(sch, torch.optim.lr_scheduler.ReduceLROnPlateau):
+            sch.step(self.trainer.callback_metrics["target_loss"])
         if self.trainer.is_global_zero and not self.params['is_tuning'] and self.params['loss_landscape']:
             self.optim_path.append(self.model.get_flat_params())
 
@@ -173,22 +268,18 @@ class GeneratorExperiment(pl.LightningModule):
         optims = [optimizer]
         if self.params['scheduler_gamma'] is None:
             return optims
-        scheduler = optim.lr_scheduler.StepLR(optims[0], step_size=self.params['step_size'],
-                                              gamma=self.params['scheduler_gamma'])
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optims[0], cooldown=self.params['step_size'],
+                                                         factor=self.params['scheduler_gamma'])
         scheds = [scheduler]
 
         return optims, scheds
 
     def train_val_get(self, batch, batch_idx):
-        clutter_cov, target_cov, clutter_spec, target_spec, pulse_length = batch
-        self.automatic_optimization = True
+        clutter_enc, target_enc, clutter_spec, target_spec, pulse_length = batch
 
-        bandwidth = torch.ones(clutter_cov.shape[0], 1, device=self.device) * self.params['bandwidth']
-        results = self.forward([clutter_cov, target_cov, pulse_length, bandwidth])
-        train_loss = self.model.loss_function(results, clutter_spec, target_spec, bandwidth)
-
-        self.log_dict({key: val.item() for key, val in train_loss.items()}, sync_dist=True, prog_bar=True)
-        return train_loss
+        bandwidth = torch.ones(clutter_enc.shape[0], 1, device=self.device) * self.params['bandwidth']
+        results = self.forward([clutter_enc, target_enc, pulse_length, bandwidth])
+        return self.model.loss_function(results, clutter_spec, target_spec, bandwidth)
 
 
 class RCSExperiment(pl.LightningModule):

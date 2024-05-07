@@ -184,6 +184,8 @@ if __name__ == '__main__':
                 if np.diff(pnums).max() > 1:
                     continue
                 pulse_data = np.fft.fft(sdr_f.getPulses(pnums, 0)[1], fft_len, axis=0) * mfilt[:, None]
+                if sdr_f[0].baseband_fc != 0:
+                    pulse_data = np.roll(pulse_data, -int(sdr_f[0].baseband_fc / fs * fft_len), axis=0)
                 mu = abs(pulse_data[valids, :].mean())
                 std = pulse_data[valids, :].std()
                 max_std = max(max_std, std)
@@ -193,8 +195,8 @@ if __name__ == '__main__':
                 run_mu = (abs(pulse_data[valids, :].mean()) + abs_idx * run_mu) / (abs_idx + 1)
                 run_std = (abs(pulse_data[valids, :].std()) + abs_idx * run_std) / (abs_idx + 1)
                 # Get scaling parameters for storage
-                p_muscale = np.repeat(config['dataset_params']['mu'] / abs(pulse_data[valids, :].mean(axis=0)), 2).astype(np.float32)
-                p_stdscale = np.repeat(config['dataset_params']['var'] / abs(pulse_data[valids, :].std(axis=0)), 2).astype(np.float32)
+                p_muscale = np.repeat(config['exp_params']['dataset_params']['mu'] / abs(pulse_data[valids, :].mean(axis=0)), 2).astype(np.float32)
+                p_stdscale = np.repeat(config['exp_params']['dataset_params']['var'] / abs(pulse_data[valids, :].std(axis=0)), 2).astype(np.float32)
                 # Normalize each pulse against itself; each one has mu of zero and std of one
                 pulse_data = (pulse_data - abs(pulse_data[valids, :].mean(axis=0))) / pulse_data[valids, :].std(axis=0)
                 inp_data = formatTargetClutterData(pulse_data.T, fft_len).astype(np.float32)
@@ -228,7 +230,7 @@ if __name__ == '__main__':
                 np.float32)
             p_stdscale = np.repeat(config['dataset_params']['var'] / abs(tpsd.std(axis=1)), 2).astype(
                 np.float32)
-            tpsd = (tpsd - config['dataset_params']['mu']) / config['dataset_params']['var']
+            tpsd = (tpsd - config['exp_params']['dataset_params']['mu']) / config['exp_params']['dataset_params']['var']
             inp_data = formatTargetClutterData(tpsd, fft_len).astype(np.float32)
             inp_data = np.concatenate((inp_data, p_muscale.reshape(-1, 2, 1), p_stdscale.reshape(-1, 2, 1)), axis=2)
             with open(

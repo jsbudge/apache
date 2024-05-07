@@ -1,10 +1,12 @@
 import contextlib
 import pickle
-from typing import Optional, Union, Tuple, Dict
+from typing import Optional, Union, Tuple, Dict, List, Callable, Any
 import torch
+from pytorch_lightning.core.optimizer import LightningOptimizer
 from torch import nn, Tensor
 from pytorch_lightning import LightningModule
 from torch.nn import functional as nn_func
+from torch.optim import Optimizer
 from torchvision import transforms
 from layers import FourierFeature, BandwidthEncoding
 
@@ -82,48 +84,77 @@ class GeneratorModel(FlatModule):
 
         self.n_ants = n_ants
         self.fft_sz = fft_sz
+        self.reduction_sz = clutter_latent_size
         self.clutter_latent_size = clutter_latent_size
         self.target_latent_size = target_latent_size
         self.fs = fs
         self.decoder = decoder
 
-        self.transformer = nn.Transformer(clutter_latent_size, nhead=12, num_decoder_layers=7, num_encoder_layers=7,
+        self.transformer = nn.Transformer(self.reduction_sz, nhead=12, num_decoder_layers=7, num_encoder_layers=7,
                                           activation='gelu', batch_first=True)
 
+        self.mixture = nn.Sequential(
+            nn.Linear(clutter_latent_size, clutter_latent_size),
+            nn.GELU(),
+            nn.Linear(clutter_latent_size, self.reduction_sz),
+            nn.GELU()
+        )
+
+        self.locate = nn.Sequential(
+            nn.Linear(self.reduction_sz, 1),
+            nn.Softsign(),
+        )
+
         self.expand_to_ants = nn.Sequential(
-            nn.Conv1d(1, channel_sz, 3, 1, 1),
+            nn.Conv1d(2, 1, 1, 1, 0),
+            nn.GELU(),
+            nn.Linear(self.reduction_sz, clutter_latent_size),
+            nn.GELU(),
+            nn.Conv1d(1, channel_sz, 1, 1, 0),
             nn.GELU(),
             nn.BatchNorm1d(channel_sz),
-            nn.Linear(clutter_latent_size, clutter_latent_size),
+            nn.Conv1d(channel_sz, channel_sz, 1, 1, 0),
+            nn.GELU(),
+            nn.Conv1d(channel_sz, channel_sz, 1, 1, 0),
+            nn.GELU(),
+            nn.Conv1d(channel_sz, channel_sz, 1, 1, 0),
+            nn.GELU(),
             nn.Conv1d(channel_sz, self.n_ants, 1, 1, 0),
         )
         self.expand_to_ants.apply(init_weights)
+
         self.fourier = nn.Sequential(
             FourierFeature(2, 12),
-            nn.Linear(24, clutter_latent_size),
-            nn.Tanh(),
+            nn.Linear(24, self.reduction_sz),
+            nn.Softmax(dim=1),
         )
 
-        self.inject_bw = BandwidthEncoding(self.fs, self.fft_sz)
+        self.fourier_param = nn.Sequential(
+            FourierFeature(1, 24),
+            nn.Linear(24, self.reduction_sz),
+            nn.GELU(),
+        )
 
-        self.example_input_array = (torch.zeros((1, 32, clutter_latent_size)), torch.zeros((1, target_latent_size)),
-                                    torch.tensor([1250]), torch.tensor(400e6))
+        self.example_input_array = ([[torch.zeros((1, 32, clutter_latent_size)), torch.zeros((1, target_latent_size)),
+                                    torch.tensor([[1250]]), torch.tensor([[400e6]])]])
 
     def forward(self, inp: list) -> torch.tensor:
         clutter, target, pulse_length, bandwidth = inp
-        bw_params = self.fourier(torch.cat([pulse_length.view(-1, 1), bandwidth], dim=1)).view(
-            -1, 1, self.clutter_latent_size)
-        params = self.inject_bw(self.decoder, bandwidth, pulse_length).unsqueeze(1)
-        x = self.transformer(clutter, target.unsqueeze(1) + bw_params)
-        x = self.expand_to_ants(x + params)
-
-        return x
+        bw_params = self.fourier(torch.cat([pulse_length.view(-1, 1), bandwidth],
+                                           dim=1)).view(-1, 1, self.reduction_sz)
+        comp_clut = self.mixture(clutter)
+        comp_targ = self.mixture(target.unsqueeze(1))
+        x = self.transformer(comp_clut, comp_targ)
+        params = self.locate(x * bw_params).squeeze(1)
+        x = torch.cat([x, self.fourier_param(params).view(-1, 1, self.reduction_sz)], dim=1)
+        x = self.expand_to_ants(x)
+        return x, bandwidth
 
     def full_forward(self, clutter_array, target_array, pulse_length: int, bandwidth: float) -> torch.tensor:
         # Make everything into tensors and place on device
         clutter = self.decoder.encode(torch.tensor(clutter_array, dtype=torch.float32, device=self.device).unsqueeze(0))
         target = self.decoder.encode(torch.tensor(target_array, dtype=torch.float32, device=self.device).unsqueeze(0))
-        pl = torch.tensor([pulse_length], device=self.device)
+        pl = torch.tensor([[pulse_length]], device=self.device)
         bw = torch.tensor([[bandwidth]], device=self.device)
         return self.getWaveform(nn_output=self.forward([clutter, target, pl, bw])).cpu().data.numpy()
 
@@ -133,13 +164,13 @@ class GeneratorModel(FlatModule):
         n_ants = self.n_ants
 
         # Get the bandwidth loss target
-        bw_bin = ((args[3][0] / self.fs * self.fft_sz) // 2).int()
+        # bw_bin = ((args[3][0] / self.fs * self.fft_sz) // 2).int()
 
         # Initialize losses to zero and place on correct device
-        sidelobe_loss = torch.tensor(0., device=dev, requires_grad=False)
+        sidelobe_loss = torch.tensor(0., device=dev)
         bandwidth_loss = torch.tensor(0., device=dev)
         target_loss = torch.tensor(0., device=dev)
-        mainlobe_loss = torch.tensor(0., device=dev, requires_grad=False)
+        # mainlobe_loss = torch.tensor(0., device=dev)
         ortho_loss = torch.tensor(0., device=dev)
 
         # Get clutter spectrum into complex form and normalize to unit energy
@@ -177,8 +208,7 @@ class GeneratorModel(FlatModule):
             ratio[torch.logical_and(clutter_spectrum == 0, target_spectrum != 0)] = 0.
             ratio[torch.isnan(ratio)] = g1_return[torch.isnan(ratio)]
             I_k = torch.sum(torch.log(torch.nanmean(ratio, dim=1)))
-            bandwidth_loss += (torch.sum(g1_return[:, bw_bin:-bw_bin]) * (self.fs / args[3][0]) /
-                               (args[3][0] / self.fs * torch.sum(g1_return[:bw_bin] + g1_return[-bw_bin:]))).item() / self.n_ants
+            bandwidth_loss += torch.mean(torch.sqrt(torch.abs(args[0][1][:, 0] - args[3] / self.fs)))
             target_loss += I_k / (gen_waveform.shape[0] * self.n_ants)
 
             # Get the ISLR for this waveform
@@ -186,22 +216,22 @@ class GeneratorModel(FlatModule):
                               / (self.n_ants * sidelobe_func.shape[0]))
 
             # Make sure it stays within bandwidth
-            mainlobe_loss += (torch.sum(torch.nansum((sidelobe_func - sll[:, None]) > 0, dim=1) / self.fft_sz) /
-                              (self.n_ants * sidelobe_func.shape[0]))
+            # mainlobe_loss += (torch.sum(torch.nansum((sidelobe_func - sll[:, None]) > 0, dim=1) / self.fft_sz) /
+            #                   (self.n_ants * sidelobe_func.shape[0]))
             gn = g1.conj()  # Conjugate of current g1 for orthogonality loss on next loop
 
         # Apply hinge loss to sidelobes
-        sidelobe_loss = (torch.abs(sidelobe_loss - .1))**(1/8)
-        ortho_loss = (torch.abs(ortho_loss - .1))**(1/8)
-        mainlobe_loss = (torch.abs(mainlobe_loss))**(1/8)
-        target_loss = (torch.abs(target_loss))**(1/8)
+        sidelobe_loss = torch.abs(sidelobe_loss - .1)
+        ortho_loss = torch.abs(ortho_loss - .1)
+        # mainlobe_loss = torch.abs(mainlobe_loss)
+        target_loss = torch.abs(target_loss)
 
         # Use sidelobe and orthogonality as regularization params for target loss
         # loss = torch.sqrt(target_loss**2 + sidelobe_loss**2 + ortho_loss**2)
-        loss = torch.sqrt(torch.abs(target_loss * (1. + sidelobe_loss + ortho_loss + mainlobe_loss))**2 + bandwidth_loss**2)
+        # loss = torch.abs(target_loss * (1. + sidelobe_loss + ortho_loss + mainlobe_loss) + bandwidth_loss)
 
-        return {'loss': loss, 'target_loss': target_loss,
-                'sidelobe_loss': sidelobe_loss, 'ortho_loss': ortho_loss, 'mainlobe_loss': mainlobe_loss,
+        return {'target_loss': target_loss,
+                'sidelobe_loss': sidelobe_loss, 'ortho_loss': ortho_loss,
                 'bandwidth_loss': bandwidth_loss}
 
     def save(self, fpath, model_name='current'):
@@ -212,9 +242,12 @@ class GeneratorModel(FlatModule):
                          'target_latent_size': self.target_latent_size, 'n_ants': self.n_ants,
                          'state_file': f'{fpath}/{model_name}_wave_model.state'}, f)
 
-    def getWindow(self, bin_bw):
+    def getWindow(self, params):
+        # print(params)
+        bin_bw = int(params[0] / self.fs * self.fft_sz)
         bin_bw += 0 if bin_bw % 2 == 0 else 1
-        win_func = torch.zeros(self.stft_win_sz, device=self.device)
+        win_func = torch.zeros(self.fft_sz, device=self.device)
+        # win_func[-bin_bw:] = torch.windows.hann(bin_bw, device=self.device)
         win_func[:bin_bw // 2] = torch.windows.hann(bin_bw, device=self.device)[-bin_bw // 2:]
         win_func[-bin_bw // 2:] = torch.windows.hann(bin_bw, device=self.device)[:bin_bw // 2]
         return win_func
@@ -223,7 +256,7 @@ class GeneratorModel(FlatModule):
         return self.example_input_array
 
     def getWaveform(self, cc: Tensor = None, tc: Tensor = None, pulse_length=None,
-                    bandwidth: Tensor = 400e6, nn_output: Tensor = None,
+                    bandwidth: [Tensor, float] = 400e6, nn_output: tuple[Tensor] = None,
                     use_window: bool = False, scale: bool = False, custom_fft_sz: int = 4096) -> Tensor:
         """
         Given a clutter and target spectrum, produces a waveform FFT.
@@ -241,10 +274,13 @@ class GeneratorModel(FlatModule):
             pulse_length = [1]
 
         # Get the STFT either from the clutter, target, and pulse length or directly from the neural net
-        full_stft = self.forward([cc, tc, pulse_length, bandwidth]) if nn_output is None else nn_output
-        gen_waveform = torch.zeros((full_stft.shape[0], self.n_ants, self.fft_sz), dtype=torch.complex64, device=self.device)
+        bandwidth = bandwidth if nn_output is None else nn_output[1]
+        encoded_waveform, _ = self.forward([cc, tc, pulse_length, bandwidth]) if nn_output is None else nn_output
+        gen_waveform = torch.zeros((encoded_waveform.shape[0], self.n_ants, self.fft_sz), dtype=torch.complex64, device=self.device)
         for n in range(self.n_ants):
-            dec = torch.fft.fftshift(self.decoder.decode(full_stft[:, n, :]), dim=2)
+            dec = torch.fft.fftshift(self.decoder.decode(encoded_waveform[:, n, :]), dim=2)
+            for i in range(dec.shape[0]):
+                dec[i] *= self.getWindow(bandwidth[i]).view(1, self.fft_sz)
             g1 = torch.complex(dec[:, 0, :], dec[:, 1, :])
             g1 = g1 / torch.sqrt(torch.sum(g1 * torch.conj(g1), dim=1))[:, None]  # Unit energy calculation
             gen_waveform[:, n, ...] = g1

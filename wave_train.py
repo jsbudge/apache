@@ -125,13 +125,15 @@ if __name__ == '__main__':
     # logger.experiment.add_graph(trainer, wave_mdl.example_input_array)
 
     expected_lr = max((config['wave_exp_params']['LR'] *
-                   config['wave_exp_params']['scheduler_gamma']**(config['wave_exp_params']['max_epochs'] * config['wave_exp_params']['swa_start'])), 1e-9)
+                       config['wave_exp_params']['scheduler_gamma'] ** (
+                                   config['wave_exp_params']['max_epochs'] * config['wave_exp_params']['swa_start'])),
+                      1e-9)
     trainer = Trainer(logger=logger, max_epochs=config['wave_exp_params']['max_epochs'],
-                      strategy='ddp_find_unused_parameters_true',
                       log_every_n_steps=config['wave_exp_params']['log_epoch'], devices=1, callbacks=
-                      [EarlyStopping(monitor='loss', patience=config['wave_exp_params']['patience'],
+                      [EarlyStopping(monitor='target_loss', patience=config['wave_exp_params']['patience'],
                                      check_finite=True),
-                       StochasticWeightAveraging(swa_lrs=expected_lr, swa_epoch_start=config['wave_exp_params']['swa_start'])])
+                       StochasticWeightAveraging(swa_lrs=expected_lr,
+                                                 swa_epoch_start=config['wave_exp_params']['swa_start'])])
 
     print("======= Training =======")
     try:
@@ -155,14 +157,15 @@ if __name__ == '__main__':
             wave_mdl.to(device)
             wave_mdl.eval()
 
-            cc, tc, cs, ts, _ = next(iter(data.train_dataloader()))
+            cc, tc, cs, ts, plength = next(iter(data.train_dataloader()))
             cc = cc.to(device)
             tc = tc.to(device)
             cs = cs.to(device)
             ts = ts.to(device)
 
-            nn_output = wave_mdl([cc[0, ...].unsqueeze(0), tc[0, ...].unsqueeze(0), torch.tensor([nr]), torch.tensor([[config['settings']['bandwidth']]])])
-            nn_numpy = nn_output[0, 0, ...].cpu().data.numpy()
+            nn_output = wave_mdl([cc[0, ...].unsqueeze(0), tc[0, ...].unsqueeze(0), torch.tensor([nr]),
+                                 torch.tensor([[config['settings']['bandwidth']]])])
+            # nn_numpy = nn_output[0, 0, ...].cpu().data.numpy()
 
             waves = wave_mdl.getWaveform(nn_output=nn_output).cpu().data.numpy()
             print('Loaded waveforms...')
