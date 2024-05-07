@@ -27,18 +27,18 @@ settings:
 
 generate_data_settings:
   iterations: 500
-  run_clutter: False
-  run_targets: True
+  run_clutter: True
+  run_targets: False
   use_local_storage: True
   local_path: ./data
 
 # This is for setting up training of autoencoder
 exp_params:
-  LR: 0.001
+  LR: 0.0001
   weight_decay: 0.01
   scheduler_gamma: 0.8
   betas: [.07, .9]
-  step_size: 10
+  step_size: 3
   swa_start: .5
   log_epoch: 10
   save_model: True
@@ -49,7 +49,7 @@ exp_params:
   model_type: Encoder
   patience: 150
   is_tuning: False
-  max_epochs: 40
+  max_epochs: 360
   dataset_params:
     data_path: ./data
     train_batch_size: 256
@@ -67,18 +67,18 @@ exp_params:
 wave_exp_params:
   LR: 0.0001
   weight_decay: 0.1
-  scheduler_gamma: 0.9
+  scheduler_gamma: 0.8
   swa_start: .6
   warm_start: False
   betas: [.56, .26]
-  step_size: 4
+  step_size: 5
   log_epoch: 10
   is_tuning: False
   save_model: True
   loss_landscape: False
-  patience: 15
+  patience: 5
   bandwidth: 400000000.
-  max_epochs: 100
+  max_epochs: 15
   dataset_params:
     data_path: ./data
     train_batch_size: 64

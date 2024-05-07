@@ -731,11 +731,12 @@ class Encoder(FlatModule):
         self.params = params
         self.channel_sz = channel_sz
         self.in_channels = in_channels
+        self.automatic_optimization = False
         levels = 3
         fft_scaling = 2 ** levels
 
         # Encoder
-        self.encoder_inflate = nn.Conv1d(in_channels, channel_sz, 3, 1, 1)
+        self.encoder_inflate = nn.Conv1d(in_channels + 2, channel_sz, 3, 1, 1)
         self.encoder_reduce = nn.ModuleList()
         self.encoder_conv = nn.ModuleList()
         self.encoder_attention = nn.ModuleList()
@@ -787,6 +788,9 @@ class Encoder(FlatModule):
         :param inp: (Tensor) Input tensor to encoder [N x C x H x W]
         :return: (Tensor) List of latent codes
         """
+        magphase = torch.cat([torch.sqrt(inp[:, 0, :]**2 + inp[:, 1, :]**2).view(-1, 1, self.fft_len),
+                              torch.arctan2(inp[:, 0, :], inp[:, 1, :]).view(-1, 1, self.fft_len)], dim=1)
+        inp = torch.cat([inp, magphase], dim=1)
         inp = self.encoder_inflate(inp)
         for conv, red in zip(self.encoder_conv, self.encoder_reduce):
             inp = conv(red(inp))
@@ -812,7 +816,11 @@ class Encoder(FlatModule):
             self.logger.log_graph(self, self.example_input_array)
 
     def training_step(self, batch, batch_idx):
-        return self.train_val_get(batch, batch_idx)
+        opt = self.optimizers()
+        train_loss = self.train_val_get(batch, batch_idx)
+        opt.zero_grad()
+        self.manual_backward(train_loss)
+        opt.step()
 
     def validation_step(self, batch, batch_idx):
         self.train_val_get(batch, batch_idx, 'val')
@@ -827,6 +835,17 @@ class Encoder(FlatModule):
             torch.save(self.state_dict(), './model/inference_model.state')
             print('Model saved to disk.')
 
+    def on_train_epoch_end(self) -> None:
+        if self.trainer.is_global_zero and not self.params['is_tuning'] and self.params['loss_landscape']:
+            self.optim_path.append(self.model.get_flat_params())
+
+    def on_validation_epoch_end(self) -> None:
+        sch = self.lr_schedulers()
+
+        # If the selected scheduler is a ReduceLROnPlateau scheduler.
+        if isinstance(sch, torch.optim.lr_scheduler.ReduceLROnPlateau):
+            sch.step(self.trainer.callback_metrics["val_loss"])
+
     def configure_optimizers(self):
         optimizer = optim.AdamW(self.parameters(),
                                 lr=self.params['LR'],
@@ -836,15 +855,14 @@ class Encoder(FlatModule):
         optims = [optimizer]
         if self.params['scheduler_gamma'] is None:
             return optims
-        scheduler = optim.lr_scheduler.StepLR(optims[0], step_size=self.params['step_size'],
-                                              gamma=self.params['scheduler_gamma'])
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optims[0], cooldown=self.params['step_size'],
+                                                         factor=self.params['scheduler_gamma'])
         scheds = [scheduler]
 
         return optims, scheds
 
     def train_val_get(self, batch, batch_idx, kind='train'):
         img, img = batch
-        self.automatic_optimization = True
 
         results = self.forward(img)
         train_loss = self.loss_function(results, img)

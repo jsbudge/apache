@@ -86,6 +86,8 @@ if __name__ == '__main__':
                                 pts_per_m, cpi_len, a_chirp=pulse, a_sdr=sdr, a_noise_level=-300,
                                 a_rotate_grid=rotate_grid, a_fft_len=fft_len, a_debug=debug, a_origin=origin):
         tpsd = tpsd * mfilt[:, None]
+        if sdr[0].baseband_fc != 0:
+            tpsd = np.roll(tpsd, -int(sdr[0].baseband_fc / sdr.fs * fft_len), axis=0)
         # tpsd *= 4000.
         p_muscale = np.repeat(config['exp_params']['dataset_params']['mu'] / abs(tpsd.mean(axis=0)), 2).astype(
             np.float32)

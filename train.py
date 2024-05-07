@@ -1,5 +1,5 @@
 from glob import glob
-
+# from clearml import Task
 import torch
 from pytorch_lightning import Trainer, loggers, seed_everything
 from pytorch_lightning.callbacks import EarlyStopping, StochasticWeightAveraging
@@ -9,10 +9,12 @@ from models import init_weights, Encoder
 import matplotlib.pyplot as plt
 import numpy as np
 
+# task = Task.init(project_name='Encoder', task_name='training')
+
 torch.set_float32_matmul_precision('medium')
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 # seed_everything(np.random.randint(1, 2048), workers=True)
-seed_everything(16, workers=True)
+seed_everything(43, workers=True)
 
 with open('./vae_config.yaml') as y:
     param_dict = yaml.safe_load(y.read())
@@ -42,7 +44,7 @@ expected_lr = max((exp_params['LR'] *
                    exp_params['scheduler_gamma'] ** (exp_params['max_epochs'] *
                                                      exp_params['swa_start'])), 1e-9)
 trainer = Trainer(logger=logger, max_epochs=exp_params['max_epochs'],
-                  log_every_n_steps=exp_params['log_epoch'], gradient_clip_val=.5,
+                  log_every_n_steps=exp_params['log_epoch'],
                   strategy='ddp', devices=2, callbacks=
                   [EarlyStopping(monitor='val_loss', patience=exp_params['patience'],
                                  check_finite=True),
