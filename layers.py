@@ -45,7 +45,7 @@ def std_2d(img: torch.Tensor, sigma: float) -> tuple[torch.Tensor, torch.Tensor,
 class FourierFeature(LightningModule):
     def __init__(self, in_features, n_fourier: int = 6, *args: Any, **kwargs: Any):
         super().__init__(*args, **kwargs)
-        self.out_features = in_features * n_fourier
+        self.out_features = in_features * n_fourier * 2
         self.in_features = in_features
         self.n_fourier = n_fourier
 
@@ -53,7 +53,8 @@ class FourierFeature(LightningModule):
         out = torch.zeros((x.shape[0], self.out_features), device=self.device)
         for f in range(self.in_features):
             for n in range(self.n_fourier):
-                out[:, f * self.in_features + n] = torch.sin(2 * np.pi * (2 ** n) * x[:, f])
+                out[:, f * self.n_fourier + n] = torch.sin(2 * torch.pi * (2 ** n) * x[:, f])
+                out[:, (f + 2) * self.n_fourier + n] = torch.cos(2 * torch.pi * (2 ** n) * x[:, f])
         return out
 
 

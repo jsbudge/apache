@@ -93,6 +93,7 @@ class WaveDataset(Dataset):
             # Scale appropriately
             tmp_cs = tmp_cs[:, :, :fft_sz] # * tmp_cs[:, 0, fft_sz + 1][:, None, None] + tmp_cs[:, 0, fft_sz][:, None, None]
             tmp_cc = np.fromfile(files[1], dtype=np.float32).reshape((-1, latent_dim))
+            # tmp_cc = tmp_cc[tmp_cc.std(axis=0)]
             if split < 1:
                 Xt, Xs, _, _ = train_test_split(np.arange(tmp_cs.shape[0] - seq_len),
                                                 np.arange(tmp_cs.shape[0] - seq_len),
