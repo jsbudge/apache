@@ -16,7 +16,7 @@ fdelay: 1.5
 origin: [40.138044, -111.660027, 1365.8849123907273]
 gen_data: False
 gps_check: False
-pts_per_tri: 2
+pts_per_tri: 1
 noise_level: -100
 save_as_target: True
 

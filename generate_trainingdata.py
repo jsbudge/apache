@@ -174,6 +174,8 @@ if __name__ == '__main__':
                 continue  # I'll work on this later
             mfilt = sdr_f.genMatchedFilter(0, fft_len=fft_len)
             valids = mfilt != 0
+            if sdr_f[0].baseband_fc != 0:
+                valids = np.roll(valids, -int(sdr_f[0].baseband_fc / fs * fft_len), axis=0)
             print('Matched filter loaded.')
 
             print(f'File is {fn}')
@@ -198,7 +200,7 @@ if __name__ == '__main__':
                 p_muscale = np.repeat(config['exp_params']['dataset_params']['mu'] / abs(pulse_data[valids, :].mean(axis=0)), 2).astype(np.float32)
                 p_stdscale = np.repeat(config['exp_params']['dataset_params']['var'] / abs(pulse_data[valids, :].std(axis=0)), 2).astype(np.float32)
                 # Normalize each pulse against itself; each one has mu of zero and std of one
-                pulse_data = (pulse_data - abs(pulse_data[valids, :].mean(axis=0))) / pulse_data[valids, :].std(axis=0)
+                pulse_data[valids, :] = (pulse_data[valids, :] - abs(pulse_data[valids, :].mean(axis=0))) / pulse_data[valids, :].std(axis=0)
                 inp_data = formatTargetClutterData(pulse_data.T, fft_len).astype(np.float32)
                 inp_data = np.concatenate((inp_data, p_muscale.reshape(-1, 2, 1), p_stdscale.reshape(-1, 2, 1)), axis=2)
                 with open(

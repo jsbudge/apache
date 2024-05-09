@@ -232,6 +232,7 @@ class GeneratorExperiment(pl.LightningModule):
         opt.zero_grad()
         self.manual_backward(loss)
         # self.famo.backward(loss)
+        self.clip_gradients(opt, gradient_clip_val=0.5, gradient_clip_algorithm="norm")
         opt.step()
         '''with torch.no_grad():
             new_loss = torch.tensor([val for key, val in self.train_val_get(batch, batch_idx).items()], device='cpu')

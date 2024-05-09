@@ -8,6 +8,7 @@ from abc import abstractmethod
 from pytorch_lightning import LightningModule
 import numpy as np
 from waveform_model import FlatModule
+import matplotlib.pyplot as plt
 
 
 def calc_conv_size(inp_sz, kernel_sz, stride, padding):
@@ -736,7 +737,7 @@ class Encoder(FlatModule):
         fft_scaling = 2 ** levels
 
         # Encoder
-        self.encoder_inflate = nn.Conv1d(in_channels + 2, channel_sz, 3, 1, 1)
+        self.encoder_inflate = nn.Conv1d(in_channels, channel_sz, 3, 1, 1)
         self.encoder_reduce = nn.ModuleList()
         self.encoder_conv = nn.ModuleList()
         self.encoder_attention = nn.ModuleList()
@@ -756,6 +757,7 @@ class Encoder(FlatModule):
         )
         self.fc_z = nn.Sequential(
             nn.Linear(fft_len // fft_scaling, latent_dim),
+            nn.Tanh(),
         )
 
         # Decoder
@@ -788,9 +790,6 @@ class Encoder(FlatModule):
         :param inp: (Tensor) Input tensor to encoder [N x C x H x W]
         :return: (Tensor) List of latent codes
         """
-        magphase = torch.cat([torch.sqrt(inp[:, 0, :]**2 + inp[:, 1, :]**2).view(-1, 1, self.fft_len),
-                              torch.arctan2(inp[:, 0, :], inp[:, 1, :]).view(-1, 1, self.fft_len)], dim=1)
-        inp = torch.cat([inp, magphase], dim=1)
         inp = self.encoder_inflate(inp)
         for conv, red in zip(self.encoder_conv, self.encoder_reduce):
             inp = conv(red(inp))
@@ -835,6 +834,26 @@ class Encoder(FlatModule):
             torch.save(self.state_dict(), './model/inference_model.state')
             print('Model saved to disk.')
 
+            if self.current_epoch % 5 == 0:
+                # Log an image to get an idea of progress
+                img, _ = next(iter(self.trainer.val_dataloaders))
+                rec = self.forward(img.to(self.device))
+                rec = rec.to('cpu').data.numpy()
+                fig = plt.figure()
+                plt.subplot(2, 2, 1)
+                plt.title('Real Original')
+                plt.plot(img[0, 0, :])
+                plt.subplot(2, 2, 2)
+                plt.title('Imag Original')
+                plt.plot(img[0, 1, :])
+                plt.subplot(2, 2, 3)
+                plt.title('Real Reconstructed')
+                plt.plot(rec[0, 0, :])
+                plt.subplot(2, 2, 4)
+                plt.title('Imag Reconstructed')
+                plt.plot(rec[0, 1, :])
+                self.logger.experiment.add_figure('Reconstruction', fig, self.current_epoch)
+
     def on_train_epoch_end(self) -> None:
         if self.trainer.is_global_zero and not self.params['is_tuning'] and self.params['loss_landscape']:
             self.optim_path.append(self.model.get_flat_params())
@@ -845,6 +864,7 @@ class Encoder(FlatModule):
         # If the selected scheduler is a ReduceLROnPlateau scheduler.
         if isinstance(sch, torch.optim.lr_scheduler.ReduceLROnPlateau):
             sch.step(self.trainer.callback_metrics["val_loss"])
+            self.log('LR', sch.get_last_lr()[0], rank_zero_only=True)
 
     def configure_optimizers(self):
         optimizer = optim.AdamW(self.parameters(),
@@ -856,7 +876,7 @@ class Encoder(FlatModule):
         if self.params['scheduler_gamma'] is None:
             return optims
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optims[0], cooldown=self.params['step_size'],
-                                                         factor=self.params['scheduler_gamma'])
+                                                         factor=self.params['scheduler_gamma'], threshold=1e-5)
         scheds = [scheduler]
 
         return optims, scheds
@@ -867,5 +887,6 @@ class Encoder(FlatModule):
         results = self.forward(img)
         train_loss = self.loss_function(results, img)
 
-        self.log_dict({f'{kind}_loss': train_loss}, sync_dist=True, prog_bar=True)
+        self.log_dict({f'{kind}_loss': train_loss}, on_epoch=True,
+                      prog_bar=True, rank_zero_only=True)
         return train_loss

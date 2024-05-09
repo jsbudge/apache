@@ -44,7 +44,7 @@ if __name__ == '__main__':
     rotate_grid = True
     use_ecef = True
     ipr_mode = False
-    cpi_len = 256
+    cpi_len = 64
     plp = 0
     partial_pulse_percent = .2
     debug = True
@@ -74,6 +74,8 @@ if __name__ == '__main__':
     print('Done.')
 
     min_poss = -config['exp_params']['dataset_params']['mu'] / config['exp_params']['dataset_params']['var']
+    mumax = 0
+    stdmax = 0
 
     # cust_grid = np.zeros_like(bg.refgrid)
     # cust_grid[100, 100] = 10
@@ -81,21 +83,32 @@ if __name__ == '__main__':
     nsam, nr, ranges, ranges_sampled, near_range_s, granges, _, up_fft_len = (
         rp.getRadarParams(fdelay, plp, upsample))
     pulse = np.fft.fft(sdr[0].cal_chirp, fft_len)
-    mfilt = sdr.genMatchedFilter(0, fft_len=fft_len)
+    mfilt = sdr.genMatchedFilter(0, fft_len=fft_len) / 1e4
+    valids = mfilt != 0
+    if sdr[0].baseband_fc != 0:
+        valids = np.roll(valids, -int(sdr[0].baseband_fc / rp.fs * fft_len), axis=0)
     for tpsd in genSimPulseData(rp, bg, fdelay, plp, upsample, grid_width, grid_height,
                                 pts_per_m, cpi_len, a_chirp=pulse, a_sdr=sdr, a_noise_level=-300,
                                 a_rotate_grid=rotate_grid, a_fft_len=fft_len, a_debug=debug, a_origin=origin):
         tpsd = tpsd * mfilt[:, None]
         if sdr[0].baseband_fc != 0:
-            tpsd = np.roll(tpsd, -int(sdr[0].baseband_fc / sdr.fs * fft_len), axis=0)
-        # tpsd *= 4000.
-        p_muscale = np.repeat(config['exp_params']['dataset_params']['mu'] / abs(tpsd.mean(axis=0)), 2).astype(
+            tpsd = np.roll(tpsd, -int(sdr[0].baseband_fc / rp.fs * fft_len), axis=0)
+        # tpsd /= 12.5
+        tmp_mu = abs(tpsd[valids, :].mean(axis=0)).max()
+        tmp_std = abs(tpsd[valids, :].std(axis=0)).max()
+        if tmp_mu > mumax:
+            print(f'MU: {tmp_mu}')
+            mumax = tmp_mu + 0.
+        if tmp_std > stdmax:
+            print(f'STD:{tmp_std}')
+            stdmax = tmp_std + 0.
+        p_muscale = np.repeat(config['exp_params']['dataset_params']['mu'] / abs(tpsd[valids, :].mean(axis=0)), 2).astype(
             np.float32)
-        p_stdscale = np.repeat(config['exp_params']['dataset_params']['var'] / abs(tpsd.std(axis=0)), 2).astype(
+        p_stdscale = np.repeat(config['exp_params']['dataset_params']['var'] / abs(tpsd[valids, :].std(axis=0)), 2).astype(
             np.float32)
-        tpsd = (tpsd - config['exp_params']['dataset_params']['mu']) / config['exp_params']['dataset_params']['var']
+        tpsd[valids, :] = (tpsd[valids, :] - config['exp_params']['dataset_params']['mu']) / config['exp_params']['dataset_params']['var']
         inp_data = formatTargetClutterData(tpsd.T, fft_len).astype(np.float32)
-        if p_muscale.mean() < 2.:
+        if p_muscale.min() < 2.:
             enc_data = decoder.encode(torch.tensor(inp_data).to(decoder.device)).cpu().data.numpy()
             inp_data = np.concatenate((inp_data, p_muscale.reshape(-1, 2, 1), p_stdscale.reshape(-1, 2, 1)), axis=2)
 
@@ -106,4 +119,4 @@ if __name__ == '__main__':
                     f'{save_path}/targets.enc', 'ab') as writer:
                 enc_data.tofile(writer)
         else:
-            print(f'{inp_data.mean()}')
+            pass

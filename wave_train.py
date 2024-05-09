@@ -6,15 +6,14 @@ import matplotlib.pyplot as plt
 from scipy.signal import stft, istft
 import torch
 from pytorch_lightning import Trainer, loggers, seed_everything
-from pytorch_lightning.callbacks import EarlyStopping, StochasticWeightAveraging, ModelPruning
+from pytorch_lightning.callbacks import EarlyStopping, StochasticWeightAveraging
 import yaml
 from dataloaders import WaveDataModule
 from experiment import GeneratorExperiment
 from models import Encoder
-from waveform_model import GeneratorModel, init_weights
+from waveform_model import GeneratorModel
 from os import listdir
-import torch.nn as nn
-import torch.nn.utils.prune as prune
+from clearml import Task
 
 fs = 2e9
 c0 = 299792458.0
@@ -52,6 +51,7 @@ def getRange(alt, theta_el):
 
 if __name__ == '__main__':
     torch.set_float32_matmul_precision('medium')
+    torch.autograd.set_detect_anomaly(True)
     force_cudnn_initialization()
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     # torch.cuda.empty_cache()
@@ -64,6 +64,8 @@ if __name__ == '__main__':
             config = yaml.safe_load(file)
         except yaml.YAMLError as exc:
             print(exc)
+
+    task = Task.init(project_name='Wavemodel', task_name=config['wave_exp_params']['exp_name'])
 
     fft_len = config['settings']['fft_len']
     nr = 5000  # int((config['perf_params']['vehicle_slant_range_min'] * 2 / c0 - 1 / TAC) * fs)
@@ -122,7 +124,6 @@ if __name__ == '__main__':
     else:
         logger = loggers.TensorBoardLogger(config['train_params']['log_dir'],
                                            name="WaveModel", log_graph=True)
-    # logger.experiment.add_graph(trainer, wave_mdl.example_input_array)
 
     expected_lr = max((config['wave_exp_params']['LR'] *
                        config['wave_exp_params']['scheduler_gamma'] ** (
@@ -142,16 +143,6 @@ if __name__ == '__main__':
         print('Breaking out of training early.')
 
     if trainer.global_rank == 0:
-
-        # Implement some pruning
-        '''prune_layers = ([(m, 'weight') for m in wave_mdl.mixture if isinstance(m, nn.Conv1d)] +
-                        [(m, 'weight') for m in wave_mdl.expand_to_ants if isinstance(m, nn.Conv1d)] +
-                        [(m, 'weight') for m in wave_mdl.final if isinstance(m, nn.Conv2d)])
-
-        prune.global_unstructured(prune_layers, pruning_method=prune.L1Unstructured, amount=.1)
-
-        for m, n in prune_layers:
-            prune.remove(m, 'weight')'''
 
         with torch.no_grad():
             wave_mdl.to(device)
@@ -181,8 +172,8 @@ if __name__ == '__main__':
             plt.figure('Waveform PSD')
             plt.plot(freqs, db(np.fft.fftshift(waves[0, 0])))
             plt.plot(freqs, db(np.fft.fftshift(waves[0, 1])))
-            plt.plot(freqs, db(np.fft.fftshift(targets[0])), linestyle='--', linewidth=.3)
-            plt.plot(freqs, db(np.fft.fftshift(clutter[0])), linestyle=':', linewidth=.3)
+            plt.plot(freqs, db(targets[0]), linestyle='--', linewidth=.3)
+            plt.plot(freqs, db(clutter[0]), linestyle=':', linewidth=.3)
             plt.legend(['Waveform 1', 'Waveform 2', 'Target', 'Clutter'])
             plt.ylabel('Relative Power (dB)')
             plt.xlabel('Freq (Hz)')
@@ -216,9 +207,6 @@ if __name__ == '__main__':
             plt.legend(['Waveform 1', 'Waveform 2', 'Cross Correlation', 'Linear Chirp'])
             plt.xlabel('Lag')
 
-            # waves = wave_mdl.getWaveform(cc, tc, torch.tensor([nr]), torch.tensor([[config['settings']['bandwidth']]]),
-            #                              scale=True, custom_fft_sz=8192).cpu().data.numpy()
-
             plt.figure('Time Series')
             wave1 = waves.copy()
             plot_t = np.arange(nr) / fs
@@ -242,3 +230,4 @@ if __name__ == '__main__':
                 print('Model saved to disk.')
             except Exception as e:
                 print(f'Model not saved: {e}')
+        task.close()
