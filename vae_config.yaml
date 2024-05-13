@@ -68,7 +68,7 @@ exp_params:
 wave_exp_params:
   LR: 0.0001
   weight_decay: 0.1
-  scheduler_gamma: 0.8
+  scheduler_gamma: 0.5
   swa_start: .6
   warm_start: False
   betas: [.56, .26]
@@ -79,8 +79,9 @@ wave_exp_params:
   loss_landscape: False
   patience: 5
   bandwidth: 400000000.
-  max_epochs: 1500
-  exp_name: wavemodel-init
+  max_epochs: 150
+  init_task: True
+  exp_name: wavemodel-small-bandwidth_loss
   dataset_params:
     data_path: ./data
     train_batch_size: 64
