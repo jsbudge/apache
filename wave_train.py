@@ -13,7 +13,7 @@ from experiment import GeneratorExperiment
 from models import Encoder
 from waveform_model import GeneratorModel
 from os import listdir
-from clearml import Task
+# from clearml import Task
 
 fs = 2e9
 c0 = 299792458.0
@@ -65,7 +65,7 @@ if __name__ == '__main__':
         except yaml.YAMLError as exc:
             print(exc)
 
-    task = Task.init(project_name='Wavemodel', task_name=config['wave_exp_params']['exp_name'])
+    # task = Task.init(project_name='Wavemodel', task_name=config['wave_exp_params']['exp_name'])
 
     fft_len = config['settings']['fft_len']
     nr = 5000  # int((config['perf_params']['vehicle_slant_range_min'] * 2 / c0 - 1 / TAC) * fs)
@@ -230,4 +230,4 @@ if __name__ == '__main__':
                 print('Model saved to disk.')
             except Exception as e:
                 print(f'Model not saved: {e}')
-        task.close()
+        # task.close()

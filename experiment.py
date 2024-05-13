@@ -237,7 +237,9 @@ class GeneratorExperiment(pl.LightningModule):
         '''with torch.no_grad():
             new_loss = torch.tensor([val for key, val in self.train_val_get(batch, batch_idx).items()], device='cpu')
             self.famo.update(new_loss)'''
-        self.log_dict({key: val.item() for key, val in train_loss.items()}, sync_dist=True, prog_bar=True)
+        self.log_dict({key: val.item() for key, val in train_loss.items()}, sync_dist=True,
+                      prog_bar=True, rank_zero_only=True)
+        self.log('loss', loss, rank_zero_only=True, on_epoch=True)
         # sch = self.lr_schedulers()
         # sch.step()
         # return train_loss['loss']
@@ -256,7 +258,7 @@ class GeneratorExperiment(pl.LightningModule):
 
         # If the selected scheduler is a ReduceLROnPlateau scheduler.
         if isinstance(sch, torch.optim.lr_scheduler.ReduceLROnPlateau):
-            sch.step(self.trainer.callback_metrics["target_loss"])
+            sch.step(self.trainer.callback_metrics["loss_epoch"])
         if self.trainer.is_global_zero and not self.params['is_tuning'] and self.params['loss_landscape']:
             self.optim_path.append(self.model.get_flat_params())
 

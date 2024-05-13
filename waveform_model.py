@@ -8,7 +8,7 @@ from pytorch_lightning import LightningModule
 from torch.nn import functional as nn_func
 from torch.optim import Optimizer
 from torchvision import transforms
-from layers import FourierFeature, BandwidthEncoding
+from layers import FourierFeature, BandwidthEncoding, WindowConvolution
 
 
 def getTrainTransforms(var):
@@ -90,11 +90,11 @@ class GeneratorModel(FlatModule):
         self.decoder = decoder
 
         self.transformer = nn.Transformer(clutter_latent_size, num_decoder_layers=8, num_encoder_layers=8,
-                                          activation='relu', batch_first=True)
+                                          activation='gelu', batch_first=True)
         self.transformer.apply(init_weights)
 
         self.expand_to_ants = nn.Sequential(
-            nn.Conv1d(1, channel_sz, 1, 1, 0),
+            nn.Conv1d(2, channel_sz, 1, 1, 0),
             nn.GELU(),
             nn.Conv1d(channel_sz, channel_sz, 1, 1, 0),
             nn.GELU(),
@@ -102,16 +102,18 @@ class GeneratorModel(FlatModule):
             nn.GELU(),
             nn.Conv1d(channel_sz, channel_sz, 1, 1, 0),
             nn.GELU(),
-            nn.Conv1d(1, self.n_ants, 1, 1, 0),
+            nn.Conv1d(channel_sz, self.n_ants, 1, 1, 0),
             nn.Tanh(),
         )
         self.expand_to_ants.apply(init_weights)
 
-        '''self.fourier = nn.Sequential(
+        self.fourier = nn.Sequential(
             FourierFeature(2, 24),
             nn.Linear(96, clutter_latent_size),
             nn.GELU(),
-        )'''
+        )
+
+        self.window = WindowConvolution(self.fs)
 
         '''self.fourier_param = nn.Sequential(
             FourierFeature(1, 24),
@@ -124,12 +126,12 @@ class GeneratorModel(FlatModule):
 
     def forward(self, inp: list) -> torch.tensor:
         clutter, target, pulse_length, bandwidth = inp
-        # bw_params = self.fourier(torch.cat([pulse_length.float().view(-1, 1), bandwidth / self.fs],
-        #                                    dim=1)).view(-1, 1, self.clutter_latent_size)
+        bw_params = self.fourier(torch.cat([pulse_length.float().view(-1, 1), bandwidth / self.fs],
+                                           dim=1)).view(-1, 1, self.clutter_latent_size)
         # mix_targ = self.mixture(target.unsqueeze(1))
         x = self.transformer(clutter, target.unsqueeze(1))
-        # x = torch.cat([x, bw_params], dim=1)
-        x = self.expand_to_ants(x)
+        x = torch.cat([x, bw_params], dim=1)
+        x = self.window(self.expand_to_ants(x), pulse_length, self.fft_sz)
         return x, bandwidth
 
     def full_forward(self, clutter_array, target_array, pulse_length: int, bandwidth: float) -> torch.tensor:
