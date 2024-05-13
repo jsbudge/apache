@@ -241,13 +241,14 @@ class WindowConvolution(LightningModule):
         super().__init__(*args, **kwargs)
         self.fs = fs
 
-    def gen_window(self, pulse_length, fft_len, batch_sz):
-        win = torch.zeros((batch_sz, fft_len), device=self.device)
+    def gen_window(self, pulse_length, fft_len):
+        win = torch.zeros((2, fft_len), dtype=torch.complex64, device=self.device)
         win[:, 5:pulse_length + 5] = 1.
-        return torch.fft.fft(win, fft_len, dim=1)
+        win = torch.view_as_real(torch.fft.fftshift(torch.fft.fft(win, fft_len, dim=1), dim=1))
+        return win.swapaxes(1, 2)
 
     def forward(self, x, pulse_length, fft_len):
-        return torch.conv1d(x, self.gen_window(pulse_length, fft_len, x.shape[0]))
+        return torch.conv1d(x, self.gen_window(pulse_length, fft_len), padding='same')
 
 
 class AttentionConv(LightningModule):

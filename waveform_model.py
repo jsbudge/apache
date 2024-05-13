@@ -1,23 +1,12 @@
 import contextlib
 import pickle
-from typing import Optional, Union, Tuple, Dict, List, Callable, Any
+from typing import Optional, Union, Tuple, Dict
 import torch
-from pytorch_lightning.core.optimizer import LightningOptimizer
 from torch import nn, Tensor
 from pytorch_lightning import LightningModule
 from torch.nn import functional as nn_func
-from torch.optim import Optimizer
 from torchvision import transforms
-from layers import FourierFeature, BandwidthEncoding, WindowConvolution
-
-
-def getTrainTransforms(var):
-    return transforms.Compose(
-        [
-            transforms.ToTensor(),
-            transforms.Normalize((0., 0.), var),
-        ]
-    )
+from layers import FourierFeature, WindowConvolution
 
 
 def init_weights(m):
@@ -88,17 +77,14 @@ class GeneratorModel(FlatModule):
         self.target_latent_size = target_latent_size
         self.fs = fs
         self.decoder = decoder
+        self.decoder.requires_grad = False
 
-        self.transformer = nn.Transformer(clutter_latent_size, num_decoder_layers=8, num_encoder_layers=8,
+        self.transformer = nn.Transformer(clutter_latent_size, num_decoder_layers=6, num_encoder_layers=6,
                                           activation='gelu', batch_first=True)
         self.transformer.apply(init_weights)
 
         self.expand_to_ants = nn.Sequential(
             nn.Conv1d(2, channel_sz, 1, 1, 0),
-            nn.GELU(),
-            nn.Conv1d(channel_sz, channel_sz, 1, 1, 0),
-            nn.GELU(),
-            nn.Conv1d(channel_sz, channel_sz, 1, 1, 0),
             nn.GELU(),
             nn.Conv1d(channel_sz, channel_sz, 1, 1, 0),
             nn.GELU(),
@@ -115,12 +101,6 @@ class GeneratorModel(FlatModule):
 
         self.window = WindowConvolution(self.fs)
 
-        '''self.fourier_param = nn.Sequential(
-            FourierFeature(1, 24),
-            nn.Linear(24, self.reduction_sz),
-            nn.GELU(),
-        )'''
-
         self.example_input_array = ([[torch.zeros((1, 32, clutter_latent_size)), torch.zeros((1, target_latent_size)),
                                     torch.tensor([[1250]]), torch.tensor([[400e6]])]])
 
@@ -131,7 +111,10 @@ class GeneratorModel(FlatModule):
         # mix_targ = self.mixture(target.unsqueeze(1))
         x = self.transformer(clutter, target.unsqueeze(1))
         x = torch.cat([x, bw_params], dim=1)
-        x = self.window(self.expand_to_ants(x), pulse_length, self.fft_sz)
+        x = self.expand_to_ants(x)
+        decoded = [self.decoder.decode(x[:, n, :]) for n in range(self.n_ants)]
+        x = torch.cat([self.window(d, pulse_length[0], self.fft_sz).unsqueeze(1) for d in decoded], dim=1)
+        # x = self.window(self.expand_to_ants(x), pulse_length, self.fft_sz)
         return x, bandwidth
 
     def full_forward(self, clutter_array, target_array, pulse_length: int, bandwidth: float) -> torch.tensor:
@@ -186,7 +169,12 @@ class GeneratorModel(FlatModule):
             ratio[torch.logical_and(clutter_spectrum == 0, target_spectrum != 0)] = 0.
             ratio[torch.isnan(ratio)] = g1_return[torch.isnan(ratio)]
             I_k = torch.sum(torch.log(torch.nanmean(ratio, dim=1)))
-            bandwidth_loss += torch.mean(torch.sqrt(torch.abs(args[0][1][:, 0] / self.fs - args[3] / self.fs)))
+
+            bwf = torch.cumsum(g1_return, dim=1)
+            bwf = bwf / bwf[:, -1][:, None]
+            bwf = torch.sum(bwf > .5, dim=1) / self.fft_sz * self.fs
+            bandwidth_loss += (torch.mean(torch.sqrt(torch.abs(args[0][1][:, 0] - bwf) / (self.fs / self.fft_sz))) /
+                               (self.n_ants * bwf.shape[0]))
             target_loss += I_k / (gen_waveform.shape[0] * self.n_ants)
 
             # Get the ISLR for this waveform
@@ -249,15 +237,15 @@ class GeneratorModel(FlatModule):
 
         # Get the STFT either from the clutter, target, and pulse length or directly from the neural net
         bandwidth = bandwidth if nn_output is None else nn_output[1]
-        encoded_waveform, _ = self.forward([cc, tc, pulse_length, bandwidth]) if nn_output is None else nn_output
-        gen_waveform = torch.zeros((encoded_waveform.shape[0], self.n_ants, self.fft_sz), dtype=torch.complex64, device=self.device)
+        dual_waveform, _ = self.forward([cc, tc, pulse_length, bandwidth]) if nn_output is None else nn_output
+        gen_waveform = torch.zeros((dual_waveform.shape[0], self.n_ants, self.fft_sz), dtype=torch.complex64,
+                                   device=self.device)
         for n in range(self.n_ants):
-            dec = torch.fft.fftshift(self.decoder.decode(encoded_waveform[:, n, :]), dim=2)
-            # for i in range(dec.shape[0]):
-            #     dec[i] *= self.getWindow(bandwidth[i]).view(1, self.fft_sz)
-            g1 = torch.complex(dec[:, 0, :], dec[:, 1, :])
-            g1 = g1 / torch.sqrt(torch.sum(g1 * torch.conj(g1), dim=1))[:, None]  # Unit energy calculation
-            gen_waveform[:, n, ...] = g1
+            complex_wave = torch.fft.fftshift(torch.complex(dual_waveform[:, n, 0, :],
+                                                                           dual_waveform[:, n, 1, :]), dim=1)
+            gen_waveform[:, n, :] = (complex_wave / torch.sqrt(torch.sum(complex_wave *
+                                                                 torch.conj(complex_wave),
+                                                                 dim=1))[:, None])  # Unit energy calculation
         return gen_waveform
 
 
