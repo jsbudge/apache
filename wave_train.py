@@ -91,12 +91,12 @@ if __name__ == '__main__':
             warm_start = True
         except RuntimeError as e:
             print(f'Wavemodel save file does not match current structure. Re-running with new structure.\n{e}')
-            wave_mdl = GeneratorModel(fft_sz=fft_len, decoder=decoder,
+            wave_mdl = GeneratorModel(fft_sz=fft_len, decoder=decoder, channel_sz=config['wave_exp_params']['channel_sz'],
                                       clutter_latent_size=config['model_params']['latent_dim'],
                                       target_latent_size=config['model_params']['latent_dim'], n_ants=2)
     else:
         print('Initializing new wavemodel...')
-        wave_mdl = GeneratorModel(fft_sz=fft_len, decoder=decoder,
+        wave_mdl = GeneratorModel(fft_sz=fft_len, decoder=decoder, channel_sz=config['wave_exp_params']['channel_sz'],
                                   clutter_latent_size=config['model_params']['latent_dim'],
                                   target_latent_size=config['model_params']['latent_dim'], n_ants=2)
 
@@ -155,8 +155,8 @@ if __name__ == '__main__':
             cs = cs.to(device)
             ts = ts.to(device)
 
-            nn_output = wave_mdl([cc[0, ...].unsqueeze(0), tc[0, ...].unsqueeze(0), torch.tensor([nr]),
-                                 torch.tensor([[config['settings']['bandwidth']]])])
+            nn_output = wave_mdl([cc, tc, torch.tensor([nr] * plength.shape[0]),
+                                 torch.tensor([[config['settings']['bandwidth']]] * plength.shape[0])])
             # nn_numpy = nn_output[0, 0, ...].cpu().data.numpy()
 
             waves = wave_mdl.getWaveform(nn_output=nn_output).cpu().data.numpy()

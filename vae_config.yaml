@@ -72,16 +72,17 @@ wave_exp_params:
   swa_start: .6
   warm_start: False
   betas: [.56, .26]
-  step_size: 5
+  step_size: 3
   log_epoch: 10
   is_tuning: False
   save_model: True
   loss_landscape: False
   patience: 5
+  channel_sz: 128
   bandwidth: 400000000.
-  max_epochs: 150
+  max_epochs: 30
   init_task: True
-  exp_name: wavemodel-small-bandwidth_loss
+  exp_name: wavemodel-8x8-blocks
   dataset_params:
     data_path: ./data
     train_batch_size: 64
