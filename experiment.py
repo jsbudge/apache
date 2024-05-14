@@ -232,28 +232,17 @@ class GeneratorExperiment(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         opt = self.optimizers()
         train_loss = self.train_val_get(batch, batch_idx)
-        # loss = torch.tensor([val for key, val in train_loss.items()], device='cpu')
-        loss = torch.abs(
-            train_loss['target_loss'] * (1. + train_loss['sidelobe_loss'] + train_loss['ortho_loss']) + train_loss[
-                'bandwidth_loss'])
         opt.zero_grad()
-        self.manual_backward(loss)
-        # self.famo.backward(loss)
+        self.manual_backward(train_loss['loss'])
         self.clip_gradients(opt, gradient_clip_val=0.5, gradient_clip_algorithm="norm")
         opt.step()
-        '''with torch.no_grad():
-            new_loss = torch.tensor([val for key, val in self.train_val_get(batch, batch_idx).items()], device='cpu')
-            self.famo.update(new_loss)'''
         self.log_dict({key: val.item() for key, val in train_loss.items()}, sync_dist=True,
-                      prog_bar=True, rank_zero_only=True)
-        self.log('loss', loss, rank_zero_only=True, on_epoch=True)
-        # sch = self.lr_schedulers()
-        # sch.step()
-        # return train_loss['loss']
+                      prog_bar=True, rank_zero_only=True, on_epoch=True)
 
     def validation_step(self, batch, batch_idx):
         losses = self.train_val_get(batch, batch_idx)
-        self.log_dict({key: val.item() for key, val in losses.items()}, sync_dist=True, prog_bar=True)
+        self.log_dict({key: val.item() for key, val in losses.items()}, sync_dist=True, prog_bar=True,
+                      rank_zero_only=True)
 
     def on_validation_end(self) -> None:
         if self.trainer.is_global_zero and not self.params['is_tuning'] and self.params['save_model']:
@@ -269,13 +258,11 @@ class GeneratorExperiment(pl.LightningModule):
                 rec = self.forward([clutter_enc.to(self.device), target_enc.to(self.device),
                                     pulse_length.to(self.device), bandwidth.to(self.device)])
                 waves = self.model.getWaveform(nn_output=rec).cpu().data.numpy()
-                print('Loaded waveforms...')
 
                 clutter = clutter_spec.cpu().data.numpy()
                 clutter = normalize(clutter[:, 0, :] + 1j * clutter[:, 1, :])
                 targets = target_spec.cpu().data.numpy()
                 targets = normalize(targets[:, 0, :] + 1j * targets[:, 1, :])
-                print('Loaded clutter and target data...')
 
                 # Run some plots for an idea of what's going on
                 freqs = np.fft.fftshift(np.fft.fftfreq(self.model.fft_sz, 1 / self.model.fs))
@@ -295,6 +282,7 @@ class GeneratorExperiment(pl.LightningModule):
         # If the selected scheduler is a ReduceLROnPlateau scheduler.
         if isinstance(sch, torch.optim.lr_scheduler.ReduceLROnPlateau):
             sch.step(self.trainer.callback_metrics["loss_epoch"])
+            self.log('LR', sch.get_last_lr()[0], rank_zero_only=True)
         if self.trainer.is_global_zero and not self.params['is_tuning'] and self.params['loss_landscape']:
             self.optim_path.append(self.model.get_flat_params())
 
@@ -319,7 +307,12 @@ class GeneratorExperiment(pl.LightningModule):
 
         bandwidth = torch.ones(clutter_enc.shape[0], 1, device=self.device) * self.params['bandwidth']
         results = self.forward([clutter_enc, target_enc, pulse_length, bandwidth])
-        return self.model.loss_function(results, clutter_spec, target_spec, bandwidth)
+        train_loss = self.model.loss_function(results, clutter_spec, target_spec, bandwidth)
+
+        train_loss['loss'] = torch.sqrt(torch.abs(
+            train_loss['target_loss']**2 + train_loss['sidelobe_loss']**2 + train_loss['ortho_loss']**2 + train_loss[
+                'bandwidth_loss']**2))
+        return train_loss
 
 
 class RCSExperiment(pl.LightningModule):
