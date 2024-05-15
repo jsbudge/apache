@@ -79,7 +79,7 @@ class GeneratorModel(FlatModule):
         self.decoder = decoder
         self.decoder.requires_grad = False
 
-        self.transformer = nn.Transformer(clutter_latent_size, num_decoder_layers=8, num_encoder_layers=8,
+        self.transformer = nn.Transformer(clutter_latent_size, num_decoder_layers=6, num_encoder_layers=6,
                                           activation='gelu', batch_first=True)
         self.transformer.apply(init_weights)
 
@@ -102,8 +102,16 @@ class GeneratorModel(FlatModule):
             nn.Linear(clutter_latent_size, clutter_latent_size),
             nn.Softsign(),
         )
+        self.fourier.apply(init_weights)
 
-        self.window = WindowConvolution(self.fs)
+        self.mod_bw = nn.Sequential(
+            nn.Linear(clutter_latent_size, clutter_latent_size),
+            nn.GELU(),
+            nn.Linear(clutter_latent_size, fft_sz),
+            nn.Softmax(dim=2),
+        )
+
+        '''self.window = WindowConvolution(self.fs)'''
 
         self.example_input_array = ([[torch.zeros((1, 32, clutter_latent_size)), torch.zeros((1, target_latent_size)),
                                     torch.tensor([[1250]]), torch.tensor([[400e6]])]])
@@ -112,9 +120,10 @@ class GeneratorModel(FlatModule):
         clutter, target, pulse_length, bandwidth = inp
         bw_params = self.fourier(torch.cat([pulse_length.float().view(-1, 1), bandwidth / self.fs],
                                            dim=1)).view(-1, 1, self.clutter_latent_size)
-        x = self.transformer(clutter, target.unsqueeze(1)) + bw_params
+        bw_win = self.mod_bw(bw_params)
+        x = self.transformer(clutter, target.unsqueeze(1))
         x = self.expand_to_ants(x)
-        decoded = [self.decoder.decode(x[:, n, :]) for n in range(self.n_ants)]
+        decoded = [self.decoder.decode(x[:, n, :]) * bw_win for n in range(self.n_ants)]
         # x = torch.cat([self.window(d, pulse_length[0], self.fft_sz).unsqueeze(1) for d in decoded], dim=1)
         x = torch.cat([d.unsqueeze(1) for d in decoded], dim=1)
         return x, bandwidth
@@ -164,15 +173,10 @@ class GeneratorModel(FlatModule):
             if n > 0:
                 ortho_loss += torch.sum(torch.abs(g1 * gn)) / gen_waveform.shape[0]
 
-            g1_return = torch.abs(g1 * g1.conj()) * 1e6
-            ratio = (torch.abs(target_spectrum - g1) ** 2 / torch.abs(clutter_spectrum - g1) ** 2)
-            ratio[torch.logical_and(clutter_spectrum == 0, target_spectrum == 0)] = (
-                g1_return)[torch.logical_and(clutter_spectrum == 0, target_spectrum == 0)]
-            ratio[torch.logical_and(clutter_spectrum == 0, target_spectrum != 0)] = 0.
-            ratio[torch.isnan(ratio)] = g1_return[torch.isnan(ratio)]
+            ratio = (torch.abs(target_spectrum - g1) ** 2 / (1. + torch.abs(clutter_spectrum - g1)) ** 2)
             I_k = torch.sum(torch.log(torch.nanmean(ratio, dim=1)))
 
-            bwf = torch.cumsum(g1_return, dim=1)
+            bwf = torch.cumsum(torch.abs(g1 * g1.conj()), dim=1)
             bwf = bwf / bwf[:, -1][:, None]
             bwf = torch.sum(bwf > .5, dim=1) / self.fft_sz * self.fs
             bandwidth_loss += (torch.mean(torch.sqrt(torch.abs(args[0][1][:, 0] - bwf) / (self.fs / self.fft_sz))) /
@@ -189,10 +193,6 @@ class GeneratorModel(FlatModule):
         sidelobe_loss = torch.abs(sidelobe_loss - .1)
         ortho_loss = torch.abs(ortho_loss - .1)
         target_loss = torch.abs(target_loss)
-
-        # Use sidelobe and orthogonality as regularization params for target loss
-        # loss = torch.sqrt(target_loss**2 + sidelobe_loss**2 + ortho_loss**2)
-        # loss = torch.abs(target_loss * (1. + sidelobe_loss + ortho_loss + mainlobe_loss) + bandwidth_loss)
 
         return {'target_loss': target_loss,
                 'sidelobe_loss': sidelobe_loss, 'ortho_loss': ortho_loss,
