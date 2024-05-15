@@ -66,7 +66,7 @@ exp_params:
 
 # For training of wavemodel
 wave_exp_params:
-  LR: 0.0001
+  LR: 0.01
   weight_decay: 0.1
   scheduler_gamma: 0.5
   swa_start: .6
@@ -77,12 +77,12 @@ wave_exp_params:
   is_tuning: False
   save_model: True
   loss_landscape: False
-  patience: 5
+  patience: 35
   channel_sz: 128
   bandwidth: 400000000.
-  max_epochs: 30
-  init_task: True
-  exp_name: wavemodel-8x8-blocks
+  max_epochs: 5
+  init_task: False
+  exp_name: wavemodel-8x8-softmaxwindow-ratioreg1
   dataset_params:
     data_path: ./data
     train_batch_size: 64
