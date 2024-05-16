@@ -13,7 +13,7 @@ def init_weights(m):
     with contextlib.suppress(ValueError):
         if hasattr(m, 'weight'):
             torch.nn.init.xavier_normal_(m.weight)
-# sourcery skip: merge-nested-ifs
+        # sourcery skip: merge-nested-ifs
         if hasattr(m, 'bias'):
             if m.bias is not None:
                 m.bias.data.fill_(.01)
@@ -79,13 +79,15 @@ class GeneratorModel(FlatModule):
         self.decoder = decoder
         self.decoder.requires_grad = False
 
-        self.transformer = nn.Transformer(clutter_latent_size, num_decoder_layers=6, num_encoder_layers=6,
+        self.transformer = nn.Transformer(clutter_latent_size, num_decoder_layers=8, num_encoder_layers=8,
                                           activation='gelu', batch_first=True)
         self.transformer.apply(init_weights)
 
         self.expand_to_ants = nn.Sequential(
             nn.Conv1d(1, channel_sz, 1, 1, 0),
             nn.GELU(),
+            Block1d(channel_sz),
+            Block1d(channel_sz),
             Block1d(channel_sz),
             Block1d(channel_sz),
             nn.Conv1d(channel_sz, self.n_ants, 1, 1, 0),
@@ -100,31 +102,47 @@ class GeneratorModel(FlatModule):
             nn.Linear(96, clutter_latent_size),
             nn.GELU(),
             nn.Linear(clutter_latent_size, clutter_latent_size),
-            nn.Softsign(),
+            nn.GELU(),
         )
         self.fourier.apply(init_weights)
 
-        self.mod_bw = nn.Sequential(
+        self.bw_integrate = nn.Sequential(
+            nn.Linear(clutter_latent_size, clutter_latent_size),
+            nn.GELU(),
+            nn.Linear(clutter_latent_size, clutter_latent_size),
+            nn.GELU(),
             nn.Linear(clutter_latent_size, clutter_latent_size),
             nn.GELU(),
             nn.Linear(clutter_latent_size, fft_sz),
-            nn.Softmax(dim=2),
+            nn.Softmax(dim=1),
         )
+        self.bw_integrate.apply(init_weights)
 
-        '''self.window = WindowConvolution(self.fs)'''
+        self.clutter_mod = nn.Sequential(
+            nn.Linear(clutter_latent_size, clutter_latent_size),
+            nn.GELU(),
+        )
+        self.clutter_mod.apply(init_weights)
+
+        self.target_mod = nn.Sequential(
+            nn.Linear(target_latent_size, target_latent_size),
+            nn.GELU(),
+        )
+        self.target_mod.apply(init_weights)
 
         self.example_input_array = ([[torch.zeros((1, 32, clutter_latent_size)), torch.zeros((1, target_latent_size)),
-                                    torch.tensor([[1250]]), torch.tensor([[400e6]])]])
+                                      torch.tensor([[1250]]), torch.tensor([[400e6]])]])
 
     def forward(self, inp: list) -> torch.tensor:
         clutter, target, pulse_length, bandwidth = inp
-        bw_params = self.fourier(torch.cat([pulse_length.float().view(-1, 1), bandwidth / self.fs],
-                                           dim=1)).view(-1, 1, self.clutter_latent_size)
-        bw_win = self.mod_bw(bw_params)
-        x = self.transformer(clutter, target.unsqueeze(1))
+        bw_win = self.fourier(torch.cat([pulse_length.float().view(-1, 1), bandwidth / self.fs],
+                                        dim=1)).view(-1, 1, self.fft_sz)
+        mod_clut = self.clutter_mod(clutter)
+        mod_targ = self.target_mod(target).unsqueeze(1)
+        x = self.transformer(mod_clut, mod_targ)
         x = self.expand_to_ants(x)
+        bw_win = self.bw_integrate(x + bw_win)
         decoded = [self.decoder.decode(x[:, n, :]) * bw_win for n in range(self.n_ants)]
-        # x = torch.cat([self.window(d, pulse_length[0], self.fft_sz).unsqueeze(1) for d in decoded], dim=1)
         x = torch.cat([d.unsqueeze(1) for d in decoded], dim=1)
         return x, bandwidth
 
@@ -146,6 +164,7 @@ class GeneratorModel(FlatModule):
         bandwidth_loss = torch.tensor(0., device=dev)
         target_loss = torch.tensor(0., device=dev)
         ortho_loss = torch.tensor(0., device=dev)
+        # plength_loss = torch.tensor(0., device=dev)
 
         # Get clutter spectrum into complex form and normalize to unit energy
         clutter_spectrum = torch.fft.fftshift(torch.complex(args[1][:, 0, :], args[1][:, 1, :]), dim=1)
@@ -244,10 +263,10 @@ class GeneratorModel(FlatModule):
                                    device=self.device)
         for n in range(self.n_ants):
             complex_wave = torch.fft.fftshift(torch.complex(dual_waveform[:, n, 0, :],
-                                                                           dual_waveform[:, n, 1, :]), dim=1)
+                                                            dual_waveform[:, n, 1, :]), dim=1)
             gen_waveform[:, n, :] = (complex_wave / torch.sqrt(torch.sum(complex_wave *
-                                                                 torch.conj(complex_wave),
-                                                                 dim=1))[:, None])  # Unit energy calculation
+                                                                         torch.conj(complex_wave),
+                                                                         dim=1))[:, None])  # Unit energy calculation
         return gen_waveform
 
 

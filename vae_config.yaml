@@ -77,12 +77,12 @@ wave_exp_params:
   is_tuning: False
   save_model: True
   loss_landscape: False
-  patience: 35
+  patience: 350
   channel_sz: 128
   bandwidth: 400000000.
-  max_epochs: 5
-  init_task: False
-  exp_name: wavemodel-8x8-softmaxwindow-ratioreg1
+  max_epochs: 15
+  init_task: True
+  exp_name: wavemodel-8x8-bwin
   dataset_params:
     data_path: ./data
     train_batch_size: 64
