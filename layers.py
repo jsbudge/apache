@@ -151,6 +151,25 @@ class WindowConvolution(LightningModule):
         return torch.conv1d(x, self.gen_window(pulse_length, fft_len), padding='same')
 
 
+class WindowGenerate(LightningModule):
+    def __init__(self, fs, fft_len, n_ants, *args: Any, **kwargs: Any):
+        super().__init__(*args, **kwargs)
+        self.win_factor = fft_len / fs
+        self.fft_len = fft_len
+        self.n_ants = n_ants
+
+    def forward(self, x, bandwidth):
+        windowSize = torch.floor(bandwidth * self.win_factor).to(torch.int).squeeze(1)
+        ret = torch.zeros((x.shape[0], self.n_ants, self.fft_len), device=self.device)
+        roll = torch.floor(x * self.win_factor)
+        for a in range(self.n_ants):
+            for n, (w, r) in enumerate(zip(windowSize, roll)):
+                win = torch.hann_window(w, device=self.device)
+                ret[n, a, self.fft_len // 2 - w // 2:self.fft_len // 2 + w // 2] = win
+                ret[n, a] = torch.roll(ret[n, 0], int(r[a, 0]))
+        return ret
+
+
 class AttentionConv(LightningModule):
     def __init__(self, in_channels, out_channels, kernel_size, stride=1, padding=0, groups=1, bias=False):
         super(AttentionConv, self).__init__()
