@@ -6,7 +6,7 @@ from torch import nn, Tensor
 from pytorch_lightning import LightningModule
 from torch.nn import functional as nn_func
 from torchvision import transforms
-from layers import FourierFeature, WindowConvolution, Block1d
+from layers import FourierFeature, WindowConvolution, Block1d, WindowGenerate
 
 
 def init_weights(m):
@@ -77,9 +77,10 @@ class GeneratorModel(FlatModule):
         self.target_latent_size = target_latent_size
         self.fs = fs
         self.decoder = decoder
+        self.decoder.eval()
         self.decoder.requires_grad = False
 
-        self.transformer = nn.Transformer(clutter_latent_size, num_decoder_layers=8, num_encoder_layers=8,
+        self.transformer = nn.Transformer(clutter_latent_size, num_decoder_layers=7, num_encoder_layers=7,
                                           activation='gelu', batch_first=True)
         self.transformer.apply(init_weights)
 
@@ -97,24 +98,22 @@ class GeneratorModel(FlatModule):
         )
         self.expand_to_ants.apply(init_weights)
 
-        self.fourier = nn.Sequential(
+        '''self.fourier = nn.Sequential(
             FourierFeature(2, 24),
             nn.Linear(96, clutter_latent_size),
             nn.GELU(),
             nn.Linear(clutter_latent_size, clutter_latent_size),
             nn.GELU(),
         )
-        self.fourier.apply(init_weights)
+        self.fourier.apply(init_weights)'''
+
+        self.win_shift = WindowGenerate(fs, fft_sz, n_ants)
 
         self.bw_integrate = nn.Sequential(
             nn.Linear(clutter_latent_size, clutter_latent_size),
             nn.GELU(),
-            nn.Linear(clutter_latent_size, clutter_latent_size),
-            nn.GELU(),
-            nn.Linear(clutter_latent_size, clutter_latent_size),
-            nn.GELU(),
-            nn.Linear(clutter_latent_size, fft_sz),
-            nn.Softmax(dim=1),
+            nn.Linear(clutter_latent_size, 1),
+            nn.Tanh(),
         )
         self.bw_integrate.apply(init_weights)
 
@@ -135,13 +134,13 @@ class GeneratorModel(FlatModule):
 
     def forward(self, inp: list) -> torch.tensor:
         clutter, target, pulse_length, bandwidth = inp
-        bw_win = self.fourier(torch.cat([pulse_length.float().view(-1, 1), bandwidth / self.fs],
-                                        dim=1)).view(-1, 1, self.fft_sz)
+        # bw_win = self.fourier(torch.cat([pulse_length.float().view(-1, 1), bandwidth / self.fs],
+        #                                 dim=1)).view(-1, 1, self.clutter_latent_size)
         mod_clut = self.clutter_mod(clutter)
         mod_targ = self.target_mod(target).unsqueeze(1)
         x = self.transformer(mod_clut, mod_targ)
         x = self.expand_to_ants(x)
-        bw_win = self.bw_integrate(x + bw_win)
+        bw_win = self.win_shift(self.bw_integrate(x), bandwidth)
         decoded = [self.decoder.decode(x[:, n, :]) * bw_win for n in range(self.n_ants)]
         x = torch.cat([d.unsqueeze(1) for d in decoded], dim=1)
         return x, bandwidth
@@ -155,16 +154,6 @@ class GeneratorModel(FlatModule):
         return self.getWaveform(nn_output=self.forward([clutter, target, pl, bw])).cpu().data.numpy()
 
     def loss_function(self, *args, **kwargs) -> dict:
-        # These values are set here purely for debugging purposes
-        dev = self.device
-        n_ants = self.n_ants
-
-        # Initialize losses to zero and place on correct device
-        sidelobe_loss = torch.tensor(0., device=dev)
-        bandwidth_loss = torch.tensor(0., device=dev)
-        target_loss = torch.tensor(0., device=dev)
-        ortho_loss = torch.tensor(0., device=dev)
-        # plength_loss = torch.tensor(0., device=dev)
 
         # Get clutter spectrum into complex form and normalize to unit energy
         clutter_spectrum = torch.fft.fftshift(torch.complex(args[1][:, 0, :], args[1][:, 1, :]), dim=1)
@@ -178,35 +167,37 @@ class GeneratorModel(FlatModule):
 
         # Get waveform into complex form and normalize it to unit energy
         gen_waveform = self.getWaveform(nn_output=args[0])
+        gconj = gen_waveform.conj()
 
-        # Run losses for each channel
-        for n in range(n_ants):
-            g1 = gen_waveform[:, n, ...]
-            slf = torch.abs(torch.fft.ifft(g1 * g1.conj(), dim=1))
-            slf[slf == 0] = 1e-9
-            sidelobe_func = 10 * torch.log(slf / 10)
-            slf = nn_func.max_pool1d_with_indices(sidelobe_func, 65, 1,
-                                                  padding=32)[0].unique(dim=1).detach()[:, 1]
+        # Target and clutter power functions
+        '''targ_power = torch.abs(target_spectrum.unsqueeze(1) - gen_waveform)**2
+        clut_power = torch.abs(clutter_spectrum.unsqueeze(1) - gen_waveform)**2
+        ratio = 1 + targ_power / (1e-6 + clut_power)
+        target_loss = torch.nanmean(torch.log(torch.nanmean(ratio, dim=2)))'''
+        bw_bin = int(args[0][1][0] / self.fs * self.fft_sz / 2)
+        targ_ac = torch.fft.fftshift(torch.abs(torch.fft.ifft(target_spectrum.unsqueeze(1) * gen_waveform * gconj, dim=2)), dim=2)
+        clut_ac = torch.fft.fftshift(torch.abs(torch.fft.ifft(clutter_spectrum.unsqueeze(1) * gen_waveform * gconj, dim=2)), dim=2)
+        ratio = clut_ac[:, :, self.fft_sz // 2 - bw_bin:self.fft_sz // 2 + bw_bin] / (1e-6 + targ_ac[:, :, self.fft_sz // 2 - bw_bin:self.fft_sz // 2 + bw_bin])
+        target_loss = 1. - torch.nanmean(ratio.mean(dim=2)[0])
 
-            # This is orthogonality losses, so we need a persistent value across the for loop
-            if n > 0:
-                ortho_loss += torch.sum(torch.abs(g1 * gn)) / gen_waveform.shape[0]
+        # Sidelobe loss functions
+        slf = torch.abs(torch.fft.ifft(gen_waveform * gconj, dim=2))
+        slf[slf == 0] = 1e-9
+        sidelobe_func = 10 * torch.log(slf / 10)
+        slf = nn_func.max_pool2d_with_indices(sidelobe_func,
+                                              (1, 65), (1, 1), padding=(0, 32))[0].unique(dim=2).detach()[:, :, 1]
+        # Get the ISLR for this waveform
+        sidelobe_loss = torch.nanmean(torch.max(sidelobe_func, dim=-1)[0] / slf)
 
-            ratio = (torch.abs(target_spectrum - g1) ** 2 / (1. + torch.abs(clutter_spectrum - g1)) ** 2)
-            I_k = torch.sum(torch.log(torch.nanmean(ratio, dim=1)))
+        # Orthogonality
+        ortho_loss = 1. - (torch.nanmean(torch.abs(gen_waveform * torch.flip(gconj, dims=(1,)))) /
+                      torch.max(torch.abs(gen_waveform * torch.flip(gconj, dims=(1,)))))
 
-            bwf = torch.cumsum(torch.abs(g1 * g1.conj()), dim=1)
-            bwf = bwf / bwf[:, -1][:, None]
-            bwf = torch.sum(bwf > .5, dim=1) / self.fft_sz * self.fs
-            bandwidth_loss += (torch.mean(torch.sqrt(torch.abs(args[0][1][:, 0] - bwf) / (self.fs / self.fft_sz))) /
-                               (self.n_ants * bwf.shape[0]))
-            target_loss += I_k / (gen_waveform.shape[0] * self.n_ants)
-
-            # Get the ISLR for this waveform
-            sidelobe_loss += (torch.nansum(torch.max(sidelobe_func, dim=-1)[0] / slf)
-                              / (self.n_ants * sidelobe_func.shape[0]))
-
-            gn = g1.conj()  # Conjugate of current g1 for orthogonality loss on next loop
+        # Bandwidth Losses
+        '''bwf = torch.cumsum(torch.abs(gen_waveform * gconj), dim=2)
+        bwf = bwf / bwf[:, :, -1][:, :, None]
+        bwf = torch.nansum(bwf > .5, dim=2) / self.fft_sz * self.fs
+        bandwidth_loss = torch.nanmean(torch.sqrt(torch.abs(args[0][1] - bwf) / args[0][1]))'''
 
         # Apply hinge loss to sidelobes
         sidelobe_loss = torch.abs(sidelobe_loss - .1)
@@ -214,8 +205,7 @@ class GeneratorModel(FlatModule):
         target_loss = torch.abs(target_loss)
 
         return {'target_loss': target_loss,
-                'sidelobe_loss': sidelobe_loss, 'ortho_loss': ortho_loss,
-                'bandwidth_loss': bandwidth_loss}
+                'sidelobe_loss': sidelobe_loss, 'ortho_loss': ortho_loss}
 
     def save(self, fpath, model_name='current'):
         torch.save(self.state_dict(), f'{fpath}/{model_name}_wave_model.state')

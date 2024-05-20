@@ -91,9 +91,8 @@ class WaveDataset(Dataset):
         for files in zip(clutter_spec_files, clutter_enc_files):
             tmp_cs = np.fromfile(files[0], dtype=np.float32).reshape((-1, 2, fft_sz + 2))
             # Scale appropriately
-            tmp_cs = tmp_cs[:, :, :fft_sz] # * tmp_cs[:, 0, fft_sz + 1][:, None, None] + tmp_cs[:, 0, fft_sz][:, None, None]
+            tmp_cs = tmp_cs[:, :, :fft_sz]
             tmp_cc = np.fromfile(files[1], dtype=np.float32).reshape((-1, latent_dim))
-            # tmp_cc = tmp_cc[tmp_cc.std(axis=0)]
             if split < 1:
                 Xt, Xs, _, _ = train_test_split(np.arange(tmp_cs.shape[0] - seq_len),
                                                 np.arange(tmp_cs.shape[0] - seq_len),
@@ -108,13 +107,18 @@ class WaveDataset(Dataset):
                 ccdata = np.concatenate((ccdata, tmp_cc[Xs])) if is_val else np.concatenate((ccdata, tmp_cc[Xt]))
                 csdata = np.concatenate((csdata, tmp_cs[Xs])) if is_val else np.concatenate((csdata, tmp_cs[Xt]))
 
-        self.ccdata = ccdata
         self.tcdata = torch.tensor(np.concatenate(
             [np.fromfile(c, dtype=np.float32).reshape((-1, latent_dim)) for c in target_enc_files]))
+        self.ccdata = ccdata
         self.csdata = torch.tensor(csdata)
         self.tsdata = torch.tensor(
             np.concatenate([np.fromfile(c, dtype=np.float32).reshape((-1, 2, fft_sz + 2)) for c in target_spec_files]))
-        self.tsdata = self.tsdata[:, :, :fft_sz] #* self.tsdata[:, 0, fft_sz + 1][:, None, None] + self.tsdata[:, 0, fft_sz][:, None, None]
+        self.tsdata = self.tsdata[:, :, :fft_sz]
+        if single_example:
+            self.ccdata[1:] = ccdata[0]
+            self.tcdata[1:] = self.tcdata[0]
+            self.csdata[1:] = self.csdata[0]
+            self.tsdata[1:] = self.tsdata[0]
 
         self.spec_sz = self.tcdata.shape[0]
         self.data_sz = csdata.shape[0] - seq_len
