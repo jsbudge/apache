@@ -66,11 +66,11 @@ exp_params:
 
 # For training of wavemodel
 wave_exp_params:
-  LR: 0.1
+  LR: 0.00001
   weight_decay: 0.1
-  scheduler_gamma: 0.1
+  scheduler_gamma: 0.3
   swa_start: .6
-  warm_start: False
+  warm_start: True
   betas: [.56, .26]
   step_size: 3
   log_epoch: 10
@@ -80,9 +80,9 @@ wave_exp_params:
   patience: 350
   channel_sz: 128
   bandwidth: 400000000.
-  max_epochs: 30
-  init_task: True
-  exp_name: wavemodel-7x7-setwindow
+  max_epochs: 1
+  init_task: False
+  exp_name: wavemodel-8x8-hann
   dataset_params:
     data_path: ./data
     train_batch_size: 64

@@ -248,7 +248,7 @@ class GeneratorExperiment(pl.LightningModule):
         if self.trainer.is_global_zero and not self.params['is_tuning'] and self.params['save_model']:
             self.model.save('./model')
             print('Model saved to disk.')
-            if self.current_epoch % 5 == 0:
+            '''if self.current_epoch % 5 == 0:
                 # Log an image to get an idea of progress
                 clutter_enc, target_enc, clutter_spec, target_spec, pulse_length = (
                     next(iter(self.trainer.val_dataloaders)))
@@ -274,7 +274,7 @@ class GeneratorExperiment(pl.LightningModule):
                 plt.legend(['Waveform 1', 'Waveform 2', 'Target', 'Clutter'])
                 plt.ylabel('Relative Power (dB)')
                 plt.xlabel('Freq (Hz)')
-                self.logger.experiment.add_figure('Waveforms', fig, self.current_epoch)
+                self.logger.experiment.add_figure('Waveforms', fig, self.current_epoch)'''
 
     def on_train_epoch_end(self) -> None:
         sch = self.lr_schedulers()
@@ -309,8 +309,8 @@ class GeneratorExperiment(pl.LightningModule):
         results = self.forward([clutter_enc, target_enc, pulse_length, bandwidth])
         train_loss = self.model.loss_function(results, clutter_spec, target_spec, bandwidth)
 
-        train_loss['loss'] = torch.sqrt(torch.abs(
-            train_loss['target_loss']**2 + train_loss['sidelobe_loss']**2 + train_loss['ortho_loss']**2))
+        train_loss['loss'] = (torch.sqrt(torch.abs(
+            train_loss['target_loss']**2 + train_loss['sidelobe_loss']**2 + train_loss['ortho_loss']**2)))
         return train_loss
 
 
