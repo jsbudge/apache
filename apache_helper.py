@@ -10,7 +10,6 @@ inch_to_m = .0254
 
 class ApachePlatform(RadarPlatform):
     def __init__(self,
-                 params: dict,
                  e: np.ndarray = None,
                  n: np.ndarray = None,
                  u: np.ndarray = None,
@@ -31,7 +30,8 @@ class ApachePlatform(RadarPlatform):
                  gps_txpos: np.ndarray = None,
                  tx_num: int = 0,
                  rx_num: int = 0,
-                 wavenumber: int = 0):
+                 wavenumber: int = 0,
+                 params: dict = None):
         super().__init__(e, n, u, r, p, y, t, tx_offset, rx_offset, gimbal, gimbal_offset, gimbal_rotations, dep_angle,
                          0., params['az_min_bw'], params['el_min_bw'], fs, gps_t, gps_az, gps_rxpos,
                          gps_txpos, tx_num, rx_num,
