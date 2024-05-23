@@ -179,6 +179,17 @@ if __name__ == '__main__':
             plt.ylabel('Relative Power (dB)')
             plt.xlabel('Freq (Hz)')
 
+            clutter_corr = np.fft.ifft(
+                np.fft.fftshift(clutter[0]) * waves[0, 0] * waves[0, 0].conj() + np.fft.fftshift(clutter[0]) * waves[
+                    0, 1] * waves[0, 1].conj())
+            target_corr = np.fft.ifft(
+                np.fft.fftshift(targets[0]) * waves[0, 0] * waves[0, 0].conj() + np.fft.fftshift(targets[0]) * waves[
+                    0, 1] * waves[0, 1].conj())
+            plt.figure('MIMO Correlations')
+            plt.plot(db(clutter_corr))
+            plt.plot(db(target_corr))
+            plt.legend(['Clutter', 'Target'])
+
             # Save the model structure out to a PNG
             # plot_model(mdl, to_file='./mdl_plot.png', show_shapes=True)
             # waveforms = np.fft.fftshift(waveforms, axes=2)

@@ -80,7 +80,7 @@ class GeneratorModel(FlatModule):
         self.decoder.eval()
         self.decoder.requires_grad = False
 
-        self.transformer = nn.Transformer(clutter_latent_size, num_decoder_layers=7, num_encoder_layers=7,
+        self.transformer = nn.Transformer(clutter_latent_size, num_decoder_layers=8, num_encoder_layers=8,
                                           activation='gelu', batch_first=True)
         self.transformer.apply(init_weights)
 
@@ -98,24 +98,29 @@ class GeneratorModel(FlatModule):
         )
         self.expand_to_ants.apply(init_weights)
 
-        '''self.fourier = nn.Sequential(
+        self.fourier = nn.Sequential(
             FourierFeature(2, 24),
             nn.Linear(96, clutter_latent_size),
             nn.GELU(),
             nn.Linear(clutter_latent_size, clutter_latent_size),
             nn.GELU(),
         )
-        self.fourier.apply(init_weights)'''
-
-        self.win_shift = WindowGenerate(fs, fft_sz, n_ants)
+        self.fourier.apply(init_weights)
 
         self.bw_integrate = nn.Sequential(
+            nn.Conv1d(self.n_ants, channel_sz, 1, 1, 0),
+            nn.GELU(),
             nn.Linear(clutter_latent_size, clutter_latent_size),
             nn.GELU(),
-            nn.Linear(clutter_latent_size, 1),
-            nn.Tanh(),
+            nn.Conv1d(channel_sz, 1, 1, 1, 0),
+            nn.GELU(),
+            nn.BatchNorm1d(1),
+            nn.Linear(clutter_latent_size, self.n_ants, bias=False),
+            nn.Softsign(),
         )
         self.bw_integrate.apply(init_weights)
+
+        self.window = WindowGenerate(self.fft_sz, self.n_ants)
 
         self.clutter_mod = nn.Sequential(
             nn.Linear(clutter_latent_size, clutter_latent_size),
@@ -134,15 +139,15 @@ class GeneratorModel(FlatModule):
 
     def forward(self, inp: list) -> torch.tensor:
         clutter, target, pulse_length, bandwidth = inp
-        # bw_win = self.fourier(torch.cat([pulse_length.float().view(-1, 1), bandwidth / self.fs],
-        #                                 dim=1)).view(-1, 1, self.clutter_latent_size)
+        bw_info = self.fourier(torch.cat([pulse_length.float().view(-1, 1), bandwidth / self.fs],
+                                         dim=1))
         mod_clut = self.clutter_mod(clutter)
         mod_targ = self.target_mod(target).unsqueeze(1)
         x = self.transformer(mod_clut, mod_targ)
-        x = self.expand_to_ants(x)
-        bw_win = self.win_shift(self.bw_integrate(x), bandwidth)
-        decoded = [self.decoder.decode(x[:, n, :]) * bw_win for n in range(self.n_ants)]
-        x = torch.cat([d.unsqueeze(1) for d in decoded], dim=1)
+        x = self.expand_to_ants(x * bw_info.unsqueeze(1))
+        final_win = self.window(self.bw_integrate(x).squeeze(1), bandwidth / self.fs).repeat_interleave(2, dim=1)
+        decoded = torch.cat([self.decoder.decode(x[:, n, :]) for n in range(self.n_ants)], dim=1) * final_win
+        x = decoded.view(-1, self.n_ants, 2, self.fft_sz)
         return x, bandwidth
 
     def full_forward(self, clutter_array, target_array, pulse_length: int, bandwidth: float) -> torch.tensor:
@@ -167,31 +172,37 @@ class GeneratorModel(FlatModule):
 
         # Get waveform into complex form and normalize it to unit energy
         gen_waveform = self.getWaveform(nn_output=args[0])
-        gconj = gen_waveform.conj()
+        mfiltered = gen_waveform * gen_waveform.conj()
+        crossfiltered = gen_waveform * torch.flip(gen_waveform.conj(), dims=(1,))
+        # gconj = gen_waveform.conj()
 
         # Target and clutter power functions
         '''targ_power = torch.abs(target_spectrum.unsqueeze(1) - gen_waveform)**2
         clut_power = torch.abs(clutter_spectrum.unsqueeze(1) - gen_waveform)**2
         ratio = 1 + targ_power / (1e-6 + clut_power)
         target_loss = torch.nanmean(torch.log(torch.nanmean(ratio, dim=2)))'''
-        bw_bin = int(args[0][1][0] / self.fs * self.fft_sz / 2)
-        targ_ac = torch.fft.fftshift(torch.abs(torch.fft.ifft(target_spectrum.unsqueeze(1) * gen_waveform * gconj, dim=2)), dim=2)
-        clut_ac = torch.fft.fftshift(torch.abs(torch.fft.ifft(clutter_spectrum.unsqueeze(1) * gen_waveform * gconj, dim=2)), dim=2)
-        ratio = clut_ac[:, :, self.fft_sz // 2 - bw_bin:self.fft_sz // 2 + bw_bin] / (1e-6 + targ_ac[:, :, self.fft_sz // 2 - bw_bin:self.fft_sz // 2 + bw_bin])
-        target_loss = 1. - torch.nanmean(ratio.mean(dim=2)[0])
+        # bw_bin = 200
+        targ_ac = torch.abs(torch.sum(
+            torch.fft.ifft(target_spectrum.unsqueeze(1) * mfiltered, dim=2), dim=1))
+        clut_ac = torch.abs(torch.sum(
+            torch.fft.ifft(clutter_spectrum.unsqueeze(1) * mfiltered, dim=2), dim=1))
+        ratio = clut_ac / (1e-6 + targ_ac) * 10
+        ratio[(targ_ac - clut_ac) < 0] = 0
+        ratio[targ_ac.max(dim=1)[0] < 1e-9, :] += 10.
+        target_loss = ratio.nanmean()
 
         # Sidelobe loss functions
-        slf = torch.abs(torch.fft.ifft(gen_waveform * gconj, dim=2))
+        slf = torch.abs(torch.fft.ifft(mfiltered, dim=2))
         slf[slf == 0] = 1e-9
         sidelobe_func = 10 * torch.log(slf / 10)
-        slf = nn_func.max_pool2d_with_indices(sidelobe_func,
-                                              (1, 65), (1, 1), padding=(0, 32))[0].unique(dim=2).detach()[:, :, 1]
+        slf_max = nn_func.max_pool2d_with_indices(
+            sidelobe_func, (1, 65), (1, 1), padding=(0, 32))[0].unique(dim=2).detach()[:, :, 1]
         # Get the ISLR for this waveform
-        sidelobe_loss = torch.nanmean(torch.max(sidelobe_func, dim=-1)[0] / slf)
+        sidelobe_loss = torch.nanmean(torch.max(sidelobe_func, dim=-1)[0] / slf_max)
 
         # Orthogonality
-        ortho_loss = 1. - (torch.nanmean(torch.abs(gen_waveform * torch.flip(gconj, dims=(1,)))) /
-                      torch.max(torch.abs(gen_waveform * torch.flip(gconj, dims=(1,)))))
+        ortho_loss = torch.nanmean(torch.abs(torch.fft.ifft(crossfiltered, dim=2).sum(dim=1))[:, 0] /
+                                   (1e-8 + torch.abs(torch.fft.ifft(mfiltered, dim=2).sum(dim=1))[:, 0]))
 
         # Bandwidth Losses
         '''bwf = torch.cumsum(torch.abs(gen_waveform * gconj), dim=2)
