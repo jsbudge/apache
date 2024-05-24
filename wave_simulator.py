@@ -113,9 +113,10 @@ if __name__ == '__main__':
 
     rpref, rps, vx_array = genChannels(settings['antenna_params']['n_tx'], settings['antenna_params']['n_rx'],
                                        settings['antenna_params']['tx_pos'], settings['antenna_params']['rx_pos'],
-                                       *rpi.pos(rpi.gpst).T, *rpi.att(rpi.gpst).T, rpi.gpst,
+                                       e, n, u, r, p, y, rpi.gpst,
                                        np.array([rpi.pan(rpi.gpst), rpi.tilt(rpi.gpst)]).T, goff, grot,
-                                       rpi.dep_ang, rpi.az_half_bw, rpi.el_half_bw, rpi.fs)
+                                       rpi.dep_ang, rpi.az_half_bw, rpi.el_half_bw, rpi.fs, ApachePlatform,
+                                       dict(params=wave_config['apache_params']))
 
     # Get reference data
     fs = rpi.fs
@@ -142,19 +143,19 @@ if __name__ == '__main__':
     ang_dist_traveled_over_cpi = gap_len / sim_settings['prf'] * sim_settings['scan_rate'] * DTR
 
     # Chirps and Mfilts for each channel
-    if sim_settings['use_sdr_waveform']:
-        waves = np.array([np.fft.fft(genPulse(np.linspace(0, 1, 10),
-                                              np.linspace(0, 1, 10), nr, fs, fc, bwidth), fft_len),
-                          np.fft.fft(genPulse(np.linspace(0, 1, 10),
-                                              np.linspace(1, 0, 10), nr, fs, fc, bwidth), fft_len)]
-                         )
-        _, chirps, mfilts = genChirpAndMatchedFilters(waves, rps, bwidth, fs, fc, fft_len, cpi_len)
-    else:
+    waves = np.array([np.fft.fft(genPulse(np.linspace(0, 1, 10),
+                                          np.linspace(0, 1, 10), nr, fs, fc, bwidth), fft_len),
+                      np.fft.fft(genPulse(np.linspace(0, 1, 10),
+                                          np.linspace(1, 0, 10), nr, fs, fc, bwidth), fft_len)]
+                     )
+    _, chirps, mfilts = genChirpAndMatchedFilters(waves, rps, bwidth, fs, fc, fft_len)
+    if not sim_settings['use_sdr_waveform']:
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
         mfilt = sdr.genMatchedFilter(0, fft_len=fft_len)
         print('Setting up wavemodel...')
         # Get the model, experiment, logger set up
-        decoder = Encoder(**wave_config['model_params'], fft_len=wave_config['settings']['fft_len'], params=wave_config['exp_params'])
+        decoder = Encoder(**wave_config['model_params'], fft_len=wave_config['settings']['fft_len'],
+                          params=wave_config['exp_params'])
         print('Setting up decoder...')
         try:
             decoder.load_state_dict(torch.load('./model/inference_model.state'))
@@ -167,9 +168,6 @@ if __name__ == '__main__':
 
         active_clutter = sdr.getPulses(sdr[0].frame_num[:wave_config['settings']['cpi_len']], 0)[1]
         bandwidth_model = torch.tensor(400e6, device=wave_mdl.device)
-
-        chirps, mfilts = reloadWaveforms(wave_mdl, active_clutter, nr, fft_len,
-                                         tcdata[0, ...], rps, cpi_len, bandwidth_model)
 
     # This replaces the ASI background with a custom image
     bg.resampleGrid(settings['origin'], settings['grid_width'], settings['grid_height'],
@@ -268,7 +266,7 @@ if __name__ == '__main__':
         ex_chirps.append(np.array(chirps[0].get()))
         if not sim_settings['use_sdr_waveform'] and tmp_len == gap_len:
             chirps, mfilts = reloadWaveforms(wave_mdl, active_clutter, nr, fft_len,
-                                         tcdata[0, ...], rps, cpi_len, bandwidth_model)
+                                         active_clutter[0], rps, cpi_len, bandwidth_model)
         # Pan and Tilt are shared by each channel, antennas are all facing the same way
         panrx = rpi.pan(ts)
         elrx = rpi.tilt(ts)

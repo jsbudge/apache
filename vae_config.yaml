@@ -66,8 +66,8 @@ exp_params:
 
 # For training of wavemodel
 wave_exp_params:
-  LR: 0.000001
-  weight_decay: 0.1
+  LR: 0.000000016
+  weight_decay: 0.01
   scheduler_gamma: 0.5
   swa_start: .6
   warm_start: False
@@ -80,7 +80,7 @@ wave_exp_params:
   patience: 350
   channel_sz: 128
   bandwidth: 400000000.
-  max_epochs: 20
+  max_epochs: 10
   init_task: True
   exp_name: wavemodel-9x9-contextwindow
   dataset_params:

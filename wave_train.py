@@ -57,7 +57,7 @@ if __name__ == '__main__':
     # torch.cuda.empty_cache()
 
     # seed_everything(np.random.randint(1, 2048), workers=True)
-    seed_everything(43, workers=True)
+    seed_everything(7, workers=True)
 
     with open('./vae_config.yaml', 'r') as file:
         try:
@@ -160,7 +160,7 @@ if __name__ == '__main__':
             # nn_numpy = nn_output[0, 0, ...].cpu().data.numpy()
 
             waves = wave_mdl.getWaveform(nn_output=nn_output).cpu().data.numpy()
-            waves = np.fft.fft(np.fft.ifft(waves, axis=2)[:, :, :nr], fft_len, axis=2)
+            # waves = np.fft.fft(np.fft.ifft(waves, axis=2)[:, :, :nr], fft_len, axis=2)
             print('Loaded waveforms...')
 
             clutter = cs.cpu().data.numpy()
