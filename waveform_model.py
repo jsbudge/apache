@@ -80,7 +80,7 @@ class GeneratorModel(FlatModule):
         self.decoder.eval()
         self.decoder.requires_grad = False
 
-        self.transformer = nn.Transformer(clutter_latent_size, num_decoder_layers=9, num_encoder_layers=9,
+        self.transformer = nn.Transformer(clutter_latent_size, num_decoder_layers=6, num_encoder_layers=6,
                                           activation='gelu', batch_first=True)
         self.transformer.apply(init_weights)
 
@@ -141,13 +141,26 @@ class GeneratorModel(FlatModule):
         x = x.view(-1, self.n_ants, 2, self.fft_sz)
         return x, bandwidth
 
-    def full_forward(self, clutter_array, target_array, pulse_length: int, bandwidth: float) -> torch.tensor:
+    def full_forward(self, clutter_array, target_array, pulse_length: int, bandwidth: float, mu_scale: float,
+                     std_scale: float) -> torch.tensor:
         # Make everything into tensors and place on device
-        clutter = self.decoder.encode(torch.tensor(clutter_array, dtype=torch.float32, device=self.device).unsqueeze(0))
-        target = self.decoder.encode(torch.tensor(target_array, dtype=torch.float32, device=self.device).unsqueeze(0))
+        clut = (torch.stack([torch.tensor(clutter_array.real, dtype=torch.float32, device=self.device),
+                            torch.tensor(clutter_array.imag, dtype=torch.float32, device=self.device)]) -
+                mu_scale) / std_scale
+        targ = (torch.stack([torch.tensor(target_array.real, dtype=torch.float32, device=self.device),
+                            torch.tensor(target_array.imag, dtype=torch.float32, device=self.device)]) -
+                mu_scale) / std_scale
+        clutter = self.decoder.encode(clut.swapaxes(0, 1))
+        target = self.decoder.encode(targ.unsqueeze(0))
         pl = torch.tensor([[pulse_length]], device=self.device)
         bw = torch.tensor([[bandwidth]], device=self.device)
-        return self.getWaveform(nn_output=self.forward([clutter, target, pl, bw])).cpu().data.numpy()
+
+        # Now that everything is formatted, get the waveform
+        unformatted_waveform = (
+            self.getWaveform(nn_output=self.forward([clutter.unsqueeze(0), target, pl, bw])).cpu().data.numpy())
+
+        # Return it in complex form without the leading dimension
+        return unformatted_waveform[0]
 
     def loss_function(self, *args, **kwargs) -> dict:
 
