@@ -149,14 +149,13 @@ if __name__ == '__main__':
             wave_mdl.to(device)
             wave_mdl.eval()
 
-            cc, tc, cs, ts, plength = next(iter(data.train_dataloader()))
+            cc, tc, cs, ts, plength, dset_bandwidth = next(iter(data.train_dataloader()))
             cc = cc.to(device)
             tc = tc.to(device)
             cs = cs.to(device)
             ts = ts.to(device)
 
-            nn_output = wave_mdl([cc, tc, torch.tensor([nr] * plength.shape[0]),
-                                 torch.tensor([[config['settings']['bandwidth']]] * plength.shape[0])])
+            nn_output = wave_mdl([cc, tc, plength, dset_bandwidth])
             # nn_numpy = nn_output[0, 0, ...].cpu().data.numpy()
 
             waves = wave_mdl.getWaveform(nn_output=nn_output).cpu().data.numpy()

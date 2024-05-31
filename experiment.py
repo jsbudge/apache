@@ -302,10 +302,8 @@ class GeneratorExperiment(pl.LightningModule):
         return optims, scheds
 
     def train_val_get(self, batch, batch_idx):
-        clutter_enc, target_enc, clutter_spec, target_spec, pulse_length = batch
-        pulse_length[1:] = pulse_length[0]
+        clutter_enc, target_enc, clutter_spec, target_spec, pulse_length, bandwidth = batch
 
-        bandwidth = torch.ones(clutter_enc.shape[0], 1, device=self.device) * self.params['bandwidth']
         results = self.forward([clutter_enc, target_enc, pulse_length, bandwidth])
         train_loss = self.model.loss_function(results, clutter_spec, target_spec, bandwidth)
 

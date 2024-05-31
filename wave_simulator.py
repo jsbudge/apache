@@ -167,9 +167,8 @@ if __name__ == '__main__':
         active_clutter = np.fft.fft(sdr.getPulses(sdr[0].frame_num[:wave_config['settings']['cpi_len']], 0)[1].T,
                                     wave_mdl.fft_sz, axis=1)
         bandwidth_model = torch.tensor(400e6, device=wave_mdl.device)
-        target_spec_files = glob('./data/targets.spec')
-        tsdata = np.concatenate([np.fromfile(c, dtype=np.float32).reshape((-1, 2, wave_mdl.fft_sz + 2))
-                                 for c in target_spec_files])[target_target, :, :wave_mdl.fft_sz]
+        tsdata = np.fromfile('/home/jeff/repo/apache/data/target_SAR_06072023_154802.spec',
+                             dtype=np.float32).reshape((-1, 2, wave_mdl.fft_sz + 2))[target_target, :, :wave_mdl.fft_sz]
         tsdata = tsdata[0, :] + 1j * tsdata[1, :]
 
     # This replaces the ASI background with a custom image
@@ -246,67 +245,68 @@ if __name__ == '__main__':
                                settings['origin'])
     if settings['live_figures']:
         plt.ion()
-    for idx, (chirps, pdata) in enumerate(data_gen):
-        ts = data_t[idx * gap_len + cpi_len // 2:idx * gap_len + gap_len - cpi_len // 2]
-        ts_hat = ts.mean()
-        compressed_data = np.zeros((pdata.shape[1], nsam * settings['upsample']), dtype=np.complex128)
-        try:
-            for ch_idx, rp in enumerate(rps):
-                tmp_data = pdata[rp.rx_num] * mfilts[ch_idx].get()
-                tmp_exp = np.zeros((pdata.shape[1], up_fft_len), dtype=np.complex128)
-                tmp_exp[:, :fft_len // 2] = tmp_data[:, :fft_len // 2]
-                tmp_exp[:, -fft_len // 2:] = tmp_data[:, -fft_len // 2:]
-                compressed_data += np.fft.ifft(tmp_exp, axis=1)[:, :nsam * settings['upsample']] * avec[ch_idx]
-        except TypeError:
-            continue
-        if not sim_settings['use_sdr_waveform'] and compressed_data.shape[0] == gap_len:
-            chirps, mfilts = reloadWaveforms(wave_mdl, active_clutter, nr, fft_len,
-                                             tsdata, rps, bandwidth_model,
-                                             wave_config['wave_exp_params']['dataset_params']['mu'],
-                                             wave_config['wave_exp_params']['dataset_params']['var'])
-            data_gen.send(chirps)
-            ex_chirps.append(np.array(chirps[0].get()))
+    try:
+        for idx, (chirps, pdata) in enumerate(data_gen):
+            # ts = data_t[idx * gap_len + cpi_len // 2:idx * gap_len + gap_len - cpi_len // 2]
+            ts = data_t[idx * gap_len:idx * gap_len + gap_len]
+            ts_hat = ts.mean()
+            compressed_data = np.zeros((pdata.shape[1], nsam * settings['upsample']), dtype=np.complex128)
+            try:
+                for ch_idx, rp in enumerate(rps):
+                    tmp_data = pdata[rp.rx_num] * mfilts[ch_idx].get()
+                    tmp_exp = np.zeros((pdata.shape[1], up_fft_len), dtype=np.complex128)
+                    tmp_exp[:, :fft_len // 2] = tmp_data[:, :fft_len // 2]
+                    tmp_exp[:, -fft_len // 2:] = tmp_data[:, -fft_len // 2:]
+                    compressed_data += np.fft.ifft(tmp_exp, axis=1)[:, :nsam * settings['upsample']] * avec[ch_idx]
+            except TypeError:
+                continue
+            if not sim_settings['use_sdr_waveform'] and compressed_data.shape[0] == gap_len:
+                chirps, mfilts = reloadWaveforms(wave_mdl, active_clutter, nr, fft_len,
+                                                 tsdata, rps, bandwidth_model,
+                                                 wave_config['wave_exp_params']['dataset_params']['mu'],
+                                                 wave_config['wave_exp_params']['dataset_params']['var'])
+                data_gen.send(chirps)
+                ex_chirps.append(np.array(chirps[0].get()))
 
-        panrx = rpref.pan(ts)
-        elrx = rpref.tilt(ts)
-        panrx_gpu = cupy.array(panrx, dtype=np.float64)
-        elrx_gpu = cupy.array(elrx, dtype=np.float64)
-        if compressed_data.shape[0] == gap_len:
-            '''g_k = np.zeros((H.shape[1], nsam))
-            b_k = np.zeros_like(g_k)
-            sig_k = np.linalg.pinv(.01 * H.T.dot(H) + 10 * np.eye(H.shape[1])).dot(.01 * H.T.dot(rbi_y.T) + 10 * (g_k - b_k))'''
-            # sig_k = np.fft.ifft(np.fft.fft(rbi_y, axis=1) / H_w)[:, cpi_len // 2:-cpi_len // 2 + 1]
-            sig_k = compressed_data.T.dot(Hinv)
-            comp_data_gpu = cupy.array(sig_k, dtype=np.complex128)
-            bpj_grid = cupy.zeros(gx.shape, dtype=np.complex128)
-            posrx_gpu = cupy.array(rpref.rxpos(ts), dtype=np.float64)
-            postx_gpu = cupy.array(rpref.txpos(ts), dtype=np.float64)
+            panrx = rpref.pan(ts)
+            elrx = rpref.tilt(ts)
+            panrx_gpu = cupy.array(panrx, dtype=np.float64)
+            elrx_gpu = cupy.array(elrx, dtype=np.float64)
+            if compressed_data.shape[0] == gap_len:
+                # sig_k = compressed_data.T.dot(Hinv)
+                comp_data_gpu = cupy.array(compressed_data.T, dtype=np.complex128)
+                bpj_grid = cupy.zeros(gx.shape, dtype=np.complex128)
+                posrx_gpu = cupy.array(rpref.rxpos(ts), dtype=np.float64)
+                postx_gpu = cupy.array(rpref.txpos(ts), dtype=np.float64)
 
-            # Backprojection only for beamformed final data
-            backproject[bpg_bpj, threads_per_block](postx_gpu, posrx_gpu, imx_gpu, imy_gpu,
-                                                    imz_gpu, panrx_gpu,
-                                                    elrx_gpu, panrx_gpu, elrx_gpu, comp_data_gpu, bpj_grid,
-                                                    np.float64(bpj_wavelength), np.float64(near_range_s),
-                                                    np.float64(rpref.fs * settings['upsample']),
-                                                    np.float64(rpref.az_half_bw),
-                                                    np.float64(rpref.el_half_bw), np.int32(settings['poly_num']))
-            cupy.cuda.Device().synchronize()
-            rbi_image += bpj_grid.get()
-            if settings['live_figures']:
-                pt_proj = rpref.pos(ts_hat) + azelToVec(rpref.pan(ts_hat), rpref.tilt(ts_hat)) * sim_settings['standoff_range']
-                plt.gca().cla()
-                plt.subplot(2, 1, 1)
-                plt.title(f'CPI {idx}')
-                plt.imshow(db(rbi_image))
-                plt.axis('tight')
-                plt.subplot(2, 1, 2)
-                plt.scatter(gx.flatten(), gy.flatten(), c=db(bg.refgrid).flatten())
-                plt.scatter(pt_proj[0], pt_proj[1], s=40)
-                plt.draw()
-                plt.pause(.1)
-            if not sim_settings['use_sdr_waveform']:
-                active_clutter = np.fft.fft(np.fft.ifft(compressed_data, axis=1),
-                                            wave_config['settings']['fft_len'], axis=1)
+                # Backprojection only for beamformed final data
+                backproject[bpg_bpj, threads_per_block](postx_gpu, posrx_gpu, imx_gpu, imy_gpu,
+                                                        imz_gpu, panrx_gpu,
+                                                        elrx_gpu, panrx_gpu, elrx_gpu, comp_data_gpu, bpj_grid,
+                                                        np.float64(bpj_wavelength), np.float64(near_range_s),
+                                                        np.float64(rpref.fs * settings['upsample']),
+                                                        np.float64(rpref.az_half_bw),
+                                                        np.float64(rpref.el_half_bw), np.int32(settings['poly_num']))
+                cupy.cuda.Device().synchronize()
+                rbi_image += bpj_grid.get()
+                if settings['live_figures']:
+                    pt_proj = rpref.pos(ts_hat)[:, None] + azelToVec(rpref.pan(ts), rpref.tilt(ts)) * sim_settings['standoff_range']
+                    plt.gca().cla()
+                    plt.subplot(2, 1, 1)
+                    plt.title(f'CPI {idx}')
+                    plt.imshow(db(rbi_image))
+                    plt.axis('tight')
+                    plt.subplot(2, 1, 2)
+                    plt.scatter(gx.flatten(), gy.flatten(), c=db(bg.refgrid).flatten())
+                    plt.scatter(pt_proj[0], pt_proj[1], s=40, c='red')
+                    plt.draw()
+                    plt.pause(.1)
+                if not sim_settings['use_sdr_waveform']:
+                    active_clutter = np.fft.fft(np.fft.ifft(compressed_data, axis=1),
+                                                wave_config['settings']['fft_len'], axis=1)
+    except ValueError:
+        print('ValueError.')
+
     """
     ----------------------------PLOTS-------------------------------
     """
@@ -348,7 +348,7 @@ if __name__ == '__main__':
 
         plt.figure('Comparison')
         plt.subplot(2, 1, 1)
-        plt.scatter(gx.flatten(), gy.flatten(), c=db(refgrid).flatten())
+        plt.scatter(gx.flatten(), gy.flatten(), c=db(refgrid).flatten(), clim=clims)
         plt.scatter([plane_pos[0]], [plane_pos[1]], s=40)
         plt.subplot(2, 1, 2)
         plt.scatter(gx.flatten(), gy.flatten(), c=db(rbi_image).flatten())
@@ -385,3 +385,12 @@ if __name__ == '__main__':
         plt.plot(az_spread / DTR, db(np.sum(rbi_image, axis=0)))'''
 
         # px.imshow(abs(rbi_image), zmin=clims.mean() - 3 * clims.std(), zmax=clims.mean() + 3 * clims.std()).show()
+
+'''chirp = np.fft.fft(genPulse(np.linspace(0, 1, 10), np.linspace(0, 1, 10), nr, fs, 9.6e9, 400e6), fft_len)
+messed_mag = (np.random.rand(len(chirp)) + .5) * np.exp(1j * np.angle(chirp))
+messed_phase = abs(chirp) * np.exp(1j * np.random.rand(len(chirp)) * 2 * np.pi)
+
+plt.figure()
+plt.plot(db(np.fft.ifft(chirp * chirp.conj())))
+plt.plot(db(np.fft.ifft(messed_mag * chirp.conj())))
+plt.plot(db(np.fft.ifft(messed_phase * chirp.conj())))'''

@@ -3,7 +3,7 @@ from typing import List, Optional, Sequence, Union
 import os
 import yaml
 from pytorch_lightning import LightningDataModule
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, ConcatDataset
 import torch
 from torchvision import transforms
 from pathlib import Path
@@ -76,10 +76,10 @@ class RCSDataset(Dataset):
         return self.optical_data.shape[0]
 
 
-class WaveDataset(Dataset):
+class WaveDataset(ConcatDataset):
     def __init__(self, root_dir: str, latent_dim: int = 50, fft_sz: int = 4096,
-                 split: float = 1., single_example: bool = False, min_pulse_length: int = 1,
-                 max_pulse_length: int = 2, seq_len: int = 32, is_val=False, seed=42):
+                 split: float = 1., single_example: bool = False, min_pulse_length: int = 1, max_pulse_length: int = 2,
+                 seq_len: int = 32, is_val=False, seed=42):
         assert Path(root_dir).is_dir()
 
         clutter_spec_files = glob(f'{root_dir}/clutter_*.spec')
@@ -89,7 +89,6 @@ class WaveDataset(Dataset):
 
         # Arrange files into their pairs
         pair_dict = {}
-        path_stem = ''
         clutter_size = []
         file_idx = 0
         for fl, tp in [(clutter_spec_files, 'cs'), (clutter_enc_files, 'cc'),
@@ -107,72 +106,68 @@ class WaveDataset(Dataset):
                     file_idx += 1
                     pair_dict[path_stem]['size'] = csz
 
-        self.pairs = [l for _, l in pair_dict.items()]
-        self.file_idx = clutter_size
-        self.curr_file = 0
-        self.seed = seed
-        self.fft_sz = fft_sz
-        self.split = split
-        self.latent_dim = latent_dim
-        self.is_val = is_val
-        self.single_example = single_example
-        self.seq_len = seq_len
+        pairs = [l for _, l in pair_dict.items()]
+        datasets = [WaveFileDataset(p, latent_dim, fft_sz, split, single_example, min_pulse_length, max_pulse_length,
+                                    seq_len, is_val, seed) for p in pairs]
+        super().__init__(datasets)
 
-        self.ccdata, self.csdata, self.tcdata, self.tsdata = self._load_file(self.pairs[self.curr_file])
 
-        self.data_sz = len(clutter_size)
-
-        self.min_pulse_length = min_pulse_length
-        self.max_pulse_length = max_pulse_length
-
-    def _load_file(self, fdict):
+class WaveFileDataset(Dataset):
+    def __init__(self, files: dict, latent_dim: int = 50, fft_sz: int = 4096,
+                 split: float = 1., single_example: bool = False, min_pulse_length: int = 1,
+                 max_pulse_length: int = 2, seq_len: int = 32, is_val=False, seed=42):
 
         # Clutter data
-        tmp_cs = np.fromfile(fdict['cs'], dtype=np.float32).reshape((-1, 2, self.fft_sz + 2))
+        tmp_cs = np.fromfile(files['cs'], dtype=np.float32).reshape((-1, 2, fft_sz + 2))
         # Scale appropriately
-        tmp_cs = tmp_cs[:, :, :self.fft_sz]
-        tmp_cc = np.fromfile(fdict['cc'], dtype=np.float32).reshape((-1, self.latent_dim))[:-255, :]
+        tmp_cs = tmp_cs[:, :, :fft_sz]
+        tmp_cc = np.fromfile(files['cc'], dtype=np.float32).reshape((-1, latent_dim))[:-255, :]
 
         # Target data
-        tmp_ts = np.fromfile(fdict['ts'], dtype=np.float32).reshape((-1, 2, self.fft_sz + 2))
+        tmp_ts = np.fromfile(files['ts'], dtype=np.float32).reshape((-1, 2, fft_sz + 2))
         # Scale appropriately
-        tmp_ts = tmp_ts[:, :, :self.fft_sz]
-        tmp_tc = np.fromfile(fdict['tc'], dtype=np.float32).reshape((-1, self.latent_dim))
-        if self.split < 1:
+        tmp_ts = tmp_ts[:, :, :fft_sz]
+        tmp_tc = np.fromfile(files['tc'], dtype=np.float32).reshape((-1, latent_dim))
+        if split < 1:
             Xs, Xt, _, _ = train_test_split(np.arange(tmp_cs.shape[0]),
                                             np.arange(tmp_cs.shape[0]),
-                                            test_size=self.split, random_state=self.seed)
+                                            test_size=split, random_state=seed)
         else:
             Xt = np.arange(tmp_cs.shape[0])
             Xs = np.arange(tmp_cs.shape[0])
-        ccdata = tmp_cc[Xs] if self.is_val else tmp_cc[Xt]
-        csdata = tmp_cs[Xs] if self.is_val else tmp_cs[Xt]
-        tcdata = tmp_tc[:ccdata.shape[0]]
-        tsdata = tmp_ts[:csdata.shape[0]]
-        if self.single_example:
-            ccdata[1:] = ccdata[0]
-            tcdata[1:] = tcdata[0]
-            csdata[1:] = csdata[0]
-            tsdata[1:] = tsdata[0]
-        return ccdata, torch.tensor(csdata), tcdata, torch.tensor(tsdata)
+        self.ccdata = tmp_cc[Xs] if is_val else tmp_cc[Xt]
+        self.csdata = torch.tensor(tmp_cs[Xs]) if is_val else torch.tensor(tmp_cs[Xt])
+        self.tcdata = torch.tensor(tmp_tc[:self.ccdata.shape[0]])
+        self.tsdata = torch.tensor(tmp_ts[:self.csdata.shape[0]])
+        if single_example:
+            self.ccdata[1:] = self.ccdata[0]
+            self.tcdata[1:] = self.tcdata[0]
+            self.csdata[1:] = self.csdata[0]
+            self.tsdata[1:] = self.tsdata[0]
+
+        self.seq_len = seq_len
+        self.data_sz = self.ccdata.shape[0]
+        self.min_pulse_length = min_pulse_length
+        self.max_pulse_length = max_pulse_length
 
     def __getitem__(self, idx):
-        sidx = idx
-        if self.file_idx[idx][0] != self.curr_file:
-            sidx = self.file_idx[idx][1]
-            self.curr_file = self.file_idx[idx][0]
-            self.ccdata, self.csdata, self.tcdata, self.tsdata = self._load_file(self.pairs[self.curr_file])
-        ccd = torch.cat([torch.tensor(self.ccdata[sidx + n, ...],
+        ccd = torch.cat([torch.tensor(self.ccdata[idx + n, ...],
                                       dtype=torch.float32).unsqueeze(0) for n in
-                         range(min(self.seq_len, self.ccdata.shape[0] - sidx))], dim=0)
-        csd = self.csdata[sidx, ...]
-        tsd = self.tsdata[sidx, ...]
-        tcd = self.tcdata[sidx, ...]
+                         range(min(self.seq_len, self.ccdata.shape[0] - idx))], dim=0)
+        csd = self.csdata[idx, ...]
+        tsd = self.tsdata[idx, ...]
+        tcd = self.tcdata[idx, ...]
 
-        return ccd, tcd, csd, tsd, np.random.randint(self.min_pulse_length, self.max_pulse_length)
+        return ccd, tcd, csd, tsd, np.random.randint(self.min_pulse_length, self.max_pulse_length), np.random.rand() * 1e9 + 400e6
 
     def __len__(self):
-        return self.data_sz
+        return self.data_sz - self.seq_len
+
+
+def collate_fun(batch):
+    return (torch.stack([ccd for ccd, _, _, _, _, _ in batch]), torch.stack([tcd for _, tcd, _, _, _, _ in batch]),
+            torch.stack([csd for _, _, csd, _, _, _ in batch]), torch.stack([tsd for _, _, _, tsd, _, _ in batch]),
+            torch.tensor([pl for _, _, _, _, pl, _ in batch]), torch.tensor([bw for _, _, _, _, _, bw in batch]))
 
 
 class BaseModule(LightningDataModule):
@@ -206,6 +201,7 @@ class BaseModule(LightningDataModule):
             num_workers=self.num_workers,
             shuffle=True,
             pin_memory=self.pin_memory,
+            collate_fn=collate_fun,
         )
 
     def val_dataloader(self) -> Union[DataLoader, List[DataLoader]]:
@@ -215,6 +211,7 @@ class BaseModule(LightningDataModule):
             num_workers=self.num_workers,
             shuffle=False,
             pin_memory=self.pin_memory,
+            collate_fn=collate_fun,
         )
 
     def test_dataloader(self) -> Union[DataLoader, List[DataLoader]]:
@@ -224,6 +221,7 @@ class BaseModule(LightningDataModule):
             num_workers=self.num_workers,
             shuffle=True,
             pin_memory=self.pin_memory,
+            collate_fn=collate_fun,
         )
 
 
