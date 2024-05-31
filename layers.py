@@ -162,11 +162,28 @@ class WindowGenerate(LightningModule):
         ret = torch.zeros((x.shape[0], self.n_ants, self.fft_len), device=self.device)
         roll = torch.round(x * self.fft_len / 4)
         for n, (w, r) in enumerate(zip(windowSize, roll)):
+            ws = w if w % 2 == 0 else w + 1
             for a in range(self.n_ants):
-                win = torch.hann_window(w, device=self.device) * self.n_ants
-                ret[n, a, self.fft_len // 2 - w // 2:self.fft_len // 2 + w // 2] = win
+                win = torch.hann_window(ws, device=self.device) * self.n_ants
+                ret[n, a, self.fft_len // 2 - ws // 2:self.fft_len // 2 + ws // 2] = win
                 ret[n, a] = torch.roll(ret[n, 0], int(r[a]))
         return ret
+
+
+class PulseLength(LightningModule):
+
+    def __init__(self, *args: Any, **kwargs: Any):
+        super().__init__(*args, **kwargs)
+
+    def forward(self, x, pl):
+        x = torch.complex(x[:, ::2, :], x[:, 1::2, :])
+        x = torch.fft.ifft(torch.fft.fftshift(x, dim=2), dim=2)
+        for n in range(x.shape[0]):
+            x[n, :, :pl[n]] *= torch.hann_window(int(pl[n]), device=self.device)
+            x[n, :, pl[n]:] = 0
+        x = torch.view_as_real(torch.fft.fftshift(torch.fft.fft(x, dim=2), dim=2))
+        x = torch.cat([x[:, n, ...].swapaxes(1, 2) for n in range(x.shape[1])], dim=1)
+        return x
 
 
 class AttentionConv(LightningModule):

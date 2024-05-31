@@ -6,7 +6,7 @@ from torch import nn, Tensor
 from pytorch_lightning import LightningModule
 from torch.nn import functional as nn_func
 from torchvision import transforms
-from layers import FourierFeature, WindowConvolution, Block1d, WindowGenerate
+from layers import FourierFeature, WindowConvolution, Block1d, WindowGenerate, PulseLength
 
 
 def init_weights(m):
@@ -80,15 +80,13 @@ class GeneratorModel(FlatModule):
         self.decoder.eval()
         self.decoder.requires_grad = False
 
-        self.transformer = nn.Transformer(clutter_latent_size, num_decoder_layers=6, num_encoder_layers=6,
+        self.transformer = nn.Transformer(clutter_latent_size, num_decoder_layers=12, num_encoder_layers=12,
                                           activation='gelu', batch_first=True)
         self.transformer.apply(init_weights)
 
         self.expand_to_ants = nn.Sequential(
             nn.Conv1d(1, channel_sz, 1, 1, 0),
             nn.GELU(),
-            Block1d(channel_sz),
-            Block1d(channel_sz),
             Block1d(channel_sz),
             Block1d(channel_sz),
             nn.Conv1d(channel_sz, self.n_ants, 1, 1, 0),
@@ -110,6 +108,10 @@ class GeneratorModel(FlatModule):
         self.bw_integrate = nn.Sequential(
             nn.Conv1d(self.n_ants, channel_sz, 1, 1, 0),
             nn.GELU(),
+            nn.Conv1d(channel_sz, channel_sz, 3, 1, 1),
+            nn.GELU(),
+            nn.Conv1d(channel_sz, channel_sz, 3, 1, 1),
+            nn.GELU(),
             nn.BatchNorm1d(channel_sz),
             nn.Conv1d(channel_sz, 1, 1, 1, 0),
             nn.GELU(),
@@ -126,20 +128,23 @@ class GeneratorModel(FlatModule):
 
         self.window = WindowGenerate(self.fft_sz, self.n_ants)
 
+        self.plength = PulseLength()
+
         self.example_input_array = ([[torch.zeros((1, 32, clutter_latent_size)), torch.zeros((1, target_latent_size)),
                                       torch.tensor([[1250]]), torch.tensor([[400e6]])]])
 
     def forward(self, inp: list) -> torch.tensor:
         clutter, target, pulse_length, bandwidth = inp
-        bw_info = self.fourier(torch.cat([pulse_length.float().view(-1, 1), bandwidth / self.fs],
+        bw_info = self.fourier(torch.cat([pulse_length.float().view(-1, 1), bandwidth.view(-1, 1) / self.fs],
                                          dim=1))
         x = self.transformer(clutter, target.unsqueeze(1))
         x = self.expand_to_ants(x * bw_info.unsqueeze(1))
-        final_win = self.window(self.bw_integrate(x).squeeze(1), bandwidth / self.fs).repeat_interleave(2, dim=1)
+        final_win = self.window(self.bw_integrate(x).squeeze(1), bandwidth.view(-1, 1) / self.fs).repeat_interleave(2, dim=1)
         decoded = torch.cat([self.decoder.decode(x[:, n, :]) for n in range(self.n_ants)], dim=1)
         x = self.window_context(torch.cat([decoded, final_win], dim=1)) * final_win
+        x = self.plength(x, pulse_length)
         x = x.view(-1, self.n_ants, 2, self.fft_sz)
-        return x, bandwidth
+        return x, bandwidth.view(-1, 1)
 
     def full_forward(self, clutter_array, target_array, pulse_length: int, bandwidth: float, mu_scale: float,
                      std_scale: float) -> torch.tensor:
