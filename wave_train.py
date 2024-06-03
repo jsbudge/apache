@@ -57,7 +57,7 @@ if __name__ == '__main__':
     # torch.cuda.empty_cache()
 
     # seed_everything(np.random.randint(1, 2048), workers=True)
-    seed_everything(7, workers=True)
+    seed_everything(17, workers=True)
 
     with open('./vae_config.yaml', 'r') as file:
         try:

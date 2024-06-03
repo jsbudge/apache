@@ -139,7 +139,7 @@ if __name__ == '__main__':
                                           np.linspace(0, 1, 10), nr, fs, fc, bwidth), fft_len),
                       np.fft.fft(genPulse(np.linspace(0, 1, 10),
                                           np.linspace(1, 0, 10), nr, fs, fc, bwidth), fft_len)]
-                     )
+                     ) / 1e5
     _, chirps, mfilts = genChirpAndMatchedFilters(waves, rps, bwidth, fs, fc, fft_len)
 
     try:
@@ -168,8 +168,9 @@ if __name__ == '__main__':
                                     wave_mdl.fft_sz, axis=1)
         bandwidth_model = torch.tensor(400e6, device=wave_mdl.device)
         tsdata = np.fromfile('/home/jeff/repo/apache/data/target_SAR_06072023_154802.spec',
-                             dtype=np.float32).reshape((-1, 2, wave_mdl.fft_sz + 2))[target_target, :, :wave_mdl.fft_sz]
-        tsdata = tsdata[0, :] + 1j * tsdata[1, :]
+                             dtype=np.float32).reshape((-1, 2, wave_mdl.fft_sz + 2)
+                                                       )[target_target:target_target + 32, :, :wave_mdl.fft_sz]
+        tsdata = tsdata[:, 0, :] + 1j * tsdata[:, 1, :]
 
     # This replaces the ASI background with a custom image
     bg.resampleGrid(settings['origin'], settings['grid_width'], settings['grid_height'],
@@ -218,7 +219,7 @@ if __name__ == '__main__':
                                           np.linspace(-ang_dist_traveled_over_cpi / 2, ang_dist_traveled_over_cpi / 2,
                                                       cpi_len),
                                           nz, nz, nz, nz, rpref.az_half_bw, rpref.el_half_bw)
-    H = convolution_matrix(tx_pattern * array_factor, gap_len, 'valid')
+    H = convolution_matrix(tx_pattern * abs(array_factor), gap_len, 'valid')
 
     # Truncated SVD for superresolution
     U, eig, Vt = np.linalg.svd(H, full_matrices=False)
@@ -247,8 +248,8 @@ if __name__ == '__main__':
         plt.ion()
     try:
         for idx, (chirps, pdata) in enumerate(data_gen):
-            # ts = data_t[idx * gap_len + cpi_len // 2:idx * gap_len + gap_len - cpi_len // 2]
-            ts = data_t[idx * gap_len:idx * gap_len + gap_len]
+            ts = data_t[idx * gap_len + cpi_len // 2:idx * gap_len + gap_len - cpi_len // 2]
+            # ts = data_t[idx * gap_len:idx * gap_len + gap_len]
             ts_hat = ts.mean()
             compressed_data = np.zeros((pdata.shape[1], nsam * settings['upsample']), dtype=np.complex128)
             try:
@@ -265,16 +266,16 @@ if __name__ == '__main__':
                                                  tsdata, rps, bandwidth_model,
                                                  wave_config['wave_exp_params']['dataset_params']['mu'],
                                                  wave_config['wave_exp_params']['dataset_params']['var'])
-                data_gen.send(chirps)
-                ex_chirps.append(np.array(chirps[0].get()))
+            data_gen.send(chirps)
+            ex_chirps.append(np.array(chirps[0].get()))
 
             panrx = rpref.pan(ts)
             elrx = rpref.tilt(ts)
             panrx_gpu = cupy.array(panrx, dtype=np.float64)
             elrx_gpu = cupy.array(elrx, dtype=np.float64)
             if compressed_data.shape[0] == gap_len:
-                # sig_k = compressed_data.T.dot(Hinv)
-                comp_data_gpu = cupy.array(compressed_data.T, dtype=np.complex128)
+                sig_k = compressed_data.T.dot(Hinv)
+                comp_data_gpu = cupy.array(sig_k, dtype=np.complex128)
                 bpj_grid = cupy.zeros(gx.shape, dtype=np.complex128)
                 posrx_gpu = cupy.array(rpref.rxpos(ts), dtype=np.float64)
                 postx_gpu = cupy.array(rpref.txpos(ts), dtype=np.float64)
@@ -290,11 +291,17 @@ if __name__ == '__main__':
                 cupy.cuda.Device().synchronize()
                 rbi_image += bpj_grid.get()
                 if settings['live_figures']:
-                    pt_proj = rpref.pos(ts_hat)[:, None] + azelToVec(rpref.pan(ts), rpref.tilt(ts)) * sim_settings['standoff_range']
-                    plt.gca().cla()
+                    pt_proj = rpref.pos(ts_hat)[:, None] + azelToVec(rpref.pan(ts),
+                                                                     rpref.tilt(ts)) * sim_settings['standoff_range']
+                    plt.clf()
+                    '''plt.subplot(2, 1, 1)
+                    plt.plot(db(np.fft.fftshift(np.fft.ifft(chirps[0].get() * mfilts[0].get()))))
+                    plt.subplot(2, 1, 2)
+                    plt.imshow(db(sig_k))
+                    plt.axis('tight')'''
                     plt.subplot(2, 1, 1)
                     plt.title(f'CPI {idx}')
-                    plt.imshow(db(rbi_image))
+                    plt.imshow(db(sig_k))
                     plt.axis('tight')
                     plt.subplot(2, 1, 2)
                     plt.scatter(gx.flatten(), gy.flatten(), c=db(bg.refgrid).flatten())
@@ -332,12 +339,12 @@ if __name__ == '__main__':
         plt.figure('Waveform Info')
         plt.subplot(2, 1, 1)
         plt.title('Spectrum')
-        plt.plot(db(ex_chirps[0]))
-        plt.plot(db(ex_chirps[1]))
+        plt.plot(db(chirps[0].get()))
+        plt.plot(db(chirps[1].get()))
         plt.subplot(2, 1, 2)
         plt.title('Time Series')
-        plt.plot(np.fft.ifft(ex_chirps[0]).real)
-        plt.plot(np.fft.ifft(ex_chirps[1]).real)
+        plt.plot(np.fft.ifft(chirps[0].get()).real)
+        plt.plot(np.fft.ifft(chirps[1].get()).real)
 
         plt.figure('Chirp Changes')
         for n in ex_chirps:
@@ -383,14 +390,3 @@ if __name__ == '__main__':
         '''plt.figure('Target Angles')
         plt.plot(az_spread / DTR, db(np.sum(bg_image, axis=1)))
         plt.plot(az_spread / DTR, db(np.sum(rbi_image, axis=0)))'''
-
-        # px.imshow(abs(rbi_image), zmin=clims.mean() - 3 * clims.std(), zmax=clims.mean() + 3 * clims.std()).show()
-
-'''chirp = np.fft.fft(genPulse(np.linspace(0, 1, 10), np.linspace(0, 1, 10), nr, fs, 9.6e9, 400e6), fft_len)
-messed_mag = (np.random.rand(len(chirp)) + .5) * np.exp(1j * np.angle(chirp))
-messed_phase = abs(chirp) * np.exp(1j * np.random.rand(len(chirp)) * 2 * np.pi)
-
-plt.figure()
-plt.plot(db(np.fft.ifft(chirp * chirp.conj())))
-plt.plot(db(np.fft.ifft(messed_mag * chirp.conj())))
-plt.plot(db(np.fft.ifft(messed_phase * chirp.conj())))'''

@@ -133,7 +133,7 @@ class WaveFileDataset(Dataset):
             Xs = np.arange(tmp_cs.shape[0])
         self.ccdata = tmp_cc[Xs] if is_val else tmp_cc[Xt]
         self.csdata = torch.tensor(tmp_cs[Xs]) if is_val else torch.tensor(tmp_cs[Xt])
-        self.tcdata = torch.tensor(tmp_tc[:self.ccdata.shape[0]])
+        self.tcdata = tmp_tc[:self.ccdata.shape[0]]
         self.tsdata = torch.tensor(tmp_ts[:self.csdata.shape[0]])
         if single_example:
             self.ccdata[1:] = self.ccdata[0]
@@ -152,7 +152,9 @@ class WaveFileDataset(Dataset):
                          range(min(self.seq_len, self.ccdata.shape[0] - idx))], dim=0)
         csd = self.csdata[idx, ...]
         tsd = self.tsdata[idx, ...]
-        tcd = self.tcdata[idx, ...]
+        tcd = torch.cat([torch.tensor(self.tcdata[idx + n, ...],
+                                      dtype=torch.float32).unsqueeze(0) for n in
+                         range(min(self.seq_len, self.tcdata.shape[0] - idx))], dim=0)
 
         return ccd, tcd, csd, tsd, np.random.randint(self.min_pulse_length, self.max_pulse_length), np.random.rand() * 1e9 + 400e6
 
