@@ -67,7 +67,7 @@ exp_params:
 # For training of wavemodel
 wave_exp_params:
   LR: 0.000001
-  weight_decay: 0.01
+  weight_decay: 0.1
   scheduler_gamma: 0.8
   swa_start: .6
   warm_start: False
@@ -80,9 +80,9 @@ wave_exp_params:
   patience: 350
   channel_sz: 64
   bandwidth: 400000000.
-  max_epochs: 1
-  init_task: False
-  exp_name: wavemodel-12x12-channel64
+  max_epochs: 100
+  init_task: True
+  exp_name: wavemodel-double6x6-channel64
   dataset_params:
     data_path: ./data
     train_batch_size: 64

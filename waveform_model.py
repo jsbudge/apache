@@ -80,15 +80,16 @@ class GeneratorModel(FlatModule):
         self.decoder.eval()
         self.decoder.requires_grad = False
 
-        self.transformer = nn.Transformer(clutter_latent_size, num_decoder_layers=12, num_encoder_layers=12,
+        self.transformer = nn.Transformer(clutter_latent_size, num_decoder_layers=6, num_encoder_layers=6,
                                           activation='gelu', batch_first=True)
         self.transformer.apply(init_weights)
+        self.last_transformer = nn.Transformer(clutter_latent_size, num_decoder_layers=6, num_encoder_layers=6,
+                                               activation='gelu', batch_first=True)
+        self.last_transformer.apply(init_weights)
 
         self.expand_to_ants = nn.Sequential(
             nn.Conv1d(1, channel_sz, 1, 1, 0),
             nn.GELU(),
-            Block1d(channel_sz),
-            Block1d(channel_sz),
             nn.Conv1d(channel_sz, self.n_ants, 1, 1, 0),
             nn.GELU(),
             nn.Linear(clutter_latent_size, clutter_latent_size),
@@ -108,10 +109,6 @@ class GeneratorModel(FlatModule):
         self.bw_integrate = nn.Sequential(
             nn.Conv1d(self.n_ants, channel_sz, 1, 1, 0),
             nn.GELU(),
-            nn.Conv1d(channel_sz, channel_sz, 3, 1, 1),
-            nn.GELU(),
-            nn.Conv1d(channel_sz, channel_sz, 3, 1, 1),
-            nn.GELU(),
             nn.BatchNorm1d(channel_sz),
             nn.Conv1d(channel_sz, 1, 1, 1, 0),
             nn.GELU(),
@@ -130,16 +127,19 @@ class GeneratorModel(FlatModule):
 
         self.plength = PulseLength()
 
-        self.example_input_array = ([[torch.zeros((1, 32, clutter_latent_size)), torch.zeros((1, target_latent_size)),
+        self.example_input_array = ([[torch.zeros((1, 32, clutter_latent_size)),
+                                      torch.zeros((1, 32, target_latent_size)),
                                       torch.tensor([[1250]]), torch.tensor([[400e6]])]])
 
     def forward(self, inp: list) -> torch.tensor:
         clutter, target, pulse_length, bandwidth = inp
         bw_info = self.fourier(torch.cat([pulse_length.float().view(-1, 1), bandwidth.view(-1, 1) / self.fs],
                                          dim=1))
-        x = self.transformer(clutter, target.unsqueeze(1))
-        x = self.expand_to_ants(x * bw_info.unsqueeze(1))
-        final_win = self.window(self.bw_integrate(x).squeeze(1), bandwidth.view(-1, 1) / self.fs).repeat_interleave(2, dim=1)
+        x = self.transformer(clutter, target)
+        x = self.last_transformer(x, bw_info.unsqueeze(1))
+        x = self.expand_to_ants(x)
+        final_win = self.window(self.bw_integrate(x).squeeze(1), bandwidth.view(-1, 1) / self.fs).repeat_interleave(
+            2, dim=1)
         decoded = torch.cat([self.decoder.decode(x[:, n, :]) for n in range(self.n_ants)], dim=1)
         x = self.window_context(torch.cat([decoded, final_win], dim=1)) * final_win
         x = self.plength(x, pulse_length)
@@ -150,19 +150,20 @@ class GeneratorModel(FlatModule):
                      std_scale: float) -> torch.tensor:
         # Make everything into tensors and place on device
         clut = (torch.stack([torch.tensor(clutter_array.real, dtype=torch.float32, device=self.device),
-                            torch.tensor(clutter_array.imag, dtype=torch.float32, device=self.device)]) -
+                             torch.tensor(clutter_array.imag, dtype=torch.float32, device=self.device)]) -
                 mu_scale) / std_scale
         targ = (torch.stack([torch.tensor(target_array.real, dtype=torch.float32, device=self.device),
-                            torch.tensor(target_array.imag, dtype=torch.float32, device=self.device)]) -
+                             torch.tensor(target_array.imag, dtype=torch.float32, device=self.device)]) -
                 mu_scale) / std_scale
         clutter = self.decoder.encode(clut.swapaxes(0, 1))
-        target = self.decoder.encode(targ.unsqueeze(0))
+        target = self.decoder.encode(targ.swapaxes(0, 1))
         pl = torch.tensor([[pulse_length]], device=self.device)
         bw = torch.tensor([[bandwidth]], device=self.device)
 
         # Now that everything is formatted, get the waveform
         unformatted_waveform = (
-            self.getWaveform(nn_output=self.forward([clutter.unsqueeze(0), target, pl, bw])).cpu().data.numpy())
+            self.getWaveform(nn_output=self.forward([clutter.unsqueeze(0),
+                                                     target.unsqueeze(0), pl, bw])).cpu().data.numpy())
 
         # Return it in complex form without the leading dimension
         return unformatted_waveform[0]
@@ -189,7 +190,7 @@ class GeneratorModel(FlatModule):
             torch.fft.ifft(target_spectrum.unsqueeze(1) * mfiltered, dim=2), dim=1))
         clut_ac = torch.abs(torch.sum(
             torch.fft.ifft(clutter_spectrum.unsqueeze(1) * mfiltered, dim=2), dim=1))
-        ratio = clut_ac / (1e-6 + targ_ac) * 10
+        ratio = clut_ac / (1e-6 + targ_ac) * 10 * args[3][:, None] / 1.4e9
         ratio[(targ_ac - clut_ac) < 0] = 0
         ratio[targ_ac.max(dim=1)[0] < 1e-9, :] += 10.
         target_loss = ratio.nanmean()
