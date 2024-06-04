@@ -80,7 +80,7 @@ wave_exp_params:
   patience: 350
   channel_sz: 64
   bandwidth: 400000000.
-  max_epochs: 100
+  max_epochs: 5
   init_task: True
   exp_name: wavemodel-double6x6-channel64
   dataset_params:

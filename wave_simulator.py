@@ -223,14 +223,14 @@ if __name__ == '__main__':
 
     # Truncated SVD for superresolution
     U, eig, Vt = np.linalg.svd(H, full_matrices=False)
-    knee = sum(np.gradient(eig) > np.gradient(eig).mean())
+    knee = 120
     eig[knee:] = 0
     eig[:knee] = 1 / eig[:knee]
     Hinv = Vt.T.dot(np.diag(eig)).dot(U.T)
 
     # Hinv = np.linalg.pinv(H)
 
-    H_w = np.fft.fft(tx_pattern * array_factor, gap_len)
+    # H_w = np.fft.fft(tx_pattern * array_factor, gap_len)
     abs_range_min = np.linalg.norm(grid_origin - rpref.pos(rpref.gpst), axis=1).min()
     det_pts = []
     ex_chirps = []
@@ -274,8 +274,21 @@ if __name__ == '__main__':
             panrx_gpu = cupy.array(panrx, dtype=np.float64)
             elrx_gpu = cupy.array(elrx, dtype=np.float64)
             if compressed_data.shape[0] == gap_len:
-                sig_k = compressed_data.T.dot(Hinv)
-                comp_data_gpu = cupy.array(sig_k, dtype=np.complex128)
+                gcv_k = np.zeros(gap_len)
+                sig_min = compressed_data.T.dot(Hinv)
+                '''gcv_min = np.inf
+                for n in range(1, gap_len):
+                    eig_k = eig + 0.0
+                    eig_k[n:] = 0
+                    eig_k[:n] = 1 / eig_k[:n]
+                    Hinv = Vt.T.dot(np.diag(eig_k)).dot(U.T)
+                    sig_k = compressed_data.T.dot(Hinv)
+                    gcv_k[n] = np.linalg.norm(H.T.dot(sig_k.T) - compressed_data) / np.trace(np.eye(gap_len) - Hinv.dot(H))
+                    if gcv_k[n] < gcv_min:
+                        gcv_min = gcv_k[n]
+                        sig_min = sig_k + 0.0'''
+                # sig_k = compressed_data.T.dot(Hinv)
+                comp_data_gpu = cupy.array(sig_min, dtype=np.complex128)
                 bpj_grid = cupy.zeros(gx.shape, dtype=np.complex128)
                 posrx_gpu = cupy.array(rpref.rxpos(ts), dtype=np.float64)
                 postx_gpu = cupy.array(rpref.txpos(ts), dtype=np.float64)
@@ -301,7 +314,7 @@ if __name__ == '__main__':
                     plt.axis('tight')'''
                     plt.subplot(2, 1, 1)
                     plt.title(f'CPI {idx}')
-                    plt.imshow(db(sig_k))
+                    plt.imshow(db(sig_min))
                     plt.axis('tight')
                     plt.subplot(2, 1, 2)
                     plt.scatter(gx.flatten(), gy.flatten(), c=db(bg.refgrid).flatten())
