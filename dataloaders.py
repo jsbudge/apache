@@ -149,6 +149,7 @@ class WaveFileDataset(Dataset):
         self.data_sz = self.ccdata.shape[0]
         self.min_pulse_length = min_pulse_length
         self.max_pulse_length = max_pulse_length
+        self.seed = seed
 
     def __getitem__(self, idx):
         ccd = torch.cat([torch.tensor(self.ccdata[idx + n, ...],

@@ -307,8 +307,8 @@ class GeneratorExperiment(pl.LightningModule):
         results = self.forward([clutter_enc, target_enc, pulse_length, bandwidth])
         train_loss = self.model.loss_function(results, clutter_spec, target_spec, bandwidth)
 
-        train_loss['loss'] = (torch.sqrt(torch.abs(
-            train_loss['target_loss']**2 + train_loss['sidelobe_loss']**2 + train_loss['ortho_loss']**2)))
+        train_loss['loss'] = torch.sqrt(torch.abs(
+            train_loss['target_loss'] * (1 + train_loss['sidelobe_loss'] + train_loss['ortho_loss'])))
         return train_loss
 
 
