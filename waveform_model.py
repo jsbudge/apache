@@ -90,6 +90,9 @@ class GeneratorModel(FlatModule):
         self.expand_to_ants = nn.Sequential(
             nn.Conv1d(1, channel_sz, 1, 1, 0),
             nn.GELU(),
+            Block1d(channel_sz),
+            Block1d(channel_sz),
+            Block1d(channel_sz),
             nn.Conv1d(channel_sz, self.n_ants, 1, 1, 0),
             nn.GELU(),
             nn.Linear(clutter_latent_size, clutter_latent_size),
@@ -109,6 +112,9 @@ class GeneratorModel(FlatModule):
         self.bw_integrate = nn.Sequential(
             nn.Conv1d(self.n_ants, channel_sz, 1, 1, 0),
             nn.GELU(),
+            Block1d(channel_sz),
+            Block1d(channel_sz),
+            Block1d(channel_sz),
             nn.BatchNorm1d(channel_sz),
             nn.Conv1d(channel_sz, 1, 1, 1, 0),
             nn.GELU(),
@@ -119,6 +125,9 @@ class GeneratorModel(FlatModule):
 
         self.window_context = nn.Sequential(
             nn.Conv1d(self.n_ants * 4, channel_sz, 1, 1, 0),
+            Block1d(channel_sz),
+            Block1d(channel_sz),
+            Block1d(channel_sz),
             nn.Conv1d(channel_sz, self.n_ants * 2, 1, 1, 0),
         )
         self.window_context.apply(init_weights)
@@ -186,10 +195,10 @@ class GeneratorModel(FlatModule):
         crossfiltered = gen_waveform * torch.flip(gen_waveform.conj(), dims=(1,))
 
         # Target and clutter power functions
-        targ_ac = torch.abs(torch.sum(
-            torch.fft.ifft(target_spectrum.unsqueeze(1) * mfiltered, dim=2), dim=1))
-        clut_ac = torch.abs(torch.sum(
-            torch.fft.ifft(clutter_spectrum.unsqueeze(1) * mfiltered, dim=2), dim=1))
+        targ_ac = torch.sum(
+            torch.abs(torch.fft.ifft(target_spectrum.unsqueeze(1) * mfiltered, dim=2)), dim=1)
+        clut_ac = torch.sum(
+            torch.abs(torch.fft.ifft(clutter_spectrum.unsqueeze(1) * mfiltered, dim=2)), dim=1)
         ratio = clut_ac / (1e-6 + targ_ac) * 10 * args[3][:, None] / 1.4e9
         ratio[(targ_ac - clut_ac) < 0] = 0
         ratio[targ_ac.max(dim=1)[0] < 1e-9, :] += 10.
@@ -199,18 +208,21 @@ class GeneratorModel(FlatModule):
         slf = torch.abs(torch.fft.ifft(mfiltered, dim=2))
         slf[slf == 0] = 1e-9
         sidelobe_func = 10 * torch.log(slf / 10)
-        slf_max = nn_func.max_pool2d_with_indices(
-            sidelobe_func, (1, 65), (1, 1), padding=(0, 32))[0].unique(dim=2).detach()[:, :, 1]
+        slf_max = nn_func.max_pool1d_with_indices(
+            sidelobe_func, 17, 12, padding=8)[0].detach()[:, :, -2]
         # Get the ISLR for this waveform
         sidelobe_loss = torch.nanmean(torch.max(sidelobe_func, dim=-1)[0] / slf_max)
 
         # Orthogonality
-        ortho_loss = torch.nanmean(torch.abs(torch.fft.ifft(crossfiltered, dim=2).sum(dim=1))[:, 0] /
-                                   (1e-8 + torch.abs(torch.fft.ifft(mfiltered, dim=2).sum(dim=1))[:, 0]))
+        cross_sidelobe = torch.abs(torch.fft.ifft(crossfiltered, dim=2))
+        cross_sidelobe[cross_sidelobe == 0] = 1e-9
+        cross_sidelobe = 10 * torch.log(cross_sidelobe / 10)
+        ortho_loss = torch.nanmean(torch.abs(sidelobe_func.sum(dim=1)[:, 0]) /
+                                   (1e-12 + torch.abs(cross_sidelobe.sum(dim=1)[:, 0])))**2
 
         # Apply hinge loss to sidelobes
         sidelobe_loss = torch.abs(sidelobe_loss - .1)
-        ortho_loss = torch.abs(ortho_loss - .1)
+        ortho_loss = torch.abs(ortho_loss - .3)
         target_loss = torch.abs(target_loss)
 
         return {'target_loss': target_loss,

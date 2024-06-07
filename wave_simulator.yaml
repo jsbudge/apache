@@ -1,17 +1,17 @@
 bg_file: '/home/jeff/SDR_DATA/RAW/08092023/SAR_08092023_112016.sar'
-upsample: 1
+upsample: 2
 poly_num: 1
 use_aps_debug: False
 rotate_grid: False
 use_ecef: True
-cpi_len: 32
+cpi_len: 64
 plp: .2
 partial_pulse_percent: .2
 debug: 1
 ngrids: 1
 pts_per_m: 5
-grid_width: 150
-grid_height: 150
+grid_width: 200
+grid_height: 200
 channel: 0
 fdelay: 1.5
 origin: [40.138044, -111.660027, 1365.8849123907273]
@@ -32,7 +32,7 @@ simulation_params:
   # This is for use_sdr_gps == False
   collect_duration: 1.
   prf: 10000.
-  scan_rate: 40.  # deg/s
+  scan_rate: 30.  # deg/s
   scan_angle: 10.  # degrees
   standoff_range: 2181.  # meters
   az_bw: .866
@@ -40,7 +40,7 @@ simulation_params:
 
 antenna_params:
   n_tx: 2
-  n_rx: 1
+  n_rx: 2
   gain: [25, 25]
   transmit_power: [100, 100]
   tx_pos: [[-0.015614190520833333, 0., 0.], [0.015614190520833333, 0, 0]]
