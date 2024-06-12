@@ -889,3 +889,167 @@ class Encoder(FlatModule):
         self.log_dict({f'{kind}_loss': train_loss}, on_epoch=True,
                       prog_bar=True, rank_zero_only=True)
         return train_loss
+
+
+class TargetEncoder(FlatModule):
+    def __init__(self,
+                 in_channels: int,
+                 latent_dim: int,
+                 fft_len: int,
+                 params: dict,
+                 channel_sz: int = 32,
+                 **kwargs) -> None:
+        super(TargetEncoder, self).__init__()
+
+        self.latent_dim = latent_dim
+        self.fft_len = fft_len
+        self.params = params
+        self.channel_sz = channel_sz
+        self.in_channels = in_channels
+        self.automatic_optimization = False
+        levels = 4
+
+        # Encoder
+        self.encoder_inflate = nn.Conv2d(in_channels, channel_sz, 3, 1, 1)
+        self.encoder_reduce = nn.ModuleList()
+        self.encoder_conv = nn.ModuleList()
+        self.encoder_attention = nn.ModuleList()
+        for _ in range(levels):
+            self.encoder_reduce.append(nn.Sequential(
+                nn.Conv2d(channel_sz, channel_sz, 4, 2, 1),
+                nn.GELU(),
+            ))
+            self.encoder_conv.append(nn.Sequential(
+                nn.Conv2d(channel_sz, channel_sz, 3, 1, 1),
+                nn.GELU(),
+            ))
+        self.fc_z = nn.Sequential(
+            nn.Conv2d(channel_sz, 1, 1, 1, 0),
+            nn.Tanh(),
+        )
+
+        # Decoder
+        self.z_fc = nn.Conv2d(1, channel_sz, 1, 1, 0)
+        self.decoder_reduce = nn.ModuleList()
+        self.decoder_conv = nn.ModuleList()
+        self.decoder_attention = nn.ModuleList()
+        for _ in range(levels):
+            self.decoder_reduce.append(nn.Sequential(
+                nn.ConvTranspose2d(channel_sz, channel_sz, 4, 2, 1),
+                nn.GELU(),
+            ))
+            self.decoder_conv.append(nn.Sequential(
+                nn.ConvTranspose2d(channel_sz, channel_sz, 3, 1, 1),
+                nn.GELU(),
+            ))
+        self.decoder_output = nn.Sequential(
+            nn.ConvTranspose2d(channel_sz, in_channels, 1, 1, 0),
+        )
+
+        self.example_input_array = torch.randn((1, 2, self.fft_len))
+
+    def encode(self, inp: Tensor) -> Tensor:
+        """
+        Encodes the input by passing through the encoder network
+        and returns the latent codes.
+        :param inp: (Tensor) Input tensor to encoder [N x C x H x W]
+        :return: (Tensor) List of latent codes
+        """
+        inp = self.encoder_inflate(inp)
+        for conv, red in zip(self.encoder_conv, self.encoder_reduce):
+            inp = conv(red(inp))
+        return self.fc_z(inp)
+
+    def decode(self, z: Tensor) -> Tensor:
+        result = self.z_fc(z)
+        for conv, red in zip(self.decoder_conv, self.decoder_reduce):
+            result = red(conv(result))
+        return self.decoder_output(result)
+
+    def forward(self, inp: Tensor, **kwargs) -> Tensor:
+        z = self.encode(inp)
+        return self.decode(z)
+
+    def loss_function(self, y, y_pred):
+        return tf.mse_loss(y, y_pred)
+
+    def on_fit_start(self) -> None:
+        if self.trainer.is_global_zero and self.logger:
+            self.logger.log_graph(self, self.example_input_array)
+
+    def training_step(self, batch, batch_idx):
+        opt = self.optimizers()
+        train_loss = self.train_val_get(batch, batch_idx)
+        opt.zero_grad()
+        self.manual_backward(train_loss)
+        opt.step()
+
+    def validation_step(self, batch, batch_idx):
+        self.train_val_get(batch, batch_idx, 'val')
+
+    def on_after_backward(self) -> None:
+        if self.trainer.is_global_zero and self.global_step % 100 == 0 and self.logger:
+            for name, params in self.named_parameters():
+                self.logger.experiment.add_histogram(name, params, self.global_step)
+
+    def on_validation_end(self) -> None:
+        if self.trainer.is_global_zero and not self.params['is_tuning']:
+            torch.save(self.state_dict(), './model/inference_model.state')
+            print('Model saved to disk.')
+
+            if self.current_epoch % 5 == 0:
+                # Log an image to get an idea of progress
+                img, _ = next(iter(self.trainer.val_dataloaders))
+                rec = self.forward(img.to(self.device))
+                rec = rec.to('cpu').data.numpy()
+                fig = plt.figure()
+                plt.subplot(2, 2, 1)
+                plt.title('Real Original')
+                plt.plot(img[0, 0, :])
+                plt.subplot(2, 2, 2)
+                plt.title('Imag Original')
+                plt.plot(img[0, 1, :])
+                plt.subplot(2, 2, 3)
+                plt.title('Real Reconstructed')
+                plt.plot(rec[0, 0, :])
+                plt.subplot(2, 2, 4)
+                plt.title('Imag Reconstructed')
+                plt.plot(rec[0, 1, :])
+                self.logger.experiment.add_figure('Reconstruction', fig, self.current_epoch)
+
+    def on_train_epoch_end(self) -> None:
+        if self.trainer.is_global_zero and not self.params['is_tuning'] and self.params['loss_landscape']:
+            self.optim_path.append(self.model.get_flat_params())
+
+    def on_validation_epoch_end(self) -> None:
+        sch = self.lr_schedulers()
+
+        # If the selected scheduler is a ReduceLROnPlateau scheduler.
+        if isinstance(sch, torch.optim.lr_scheduler.ReduceLROnPlateau):
+            sch.step(self.trainer.callback_metrics["val_loss"])
+            self.log('LR', sch.get_last_lr()[0], rank_zero_only=True)
+
+    def configure_optimizers(self):
+        optimizer = optim.AdamW(self.parameters(),
+                                lr=self.params['LR'],
+                                weight_decay=self.params['weight_decay'],
+                                betas=self.params['betas'],
+                                eps=1e-7)
+        optims = [optimizer]
+        if self.params['scheduler_gamma'] is None:
+            return optims
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optims[0], cooldown=self.params['step_size'],
+                                                         factor=self.params['scheduler_gamma'], threshold=1e-5)
+        scheds = [scheduler]
+
+        return optims, scheds
+
+    def train_val_get(self, batch, batch_idx, kind='train'):
+        img, img = batch
+
+        results = self.forward(img)
+        train_loss = self.loss_function(results, img)
+
+        self.log_dict({f'{kind}_loss': train_loss}, on_epoch=True,
+                      prog_bar=True, rank_zero_only=True)
+        return train_loss
