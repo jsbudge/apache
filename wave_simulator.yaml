@@ -1,5 +1,5 @@
 bg_file: '/home/jeff/SDR_DATA/RAW/08092023/SAR_08092023_112016.sar'
-upsample: 2
+upsample: 4
 poly_num: 1
 use_aps_debug: False
 rotate_grid: False
@@ -27,12 +27,12 @@ output_figures: False
 simulation_params:
   use_sdr_gps: False
   use_sdr_gimbal: True
-  use_sdr_waveform: False
+  use_sdr_waveform: True
   use_sdr_fc: True
   # This is for use_sdr_gps == False
   collect_duration: 1.
   prf: 10000.
-  scan_rate: 30.  # deg/s
+  scan_rate: 40.  # deg/s
   scan_angle: 10.  # degrees
   standoff_range: 2181.  # meters
   az_bw: .866

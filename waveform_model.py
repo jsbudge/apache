@@ -91,8 +91,6 @@ class GeneratorModel(FlatModule):
             nn.Conv1d(1, channel_sz, 1, 1, 0),
             nn.GELU(),
             Block1d(channel_sz),
-            Block1d(channel_sz),
-            Block1d(channel_sz),
             nn.Conv1d(channel_sz, self.n_ants, 1, 1, 0),
             nn.GELU(),
             nn.Linear(clutter_latent_size, clutter_latent_size),
@@ -113,8 +111,6 @@ class GeneratorModel(FlatModule):
             nn.Conv1d(self.n_ants, channel_sz, 1, 1, 0),
             nn.GELU(),
             Block1d(channel_sz),
-            Block1d(channel_sz),
-            Block1d(channel_sz),
             nn.BatchNorm1d(channel_sz),
             nn.Conv1d(channel_sz, 1, 1, 1, 0),
             nn.GELU(),
@@ -125,8 +121,6 @@ class GeneratorModel(FlatModule):
 
         self.window_context = nn.Sequential(
             nn.Conv1d(self.n_ants * 4, channel_sz, 1, 1, 0),
-            Block1d(channel_sz),
-            Block1d(channel_sz),
             Block1d(channel_sz),
             nn.Conv1d(channel_sz, self.n_ants * 2, 1, 1, 0),
         )
@@ -199,10 +193,11 @@ class GeneratorModel(FlatModule):
             torch.abs(torch.fft.ifft(target_spectrum.unsqueeze(1) * mfiltered, dim=2)), dim=1)
         clut_ac = torch.sum(
             torch.abs(torch.fft.ifft(clutter_spectrum.unsqueeze(1) * mfiltered, dim=2)), dim=1)
-        ratio = clut_ac / (1e-6 + targ_ac) * 10 * args[3][:, None] / 1.4e9
-        ratio[(targ_ac - clut_ac) < 0] = 0
-        ratio[targ_ac.max(dim=1)[0] < 1e-9, :] += 10.
-        target_loss = ratio.nanmean()
+        ratio = clut_ac / (1e-12 + targ_ac)
+        if torch.any((targ_ac - clut_ac) > 0):
+            target_loss = ratio[(targ_ac - clut_ac) > 0].nanmean()
+        else:
+            target_loss = ratio.nanmean()
 
         # Sidelobe loss functions
         slf = torch.abs(torch.fft.ifft(mfiltered, dim=2))
