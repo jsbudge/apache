@@ -895,26 +895,26 @@ class TargetEncoder(FlatModule):
     def __init__(self,
                  in_channels: int,
                  latent_dim: int,
-                 fft_len: int,
                  params: dict,
                  channel_sz: int = 32,
                  **kwargs) -> None:
         super(TargetEncoder, self).__init__()
 
         self.latent_dim = latent_dim
-        self.fft_len = fft_len
         self.params = params
         self.channel_sz = channel_sz
         self.in_channels = in_channels
         self.automatic_optimization = False
-        levels = 4
+        levels = 3
+        out_sz = 256 // (2**levels)
 
         # Encoder
         self.encoder_inflate = nn.Conv2d(in_channels, channel_sz, 3, 1, 1)
         self.encoder_reduce = nn.ModuleList()
         self.encoder_conv = nn.ModuleList()
         self.encoder_attention = nn.ModuleList()
-        for _ in range(levels):
+        for l in range(levels):
+            layer_sz = [256 // (2**(l + 1)), 256 // (2**(l + 1))]
             self.encoder_reduce.append(nn.Sequential(
                 nn.Conv2d(channel_sz, channel_sz, 4, 2, 1),
                 nn.GELU(),
@@ -922,18 +922,34 @@ class TargetEncoder(FlatModule):
             self.encoder_conv.append(nn.Sequential(
                 nn.Conv2d(channel_sz, channel_sz, 3, 1, 1),
                 nn.GELU(),
+                nn.Conv2d(channel_sz, channel_sz, 3, 1, 1),
+                nn.GELU(),
+                nn.Conv2d(channel_sz, channel_sz, 3, 1, 1),
+                nn.GELU(),
+                nn.Conv2d(channel_sz, channel_sz, 3, 1, 1),
+                nn.GELU(),
+                nn.LayerNorm(layer_sz),
             ))
-        self.fc_z = nn.Sequential(
+        self.encoder_flatten = nn.Sequential(
             nn.Conv2d(channel_sz, 1, 1, 1, 0),
+            nn.GELU(),
+        )
+        self.fc_z = nn.Sequential(
+            nn.Linear(out_sz**2, latent_dim),
             nn.Tanh(),
         )
 
         # Decoder
-        self.z_fc = nn.Conv2d(1, channel_sz, 1, 1, 0)
+        self.z_fc = nn.Linear(latent_dim, out_sz**2)
+        self.decoder_flatten = nn.Sequential(
+            nn.Conv2d(1, channel_sz, 1, 1, 0),
+            nn.GELU(),
+        )
         self.decoder_reduce = nn.ModuleList()
         self.decoder_conv = nn.ModuleList()
         self.decoder_attention = nn.ModuleList()
-        for _ in range(levels):
+        for l in range(levels):
+            layer_sz = [out_sz * (2 ** l), out_sz * (2 ** l)]
             self.decoder_reduce.append(nn.Sequential(
                 nn.ConvTranspose2d(channel_sz, channel_sz, 4, 2, 1),
                 nn.GELU(),
@@ -941,12 +957,21 @@ class TargetEncoder(FlatModule):
             self.decoder_conv.append(nn.Sequential(
                 nn.ConvTranspose2d(channel_sz, channel_sz, 3, 1, 1),
                 nn.GELU(),
+                nn.ConvTranspose2d(channel_sz, channel_sz, 3, 1, 1),
+                nn.GELU(),
+                nn.ConvTranspose2d(channel_sz, channel_sz, 3, 1, 1),
+                nn.GELU(),
+                nn.ConvTranspose2d(channel_sz, channel_sz, 3, 1, 1),
+                nn.GELU(),
+                nn.LayerNorm(layer_sz),
             ))
         self.decoder_output = nn.Sequential(
             nn.ConvTranspose2d(channel_sz, in_channels, 1, 1, 0),
         )
 
-        self.example_input_array = torch.randn((1, 2, self.fft_len))
+        self.latent_dim = latent_dim
+        self.out_sz = out_sz
+        self.example_input_array = torch.randn((2, 256, 256))
 
     def encode(self, inp: Tensor) -> Tensor:
         """
@@ -958,10 +983,12 @@ class TargetEncoder(FlatModule):
         inp = self.encoder_inflate(inp)
         for conv, red in zip(self.encoder_conv, self.encoder_reduce):
             inp = conv(red(inp))
+        inp = self.encoder_flatten(inp).view(-1, self.out_sz**2)
         return self.fc_z(inp)
 
     def decode(self, z: Tensor) -> Tensor:
-        result = self.z_fc(z)
+        result = self.z_fc(z).view(-1, 1, self.out_sz, self.out_sz)
+        result = self.decoder_flatten(result)
         for conv, red in zip(self.decoder_conv, self.decoder_reduce):
             result = red(conv(result))
         return self.decoder_output(result)
@@ -971,7 +998,7 @@ class TargetEncoder(FlatModule):
         return self.decode(z)
 
     def loss_function(self, y, y_pred):
-        return tf.mse_loss(y, y_pred)
+        return tf.cross_entropy(y, y_pred)
 
     def on_fit_start(self) -> None:
         if self.trainer.is_global_zero and self.logger:
@@ -998,24 +1025,7 @@ class TargetEncoder(FlatModule):
             print('Model saved to disk.')
 
             if self.current_epoch % 5 == 0:
-                # Log an image to get an idea of progress
-                img, _ = next(iter(self.trainer.val_dataloaders))
-                rec = self.forward(img.to(self.device))
-                rec = rec.to('cpu').data.numpy()
-                fig = plt.figure()
-                plt.subplot(2, 2, 1)
-                plt.title('Real Original')
-                plt.plot(img[0, 0, :])
-                plt.subplot(2, 2, 2)
-                plt.title('Imag Original')
-                plt.plot(img[0, 1, :])
-                plt.subplot(2, 2, 3)
-                plt.title('Real Reconstructed')
-                plt.plot(rec[0, 0, :])
-                plt.subplot(2, 2, 4)
-                plt.title('Imag Reconstructed')
-                plt.plot(rec[0, 1, :])
-                self.logger.experiment.add_figure('Reconstruction', fig, self.current_epoch)
+                pass
 
     def on_train_epoch_end(self) -> None:
         if self.trainer.is_global_zero and not self.params['is_tuning'] and self.params['loss_landscape']:

@@ -3,6 +3,7 @@ from clearml import Task
 import torch
 from pytorch_lightning import Trainer, loggers, seed_everything
 from pytorch_lightning.callbacks import EarlyStopping, StochasticWeightAveraging
+from simulib.simulation_functions import db
 import yaml
 from dataloaders import TargetEncoderModule
 from models import init_weights, TargetEncoder
@@ -18,14 +19,14 @@ seed_everything(43, workers=True)
 with open('./vae_config.yaml') as y:
     param_dict = yaml.safe_load(y.read())
 
-exp_params = param_dict['exp_params']
+exp_params = param_dict['target_exp_params']
 # hparams = make_dataclass('hparams', param_dict.items())(**param_dict)
 
 data = TargetEncoderModule(**exp_params["dataset_params"])
 data.setup()
 
 # Get the model, experiment, logger set up
-model = TargetEncoder(**param_dict['model_params'], fft_len=param_dict['settings']['fft_len'], params=exp_params)
+model = TargetEncoder(**exp_params['model_params'], params=exp_params)
 print('Setting up model...')
 tag_warm = 'new_model'
 if exp_params['warm_start']:
@@ -39,16 +40,15 @@ if exp_params['warm_start']:
 else:
     print('Initializing new model...')
     model.apply(init_weights)
-
-task = Task.init(project_name='TargetEncoder', task_name=param_dict['exp_params']['exp_name'])
+if exp_params['init_task']:
+    task = Task.init(project_name='TargetEncoder', task_name=exp_params['exp_name'])
 
 logger = loggers.TensorBoardLogger(param_dict['train_params']['log_dir'], name="TargetEncoder")
 expected_lr = max((exp_params['LR'] *
                    exp_params['scheduler_gamma'] ** (exp_params['max_epochs'] *
                                                      exp_params['swa_start'])), 1e-9)
 trainer = Trainer(logger=logger, max_epochs=exp_params['max_epochs'],
-                  log_every_n_steps=exp_params['log_epoch'],
-                  strategy='ddp', devices=1, callbacks=
+                  log_every_n_steps=exp_params['log_epoch'], devices=1, callbacks=
                   [EarlyStopping(monitor='val_loss', patience=exp_params['patience'],
                                  check_finite=True),
                    StochasticWeightAveraging(swa_lrs=expected_lr, swa_epoch_start=exp_params['swa_start'])])
@@ -78,18 +78,12 @@ if trainer.is_global_zero:
             print(f'Model not saved: {e}')
     print('Plotting outputs...')
     plt.figure()
-    plt.subplot(2, 2, 1)
-    plt.title('Sample Real')
-    plt.plot(sample[0, ...])
-    plt.subplot(2, 2, 2)
-    plt.title('Sample Imag')
-    plt.plot(sample[1, ...])
-    plt.subplot(2, 2, 3)
-    plt.title('Recon Real')
-    plt.plot(recon[0, ...])
-    plt.subplot(2, 2, 4)
-    plt.title('Recon Imag')
-    plt.plot(recon[1, ...])
+    plt.subplot(2, 1, 1)
+    plt.title('Sample')
+    plt.imshow(db(sample[0] + 1j * sample[1]))
+    plt.subplot(2, 1, 2)
+    plt.title('Recon')
+    plt.imshow(db(recon[0] + 1j * recon[1]))
     plt.show()
 
     if exp_params['transform_data']:
@@ -119,4 +113,5 @@ if trainer.is_global_zero:
             for td in np.arange(0, target_data.shape[0], batch_sz):
                 out_data = model.encode(torch.tensor(target_data[td:td + batch_sz, ...])).data.numpy()
                 out_data.tofile(writer)
-task.close()
+if exp_params['init_task']:
+    task.close()

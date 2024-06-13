@@ -74,6 +74,30 @@ class RCSDataset(Dataset):
 
     def __len__(self):
         return self.optical_data.shape[0]
+    
+    
+class TargetDataset(Dataset):
+    def __init__(self, datapath: str = './data', split: float = 1., is_val: bool = False, seed: int = 7):
+        # Load in data
+        optical_data = np.fromfile(f'{datapath}/targetprofiles.dat',
+                                   dtype=np.float32).reshape((-1, 2, 256, 256))
+        self.data = torch.tensor(optical_data)
+
+        if split < 1:
+            Xs, Xt, _, _ = train_test_split(np.arange(optical_data.shape[0]),
+                                            np.arange(optical_data.shape[0]),
+                                            test_size=split, random_state=seed)
+        else:
+            Xt = np.arange(optical_data.shape[0])
+            Xs = np.arange(optical_data.shape[0])
+        self.data = torch.tensor(optical_data[Xs], dtype=torch.float32) if is_val else (
+            torch.tensor(optical_data[Xt], dtype=torch.float32))
+
+    def __getitem__(self, idx):
+        return self.data[idx], self.data[idx]
+
+    def __len__(self):
+        return self.data.shape[0]
 
 
 class WaveDataset(ConcatDataset):
@@ -181,6 +205,7 @@ class BaseModule(LightningDataModule):
             pin_memory: bool = False,
             single_example: bool = False,
             device: str = 'cpu',
+            collate: bool = False,
             **kwargs,
     ):
         super().__init__()
@@ -193,29 +218,48 @@ class BaseModule(LightningDataModule):
         self.pin_memory = pin_memory
         self.single_example = single_example
         self.device = device
+        self.collate = collate
 
     def setup(self, stage: Optional[str] = None) -> None:
         pass
 
     def train_dataloader(self) -> DataLoader:
-        return DataLoader(
-            self.train_dataset,
-            batch_size=self.train_batch_size,
-            num_workers=self.num_workers,
-            shuffle=True,
-            pin_memory=self.pin_memory,
-            collate_fn=collate_fun,
-        )
+        if self.collate:
+            return DataLoader(
+                self.train_dataset,
+                batch_size=self.train_batch_size,
+                num_workers=self.num_workers,
+                shuffle=True,
+                pin_memory=self.pin_memory,
+                collate_fn=collate_fun,
+            )
+        else:
+            return DataLoader(
+                self.train_dataset,
+                batch_size=self.train_batch_size,
+                num_workers=self.num_workers,
+                shuffle=True,
+                pin_memory=self.pin_memory,
+            )
 
     def val_dataloader(self) -> Union[DataLoader, List[DataLoader]]:
-        return DataLoader(
-            self.val_dataset,
-            batch_size=self.val_batch_size,
-            num_workers=self.num_workers,
-            shuffle=False,
-            pin_memory=self.pin_memory,
-            collate_fn=collate_fun,
-        )
+        if self.collate:
+            return DataLoader(
+                self.val_dataset,
+                batch_size=self.val_batch_size,
+                num_workers=self.num_workers,
+                shuffle=False,
+                pin_memory=self.pin_memory,
+                collate_fn=collate_fun,
+            )
+        else:
+            return DataLoader(
+                self.val_dataset,
+                batch_size=self.val_batch_size,
+                num_workers=self.num_workers,
+                shuffle=False,
+                pin_memory=self.pin_memory,
+            )
 
     def test_dataloader(self) -> Union[DataLoader, List[DataLoader]]:
         return DataLoader(
@@ -313,6 +357,31 @@ class EncoderModule(BaseModule):
         self.train_dataset = PulseDataset(self.data_path, self.fft_len, self.split, self.single_example)
         self.val_dataset = PulseDataset(self.data_path, self.fft_len, split=1 - self.split if self.split < 1 else 1.,
                                         single_example=self.single_example, is_val=True)
+        
+        
+class TargetEncoderModule(BaseModule):
+    def __init__(
+            self,
+            data_path,
+            split: float = 1.,
+            dataset_size: int = 256,
+            train_batch_size: int = 8,
+            val_batch_size: int = 8,
+            pin_memory: bool = False,
+            single_example: bool = False,
+            device: str = 'cpu',
+            **kwargs,
+    ):
+        super().__init__(train_batch_size, val_batch_size, pin_memory, single_example, device)
+
+        self.dataset_size = dataset_size
+        self.data_path = data_path
+        self.split = split
+
+    def setup(self, stage: Optional[str] = None) -> None:
+        self.train_dataset = TargetDataset(self.data_path, self.split, self.single_example)
+        self.val_dataset = TargetDataset(self.data_path, split=1 - self.split if self.split < 1 else 1.,
+                                         is_val=True)
 
 
 if __name__ == '__main__':

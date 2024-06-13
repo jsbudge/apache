@@ -24,6 +24,7 @@ settings:
   plp: .5
   n_ants: 2
   fft_len: 8192
+  save_as_target: False
 
 generate_data_settings:
   iterations: 500
@@ -31,6 +32,7 @@ generate_data_settings:
   run_targets: False
   use_local_storage: True
   local_path: ./data
+  obj_path: /home/jeff/Documents/target_meshes
 
 # This is for setting up training of autoencoder
 exp_params:
@@ -63,6 +65,57 @@ exp_params:
     mu: 274662906.04691434
     var: 49527137064.739006
     noise_level: 0.
+  model_params:
+    in_channels: 2
+    latent_dim: 512
+    max_capacity: 25
+    channel_sz: 2
+    capacity_max_iter: 10000
+    reg_weight: 7840.  # MMD weight
+    kernel_type: 'rbf'
+    activation: leaky
+    
+# This is for setting up training of target autoencoder
+target_exp_params:
+  LR: 0.001
+  weight_decay: 0.01
+  scheduler_gamma: 0.1
+  betas: [ .07, .9 ]
+  step_size: 2
+  swa_start: .5
+  log_epoch: 10
+  save_model: True
+  transform_data: False
+  warm_start: False
+  loss_landscape: False
+  output_images: False
+  model_type: TargetEncoder
+  patience: 150
+  is_tuning: False
+  max_epochs: 1000
+  init_task: True
+  exp_name: train-targetencoder
+  dataset_params:
+    data_path: ./data
+    train_batch_size: 16
+    val_batch_size: 16
+    num_workers: 0
+    pin_memory: False
+    split: .7
+    single_example: False
+    # These values are taken from a sampling of data
+    mu: 0.011546927006842008
+    var: 4.939321435461906
+    noise_level: 0.
+  model_params:
+    in_channels: 2
+    latent_dim: 512
+    max_capacity: 25
+    channel_sz: 32
+    capacity_max_iter: 10000
+    reg_weight: 7840.  # MMD weight
+    kernel_type: 'rbf'
+    activation: leaky
 
 # For training of wavemodel
 wave_exp_params:
@@ -95,6 +148,16 @@ wave_exp_params:
     mu: 274662906.04691434
     var: 49527137064.739006
     noise_level: 0.
+    collate: True
+  model_params:
+    in_channels: 2
+    latent_dim: 512
+    max_capacity: 25
+    channel_sz: 2
+    capacity_max_iter: 10000
+    reg_weight: 7840.  # MMD weight
+    kernel_type: 'rbf'
+    activation: leaky
 
 # For training of rcs model
 rcs_exp_params:
@@ -108,17 +171,6 @@ rcs_exp_params:
   loss_landscape: False
   output_images: True
   patience: 15
-
-# This refers to the autoencoder compression params
-model_params:
-  in_channels: 2
-  latent_dim: 512
-  max_capacity: 25
-  channel_sz: 2
-  capacity_max_iter: 10000
-  reg_weight: 7840.  # MMD weight
-  kernel_type: 'rbf'
-  activation: leaky
 
 train_params:
   log_dir: ./logs
