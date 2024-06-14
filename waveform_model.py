@@ -80,9 +80,9 @@ class GeneratorModel(FlatModule):
         self.decoder.eval()
         self.decoder.requires_grad = False
 
-        self.transformer = nn.Transformer(clutter_latent_size, num_decoder_layers=6, num_encoder_layers=6,
+        '''self.transformer = nn.Transformer(clutter_latent_size, num_decoder_layers=6, num_encoder_layers=6,
                                           activation='gelu', batch_first=True)
-        self.transformer.apply(init_weights)
+        self.transformer.apply(init_weights)'''
         self.last_transformer = nn.Transformer(clutter_latent_size, num_decoder_layers=6, num_encoder_layers=6,
                                                activation='gelu', batch_first=True)
         self.last_transformer.apply(init_weights)
@@ -131,15 +131,14 @@ class GeneratorModel(FlatModule):
         self.plength = PulseLength()
 
         self.example_input_array = ([[torch.zeros((1, 32, clutter_latent_size)),
-                                      torch.zeros((1, 32, target_latent_size)),
+                                      torch.zeros((1, target_latent_size)),
                                       torch.tensor([[1250]]), torch.tensor([[400e6]])]])
 
     def forward(self, inp: list) -> torch.tensor:
         clutter, target, pulse_length, bandwidth = inp
         bw_info = self.fourier(torch.cat([pulse_length.float().view(-1, 1), bandwidth.view(-1, 1) / self.fs],
                                          dim=1))
-        x = self.transformer(clutter, target)
-        x = self.last_transformer(x, bw_info.unsqueeze(1))
+        x = self.last_transformer(clutter, bw_info.unsqueeze(1) + target.unsqueeze(1))
         x = self.expand_to_ants(x)
         final_win = self.window(self.bw_integrate(x).squeeze(1), bandwidth.view(-1, 1) / self.fs).repeat_interleave(
             2, dim=1)
