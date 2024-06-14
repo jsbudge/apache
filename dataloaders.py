@@ -109,16 +109,18 @@ class WaveDataset(ConcatDataset):
         clutter_spec_files = glob(f'{root_dir}/clutter_*.spec')
         target_spec_files = glob(f'{root_dir}/target_*.spec')
         clutter_enc_files = glob(f'{root_dir}/clutter_*.enc')
-        target_enc_files = glob(f'{root_dir}/target_*.enc')
+        target_pattern_file = f'{root_dir}/targets.enc'
+
+        # Get master pattern for files
+        patterns = np.fromfile(target_pattern_file, np.float32).reshape((-1, latent_dim))
 
         # Arrange files into their pairs
         pair_dict = {}
         clutter_size = []
         file_idx = 0
-        for fl, tp in [(clutter_spec_files, 'cs'), (clutter_enc_files, 'cc'),
-                       (target_enc_files, 'tc'), (target_spec_files, 'ts')]:
+        for fl, tp in [(clutter_spec_files, 'cs'), (clutter_enc_files, 'cc'), (target_spec_files, 'ts')]:
             for cs in fl:
-                path_stem = '_'.join(Path(cs).stem.split('_')[1:])
+                path_stem = '_'.join(Path(cs).stem.split('_')[1:]) if tp in ['cs', 'cc'] else '_'.join(Path(cs).stem.split('_')[2:])
                 if path_stem in pair_dict:
                     pair_dict[path_stem][tp] = cs
                 else:
@@ -129,6 +131,8 @@ class WaveDataset(ConcatDataset):
                     clutter_size = clutter_size + [(file_idx, n) for n in range(csz)]
                     file_idx += 1
                     pair_dict[path_stem]['size'] = csz
+                elif tp == 'ts':
+                    pair_dict[path_stem]['tc'] = patterns[int(Path(cs).stem.split('_')[1])]
 
         pairs = [l for _, l in pair_dict.items()]
         datasets = [WaveFileDataset(p, latent_dim, fft_sz, split, single_example, min_pulse_length, max_pulse_length,
@@ -139,7 +143,8 @@ class WaveDataset(ConcatDataset):
 class WaveFileDataset(Dataset):
     def __init__(self, files: dict, latent_dim: int = 50, fft_sz: int = 4096,
                  split: float = 1., single_example: bool = False, min_pulse_length: int = 1,
-                 max_pulse_length: int = 2, seq_len: int = 32, is_val=False, seed=42):
+                 max_pulse_length: int = 2, seq_len: int = 32, is_val: bool = False,
+                 seed: int = 42):
 
         # Clutter data
         tmp_cs = np.fromfile(files['cs'], dtype=np.float32).reshape((-1, 2, fft_sz + 2))
@@ -151,7 +156,7 @@ class WaveFileDataset(Dataset):
         tmp_ts = np.fromfile(files['ts'], dtype=np.float32).reshape((-1, 2, fft_sz + 2))
         # Scale appropriately
         tmp_ts = tmp_ts[:, :, :fft_sz]
-        tmp_tc = np.fromfile(files['tc'], dtype=np.float32).reshape((-1, latent_dim))
+        self.tcdata = torch.tensor(files['tc'], dtype=torch.float32)
         if split < 1:
             Xs, Xt, _, _ = train_test_split(np.arange(tmp_cs.shape[0]),
                                             np.arange(tmp_cs.shape[0]),
@@ -161,11 +166,9 @@ class WaveFileDataset(Dataset):
             Xs = np.arange(tmp_cs.shape[0])
         self.ccdata = tmp_cc[Xs] if is_val else tmp_cc[Xt]
         self.csdata = torch.tensor(tmp_cs[Xs]) if is_val else torch.tensor(tmp_cs[Xt])
-        self.tcdata = tmp_tc[:self.ccdata.shape[0]]
         self.tsdata = torch.tensor(tmp_ts[:self.csdata.shape[0]])
         if single_example:
             self.ccdata[1:] = self.ccdata[0]
-            self.tcdata[1:] = self.tcdata[0]
             self.csdata[1:] = self.csdata[0]
             self.tsdata[1:] = self.tsdata[0]
 
@@ -181,11 +184,9 @@ class WaveFileDataset(Dataset):
                          range(min(self.seq_len, self.ccdata.shape[0] - idx))], dim=0)
         csd = self.csdata[idx, ...]
         tsd = self.tsdata[idx, ...]
-        tcd = torch.cat([torch.tensor(self.tcdata[idx + n, ...],
-                                      dtype=torch.float32).unsqueeze(0) for n in
-                         range(min(self.seq_len, self.tcdata.shape[0] - idx))], dim=0)
 
-        return ccd, tcd, csd, tsd, np.random.randint(self.min_pulse_length, self.max_pulse_length), np.random.rand() * 1e9 + 400e6
+        return (ccd, self.tcdata, csd, tsd, np.random.randint(self.min_pulse_length, self.max_pulse_length),
+                np.random.rand() * 1e9 + 400e6)
 
     def __len__(self):
         return self.data_sz - self.seq_len

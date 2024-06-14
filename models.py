@@ -998,7 +998,7 @@ class TargetEncoder(FlatModule):
         return self.decode(z)
 
     def loss_function(self, y, y_pred):
-        return tf.cross_entropy(y, y_pred)
+        return tf.mse_loss(y, y_pred)
 
     def on_fit_start(self) -> None:
         if self.trainer.is_global_zero and self.logger:

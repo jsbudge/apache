@@ -35,24 +35,6 @@ if __name__ == '__main__':
             config = yaml.safe_load(file)
         except yaml.YAMLError as exc:
             print(exc)
-
-    # This is the file used to backproject data
-    bg_file = '/data6/SAR_DATA/2023/07132023/SAR_07132023_122801.sar'
-    upsample = 1
-    poly_num = 1
-    rotate_grid = True
-    use_ecef = True
-    ipr_mode = False
-    cpi_len = 64
-    plp = 0
-    partial_pulse_percent = .2
-    debug = True
-    pts_per_m = 20
-    grid_width = 20
-    grid_height = 20
-    channel = 0
-    fdelay = 5.8
-    origin = (40.138018, -111.660087, 1382)
     standoff = 500.
 
     save_path = config['generate_data_settings']['local_path'] if (
@@ -60,7 +42,8 @@ if __name__ == '__main__':
 
     target_obj_files = {'air_balloon.obj': 30., 'black_bird_sr71_obj.obj': .25, 'cessna-172-obj.obj': 41.08, 'helic.obj': 1.8, 
                         'Humvee.obj': 60, 'Intergalactic_Spaceships_Version_2.obj': 1., 'piper_pa18.obj': 1., 
-                        'Porsche_911_GT2.obj': .8, 'Seahawk.obj': 12., 't-90a(Elements_of_war).obj': 1., 'Tiger.obj': 156.25
+                        'Porsche_911_GT2.obj': .8, 'Seahawk.obj': 12., 't-90a(Elements_of_war).obj': 1.,
+                        'Tiger.obj': 156.25, 'G7_1200.obj': 1., 'x-wing.obj': 1.,
                         }
     target_obj_files = list(target_obj_files.items())
 
@@ -82,13 +65,18 @@ if __name__ == '__main__':
     plt.ion()
 
     for tidx, (tobj, scaling) in tqdm(enumerate(target_obj_files)):
-        mesh = readCombineMeshFile(f'{config["generate_data_settings"]["obj_path"]}/{tobj}')
+        try:
+            mesh = readCombineMeshFile(f'{config["generate_data_settings"]["obj_path"]}/{tobj}')
+        except IndexError:
+            print(f'{tobj} not found.')
+            continue
         mesh.scale(1 / scaling, center=(0, 0, 0))
         pt_sample = []
         # Apply random rotations and scalings for augmenting of training data
         for i in range(200):
-            mesh.rotate(mesh.get_rotation_matrix_from_xyz((np.random.rand() * 2 * np.pi, np.random.rand() * 2 * np.pi,
-                                                             np.random.rand() * 2 * np.pi)), center=(0, 0, 0))
+            if i != 0:
+                mesh.rotate(mesh.get_rotation_matrix_from_xyz((np.random.rand() * 2 * np.pi, np.random.rand() * 2 * np.pi,
+                                                                 np.random.rand() * 2 * np.pi)), center=(0, 0, 0))
             # sample_points = nmesh.sample_points_poisson_disk(30000)
             face_centers = np.asarray(mesh.vertices)
             face_normals = np.asarray(mesh.vertex_normals)
@@ -125,6 +113,9 @@ if __name__ == '__main__':
             plt.pause(.1)
             pd_cat = np.stack([pd.real, pd.imag]).astype(np.float32)
 
+            if i == 0:
+                with open(f'{save_path}/targetpatterns.dat', 'ab') as w:
+                    pd_cat.tofile(w)
             with open(f'{save_path}/targetprofiles.dat', 'ab') as w:
                 pd_cat.tofile(w)
 
@@ -148,7 +139,10 @@ if __name__ == '__main__':
                 if Path(f'{save_path}/target_{clut_name}.spec').exists():
                     os.remove(f'{save_path}/target_{clut_name}.spec')
                     os.remove(f'{save_path}/target_{clut_name}.enc')
-                for ts, frames in getPulseTimeGen(sdr_ch[0].pulse_time, np.arange(len(sdr_ch[0].pulse_time)), 64):
+                for n in range(config['generate_data_settings']['iterations']):
+                    if n + config['settings']['cpi_len'] > sdr_ch[0].nframes:
+                        break
+                    ts = sdr_ch[0].pulse_time[n:n + config['settings']['cpi_len']]
                     # Get the appropriate pan and tilt values from the profile
                     sdr_pan = rp.pan(ts)
                     sdr_pan = sdr_pan + 2 * np.pi
@@ -156,18 +150,12 @@ if __name__ == '__main__':
                     sdr_tilt = sdr_tilt + 2 * np.pi
                     tpsd = np.array([pd[:, np.logical_and(abs(cpudiff(pan, sdr_pan[n])) < 0.19634954,
                                                           abs(cpudiff(tilt, sdr_tilt[n])) < 0.19634954)].flatten() for n in range(len(ts))])
-                    tpsd = np.fft.fft(tpsd, fft_len, axis=1) * 1e12
+                    tpsd = np.fft.fft(tpsd, fft_len, axis=1) * 1e12 * pulse * mfilt
                     if sdr_ch[0].baseband_fc != 0:
                         tpsd = np.roll(tpsd, -int(sdr_ch[0].baseband_fc / rp.fs * fft_len), axis=1)
                     # tpsd /= 12.5
                     tmp_mu = abs(tpsd[:, valids].mean(axis=0)).max()
                     tmp_std = abs(tpsd[:, valids].std(axis=0)).max()
-                    if tmp_mu > mumax:
-                        print(f'MU: {tmp_mu}')
-                        mumax = tmp_mu + 0.
-                    if tmp_std > stdmax:
-                        print(f'STD:{tmp_std}')
-                        stdmax = tmp_std + 0.
                     p_muscale = np.repeat(config['exp_params']['dataset_params']['mu'] / abs(tpsd[:, valids].mean(axis=1)),
                                           2).astype(
                         np.float32)
