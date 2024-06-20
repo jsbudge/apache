@@ -80,9 +80,9 @@ class GeneratorModel(FlatModule):
         self.decoder.eval()
         self.decoder.requires_grad = False
 
-        '''self.transformer = nn.Transformer(clutter_latent_size, num_decoder_layers=6, num_encoder_layers=6,
+        self.transformer = nn.Transformer(clutter_latent_size, num_decoder_layers=6, num_encoder_layers=6,
                                           activation='gelu', batch_first=True)
-        self.transformer.apply(init_weights)'''
+        self.transformer.apply(init_weights)
         self.last_transformer = nn.Transformer(clutter_latent_size, num_decoder_layers=6, num_encoder_layers=6,
                                                activation='gelu', batch_first=True)
         self.last_transformer.apply(init_weights)
@@ -138,7 +138,8 @@ class GeneratorModel(FlatModule):
         clutter, target, pulse_length, bandwidth = inp
         bw_info = self.fourier(torch.cat([pulse_length.float().view(-1, 1), bandwidth.view(-1, 1) / self.fs],
                                          dim=1))
-        x = self.last_transformer(clutter, bw_info.unsqueeze(1) + target.unsqueeze(1))
+        x = self.transformer(clutter, torch.tile(target.unsqueeze(1), (1, clutter.shape[1], 1)))
+        x = self.last_transformer(x, bw_info.unsqueeze(1))
         x = self.expand_to_ants(x)
         final_win = self.window(self.bw_integrate(x).squeeze(1), bandwidth.view(-1, 1) / self.fs).repeat_interleave(
             2, dim=1)
@@ -154,18 +155,15 @@ class GeneratorModel(FlatModule):
         clut = (torch.stack([torch.tensor(clutter_array.real, dtype=torch.float32, device=self.device),
                              torch.tensor(clutter_array.imag, dtype=torch.float32, device=self.device)]) -
                 mu_scale) / std_scale
-        targ = (torch.stack([torch.tensor(target_array.real, dtype=torch.float32, device=self.device),
-                             torch.tensor(target_array.imag, dtype=torch.float32, device=self.device)]) -
-                mu_scale) / std_scale
         clutter = self.decoder.encode(clut.swapaxes(0, 1))
-        target = self.decoder.encode(targ.swapaxes(0, 1))
         pl = torch.tensor([[pulse_length]], device=self.device)
         bw = torch.tensor([[bandwidth]], device=self.device)
 
         # Now that everything is formatted, get the waveform
         unformatted_waveform = (
             self.getWaveform(nn_output=self.forward([clutter.unsqueeze(0),
-                                                     target.unsqueeze(0), pl, bw])).cpu().data.numpy())
+                                                     torch.tensor(target_array, dtype=torch.float32).unsqueeze(0),
+                                                     pl, bw])).cpu().data.numpy())
 
         # Return it in complex form without the leading dimension
         return unformatted_waveform[0]

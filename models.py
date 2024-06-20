@@ -971,7 +971,7 @@ class TargetEncoder(FlatModule):
 
         self.latent_dim = latent_dim
         self.out_sz = out_sz
-        self.example_input_array = torch.randn((2, 256, 256))
+        self.example_input_array = torch.randn((1, 2, 256, 256))
 
     def encode(self, inp: Tensor) -> Tensor:
         """
@@ -980,7 +980,8 @@ class TargetEncoder(FlatModule):
         :param inp: (Tensor) Input tensor to encoder [N x C x H x W]
         :return: (Tensor) List of latent codes
         """
-        inp = self.encoder_inflate(inp)
+        fft_inp = torch.view_as_real(torch.fft.fft2(torch.complex(inp[:, 0, :, :], inp[:, 1, :, :]))).swapaxes(1, 3)
+        inp = self.encoder_inflate(fft_inp)
         for conv, red in zip(self.encoder_conv, self.encoder_reduce):
             inp = conv(red(inp))
         inp = self.encoder_flatten(inp).view(-1, self.out_sz**2)
@@ -991,7 +992,8 @@ class TargetEncoder(FlatModule):
         result = self.decoder_flatten(result)
         for conv, red in zip(self.decoder_conv, self.decoder_reduce):
             result = red(conv(result))
-        return self.decoder_output(result)
+        result = self.decoder_output(result)
+        return torch.view_as_real(torch.fft.ifft2(torch.complex(result[:, 0, :, :], result[:, 1, :, :]))).swapaxes(1, 3)
 
     def forward(self, inp: Tensor, **kwargs) -> Tensor:
         z = self.encode(inp)

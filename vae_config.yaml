@@ -51,7 +51,7 @@ exp_params:
   model_type: Encoder
   patience: 150
   is_tuning: False
-  max_epochs: 50
+  max_epochs: 5
   exp_name: train-latent512tanh
   dataset_params:
     data_path: ./data
@@ -78,7 +78,7 @@ exp_params:
 # This is for setting up training of target autoencoder
 target_exp_params:
   LR: 0.01
-  weight_decay: 0.001
+  weight_decay: 0.05
   scheduler_gamma: 0.7
   betas: [ .07, .9 ]
   step_size: 2
@@ -86,14 +86,14 @@ target_exp_params:
   log_epoch: 10
   save_model: True
   transform_data: True
-  warm_start: False
+  warm_start: True
   loss_landscape: False
   output_images: False
   model_type: TargetEncoder
   patience: 150
   is_tuning: False
-  max_epochs: 30
-  init_task: True
+  max_epochs: 20
+  init_task: False
   exp_name: train-targetencoder-mse
   dataset_params:
     data_path: ./data
