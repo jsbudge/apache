@@ -147,13 +147,13 @@ if __name__ == '__main__':
     try:
         target_target = int(sys.argv[1])
     except IndexError:
-        target_target = 15
+        target_target = 2
     if not sim_settings['use_sdr_waveform']:
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
         mfilt = sdr.genMatchedFilter(0, fft_len=fft_len)
         print('Setting up wavemodel...')
         # Get the model, experiment, logger set up
-        decoder = Encoder(**wave_config['model_params'], fft_len=wave_config['settings']['fft_len'],
+        decoder = Encoder(**wave_config['exp_params']['model_params'], fft_len=wave_config['settings']['fft_len'],
                           params=wave_config['exp_params'])
         print('Loading decoder...')
         try:
@@ -169,10 +169,9 @@ if __name__ == '__main__':
         active_clutter = np.fft.fft(sdr.getPulses(sdr[0].frame_num[:wave_config['settings']['cpi_len']], 0)[1].T,
                                     wave_mdl.fft_sz, axis=1)
         bandwidth_model = torch.tensor(settings['bandwidth'], device=wave_mdl.device)
-        tsdata = np.fromfile('/home/jeff/repo/apache/data/target_SAR_06072023_154802.spec',
-                             dtype=np.float32).reshape((-1, 2, wave_mdl.fft_sz + 2)
-                                                       )[:, :, :wave_mdl.fft_sz]
-        tsdata = tsdata[:, 0, :] + 1j * tsdata[:, 1, :]
+        tsdata = np.fromfile('/home/jeff/repo/apache/data/targets.enc',
+                             dtype=np.float32).reshape((-1, 512)
+                                                       )[target_target, ...]
 
     # This replaces the ASI background with a custom image
     bg.resampleGrid(settings['origin'], settings['grid_width'], settings['grid_height'],
@@ -217,10 +216,10 @@ if __name__ == '__main__':
     rbi_image = np.zeros(gx.shape, dtype=np.complex128)
 
     nz = np.zeros(cpi_len)
-    tx_pattern = applyRadiationPatternCPU(nz,
-                                          np.linspace(-ang_dist_traveled_over_cpi / 2, ang_dist_traveled_over_cpi / 2,
-                                                      cpi_len),
-                                          nz, nz, nz, nz, rpref.az_half_bw, rpref.el_half_bw)
+    ang_spread = np.linspace(-ang_dist_traveled_over_cpi / 2, ang_dist_traveled_over_cpi / 2,
+                             cpi_len)
+    tx_pattern = np.array([applyRadiationPatternCPU(0., a, 0., 0., 0., 0., rpref.az_half_bw, rpref.el_half_bw)
+                           for a in ang_spread])
     H = convolution_matrix(tx_pattern * array_factor, gap_len, 'valid')
 
     # Truncated SVD for superresolution
@@ -257,7 +256,7 @@ if __name__ == '__main__':
                 ts = data_t[idx * gap_len + cpi_len // 2:idx * gap_len + gap_len - cpi_len // 2]
                 # ts = data_t[idx * gap_len:idx * gap_len + gap_len]
                 ts_hat = ts.min()
-                compressed_data = np.zeros((pdata.shape[1], nsam * settings['upsample']), dtype=np.complex128)
+                compressed_data = np.zeros((gap_len, nsam * settings['upsample']), dtype=np.complex128)
                 for ch_idx, rp in enumerate(rps):
                     tmp_data = pdata[rp.rx_num] * mfilts[ch_idx].get()
                     tmp_exp = np.zeros((pdata.shape[1], up_fft_len), dtype=np.complex128)
@@ -266,7 +265,7 @@ if __name__ == '__main__':
                     compressed_data += np.fft.ifft(tmp_exp, axis=1)[:, :nsam * settings['upsample']] * avec[ch_idx]
                 if not sim_settings['use_sdr_waveform'] and compressed_data.shape[0] == gap_len:
                     chirps, mfilts = reloadWaveforms(wave_mdl, active_clutter, nr, fft_len,
-                                                     tsdata[target_target:target_target + 32], rps, bandwidth_model,
+                                                     tsdata, rps, bandwidth_model,
                                                      wave_config['wave_exp_params']['dataset_params']['mu'],
                                                      wave_config['wave_exp_params']['dataset_params']['var'])
 
@@ -328,7 +327,7 @@ if __name__ == '__main__':
 
     if settings['output_figures']:
         plt.figure(f'RBI image for {target_target}')
-        plt.imshow(db(rbi_image), clim=[-100, 10])
+        plt.imshow(db(rbi_image), clim=[-30, 10])
         plt.axis('tight')
         plt.savefig(f'./data/fig_{target_target}.png', bbox_inches='tight')
     else:
@@ -336,7 +335,7 @@ if __name__ == '__main__':
             plt.figure('IMSHOW truth data')
             climage = db(refgrid)
             clim_image = climage[climage > -299]
-            clims = (np.median(clim_image) - 3 * clim_image.std(),
+            clims = (np.median(clim_image) - 1 * clim_image.std(),
                      max(np.median(clim_image) + 3 * clim_image.std(), np.max(clim_image) + 2))
             plt.imshow(np.rot90(db(refgrid)), origin='lower', clim=clims, cmap='gray')
             plt.axis('tight')
@@ -374,7 +373,7 @@ if __name__ == '__main__':
         # plt.scatter(gx.flatten(), gy.flatten(), c=db(refgrid).flatten(), clim=clims)
         plt.scatter([plane_pos[0]], [plane_pos[1]], s=40)
         plt.subplot(2, 1, 2)
-        plt.imshow(db(rbi_image), extent=(gx.min(), gx.max(), gy.min(), gy.max()))
+        plt.imshow(db(rbi_image), extent=(gx.min(), gx.max(), gy.min(), gy.max()), clim=[-30, 10])
         plt.scatter([plane_pos[0]], [plane_pos[1]], s=40)
 
         '''plane_vec = plane_pos - rpref.pos(rpref.gpst).mean(axis=0)

@@ -25,7 +25,7 @@ data = EncoderModule(fft_len=param_dict['settings']['fft_len'], **exp_params["da
 data.setup()
 
 # Get the model, experiment, logger set up
-model = Encoder(**param_dict['model_params'], fft_len=param_dict['settings']['fft_len'], params=exp_params)
+model = Encoder(**exp_params['model_params'], fft_len=param_dict['settings']['fft_len'], params=exp_params)
 print('Setting up model...')
 tag_warm = 'new_model'
 if exp_params['warm_start']:
@@ -40,15 +40,14 @@ else:
     print('Initializing new model...')
     model.apply(init_weights)
 
-task = Task.init(project_name='Encoder', task_name=param_dict['exp_params']['exp_name'])
+task = Task.init(project_name='Encoder', task_name=exp_params['exp_name'])
 
 logger = loggers.TensorBoardLogger(param_dict['train_params']['log_dir'], name="Encoder")
 expected_lr = max((exp_params['LR'] *
                    exp_params['scheduler_gamma'] ** (exp_params['max_epochs'] *
                                                      exp_params['swa_start'])), 1e-9)
 trainer = Trainer(logger=logger, max_epochs=exp_params['max_epochs'],
-                  log_every_n_steps=exp_params['log_epoch'],
-                  strategy='ddp', devices=1, callbacks=
+                  log_every_n_steps=exp_params['log_epoch'], devices=1, callbacks=
                   [EarlyStopping(monitor='val_loss', patience=exp_params['patience'],
                                  check_finite=True),
                    StochasticWeightAveraging(swa_lrs=expected_lr, swa_epoch_start=exp_params['swa_start'])])
@@ -112,11 +111,4 @@ if trainer.is_global_zero:
                 for chunk in np.arange(chunk_start, dt.shape[0], batch_sz):
                     out_data = model.encode(torch.tensor(dt[chunk:chunk + batch_sz, :, :-2], dtype=torch.float32)).data.numpy()
                     out_data.tofile(writer)
-        target_spec_files = glob(f'{save_path}/targets.spec')[0]
-        target_data = np.fromfile(target_spec_files, dtype=np.float32).reshape((-1, 2, param_dict['settings']['fft_len'] + 2))[:, :, :-2]
-        with open(
-                f'{save_path}/targets.enc', 'ab') as writer:
-            for td in np.arange(0, target_data.shape[0], batch_sz):
-                out_data = model.encode(torch.tensor(target_data[td:td + batch_sz, ...])).data.numpy()
-                out_data.tofile(writer)
 task.close()
