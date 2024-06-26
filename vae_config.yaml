@@ -45,13 +45,13 @@ exp_params:
   log_epoch: 10
   save_model: True
   transform_data: True
-  warm_start: True
+  warm_start: False
   loss_landscape: False
   output_images: False
   model_type: Encoder
   patience: 150
   is_tuning: False
-  max_epochs: 5
+  max_epochs: 15
   exp_name: train-latent512tanh
   dataset_params:
     data_path: ./data
@@ -68,17 +68,12 @@ exp_params:
   model_params:
     in_channels: 2
     latent_dim: 512
-    max_capacity: 25
     channel_sz: 2
-    capacity_max_iter: 10000
-    reg_weight: 7840.  # MMD weight
-    kernel_type: 'rbf'
-    activation: leaky
     
 # This is for setting up training of target autoencoder
 target_exp_params:
-  LR: 0.01
-  weight_decay: 0.05
+  LR: 0.0001
+  weight_decay: 0.01
   scheduler_gamma: 0.7
   betas: [ .07, .9 ]
   step_size: 2
@@ -86,19 +81,19 @@ target_exp_params:
   log_epoch: 10
   save_model: True
   transform_data: True
-  warm_start: True
+  warm_start: False
   loss_landscape: False
   output_images: False
   model_type: TargetEncoder
   patience: 150
   is_tuning: False
-  max_epochs: 20
-  init_task: False
-  exp_name: train-targetencoder-mse
+  max_epochs: 600
+  init_task: True
+  exp_name: train-targetencoder-selfattention
   dataset_params:
     data_path: ./data
-    train_batch_size: 16
-    val_batch_size: 16
+    train_batch_size: 8
+    val_batch_size: 8
     num_workers: 0
     pin_memory: False
     split: .7
@@ -109,19 +104,14 @@ target_exp_params:
     noise_level: 0.
   model_params:
     in_channels: 2
-    latent_dim: 512
-    max_capacity: 25
-    channel_sz: 128
-    capacity_max_iter: 10000
-    reg_weight: 7840.  # MMD weight
-    kernel_type: 'rbf'
-    activation: leaky
+    latent_dim: 1024
+    channel_sz: 156
 
 # For training of wavemodel
 wave_exp_params:
-  LR: 0.0000001
-  weight_decay: 0.4
-  scheduler_gamma: 0.1
+  LR: 0.000001
+  weight_decay: 0.6
+  scheduler_gamma: 0.5
   swa_start: .6
   warm_start: False
   betas: [.9, .99]
@@ -133,9 +123,9 @@ wave_exp_params:
   patience: 350
   channel_sz: 64
   bandwidth: 400000000.
-  max_epochs: 1
-  init_task: False
-  exp_name: wavemodel-bigdouble6x6-newloss
+  max_epochs: 10
+  init_task: True
+  exp_name: wavemodel-double5x5-newloss-targettransform
   dataset_params:
     data_path: ./data
     train_batch_size: 64
@@ -149,15 +139,6 @@ wave_exp_params:
     var: 49527137064.739006
     noise_level: 0.
     collate: True
-  model_params:
-    in_channels: 2
-    latent_dim: 512
-    max_capacity: 25
-    channel_sz: 2
-    capacity_max_iter: 10000
-    reg_weight: 7840.  # MMD weight
-    kernel_type: 'rbf'
-    activation: leaky
 
 # For training of rcs model
 rcs_exp_params:

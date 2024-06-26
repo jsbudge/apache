@@ -97,7 +97,7 @@ class TargetDataset(Dataset):
 
 
 class WaveDataset(ConcatDataset):
-    def __init__(self, root_dir: str, latent_dim: int = 50, fft_sz: int = 4096,
+    def __init__(self, root_dir: str, target_latent_dim: int = 1024, clutter_latent_dim: int = 512, fft_sz: int = 4096,
                  split: float = 1., single_example: bool = False, min_pulse_length: int = 1, max_pulse_length: int = 2,
                  seq_len: int = 32, is_val=False, seed=42):
         assert Path(root_dir).is_dir()
@@ -108,7 +108,7 @@ class WaveDataset(ConcatDataset):
         target_pattern_file = f'{root_dir}/targets.enc'
 
         # Get master pattern for files
-        patterns = np.fromfile(target_pattern_file, np.float32).reshape((-1, latent_dim))
+        patterns = np.fromfile(target_pattern_file, np.float32).reshape((-1, target_latent_dim))
 
         # Arrange files into their pairs
         pair_dict = {}
@@ -122,7 +122,7 @@ class WaveDataset(ConcatDataset):
                 else:
                     pair_dict[path_stem] = {tp: cs}
                 if tp == 'cc':
-                    csz = int((os.stat(cs).st_size / (4 * latent_dim) - 255) *
+                    csz = int((os.stat(cs).st_size / (4 * clutter_latent_dim) - 255) *
                               (1 - split if is_val and split < 1 else split))
                     clutter_size = clutter_size + [(file_idx, n) for n in range(csz)]
                     file_idx += 1
@@ -131,7 +131,7 @@ class WaveDataset(ConcatDataset):
                     pair_dict[path_stem]['tc'] = patterns[int(Path(cs).stem.split('_')[1])]
 
         pairs = [l for _, l in pair_dict.items()]
-        datasets = [WaveFileDataset(p, latent_dim, fft_sz, split, single_example, min_pulse_length, max_pulse_length,
+        datasets = [WaveFileDataset(p, clutter_latent_dim, fft_sz, split, single_example, min_pulse_length, max_pulse_length,
                                     seq_len, is_val, seed) for p in pairs]
         super().__init__(datasets)
 
@@ -273,7 +273,8 @@ class WaveDataModule(BaseModule):
     def __init__(
             self,
             data_path: str,
-            latent_dim: int = 50,
+            clutter_latent_dim: int = 50,
+            target_latent_dim: int = 1024,
             train_batch_size: int = 8,
             val_batch_size: int = 8,
             pin_memory: bool = False,
@@ -289,7 +290,8 @@ class WaveDataModule(BaseModule):
     ):
         super().__init__(train_batch_size, val_batch_size, pin_memory, single_example, device)
 
-        self.latent_dim = latent_dim
+        self.clutter_latent_dim = clutter_latent_dim
+        self.target_latent_dim = target_latent_dim
         self.data_dir = data_path
         self.split = split
         self.min_pulse_length = min_pulse_length
@@ -300,11 +302,13 @@ class WaveDataModule(BaseModule):
         self.var = var
 
     def setup(self, stage: Optional[str] = None) -> None:
-        self.train_dataset = WaveDataset(self.data_dir, self.latent_dim, self.fft_sz, split=self.split,
+        self.train_dataset = WaveDataset(self.data_dir, clutter_latent_dim=self.clutter_latent_dim,
+                                         target_latent_dim=self.target_latent_dim, fft_sz=self.fft_sz, split=self.split,
                                          single_example=self.single_example, min_pulse_length=self.min_pulse_length,
                                          max_pulse_length=self.max_pulse_length)
 
-        self.val_dataset = WaveDataset(self.data_dir, self.latent_dim, self.fft_sz, split=self.split,
+        self.val_dataset = WaveDataset(self.data_dir, clutter_latent_dim=self.clutter_latent_dim,
+                                       target_latent_dim=self.target_latent_dim, fft_sz=self.fft_sz, split=self.split,
                                        single_example=self.single_example, min_pulse_length=self.min_pulse_length,
                                        max_pulse_length=self.max_pulse_length, is_val=True)
 

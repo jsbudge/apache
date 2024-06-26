@@ -34,7 +34,7 @@ if __name__ == '__main__':
     if exp_params['warm_start']:
         print('Model loaded from save state.')
         try:
-            model.load_state_dict(torch.load('./model/inference_model.state'))
+            model.load_state_dict(torch.load('./model/target_model.state'))
             tag_warm = 'warm_start'
         except RuntimeError:
             print('Model save file does not match current structure. Re-running with new structure.')
@@ -74,7 +74,7 @@ if __name__ == '__main__':
     if trainer.is_global_zero:
         if exp_params['save_model']:
             try:
-                torch.save(model.state_dict(), './model/inference_model.state')
+                torch.save(model.state_dict(), './model/target_model.state')
                 print('Model saved to disk.')
             except Exception as e:
                 print(f'Model not saved: {e}')

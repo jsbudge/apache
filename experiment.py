@@ -248,33 +248,31 @@ class GeneratorExperiment(pl.LightningModule):
         if self.trainer.is_global_zero and not self.params['is_tuning'] and self.params['save_model']:
             self.model.save('./model')
             print('Model saved to disk.')
-            '''if self.current_epoch % 5 == 0:
-                # Log an image to get an idea of progress
-                clutter_enc, target_enc, clutter_spec, target_spec, pulse_length = (
-                    next(iter(self.trainer.val_dataloaders)))
-                pulse_length[1:] = pulse_length[0]
+            cc, tc, cs, ts, plength, dset_bandwidth = next(iter(self.trainer.datamodule.test_dataloader()))
 
-                bandwidth = torch.ones(clutter_enc.shape[0], 1, device=self.device) * self.params['bandwidth']
-                rec = self.forward([clutter_enc.to(self.device), target_enc.to(self.device),
-                                    pulse_length.to(self.device), bandwidth.to(self.device)])
-                waves = self.model.getWaveform(nn_output=rec).cpu().data.numpy()
+            nn_output = self.model([cc.to(self.device), tc.to(self.device), plength.to(self.device),
+                                  dset_bandwidth.to(self.device)])
 
-                clutter = clutter_spec.cpu().data.numpy()
-                clutter = normalize(clutter[:, 0, :] + 1j * clutter[:, 1, :])
-                targets = target_spec.cpu().data.numpy()
-                targets = normalize(targets[:, 0, :] + 1j * targets[:, 1, :])
+            waves = self.model.getWaveform(nn_output=nn_output).cpu().data.numpy()
+            print('Loaded waveforms...')
 
-                # Run some plots for an idea of what's going on
-                freqs = np.fft.fftshift(np.fft.fftfreq(self.model.fft_sz, 1 / self.model.fs))
-                fig = plt.figure('Waveform PSD')
-                plt.plot(freqs, db(np.fft.fftshift(waves[0, 0])))
-                plt.plot(freqs, db(np.fft.fftshift(waves[0, 1])))
-                plt.plot(freqs, db(targets[0]), linestyle='--', linewidth=.3)
-                plt.plot(freqs, db(clutter[0]), linestyle=':', linewidth=.3)
-                plt.legend(['Waveform 1', 'Waveform 2', 'Target', 'Clutter'])
-                plt.ylabel('Relative Power (dB)')
-                plt.xlabel('Freq (Hz)')
-                self.logger.experiment.add_figure('Waveforms', fig, self.current_epoch)'''
+            clutter = cs.cpu().data.numpy()
+            clutter = normalize(clutter[:, 0, :] + 1j * clutter[:, 1, :])
+            targets = ts.cpu().data.numpy()
+            targets = normalize(targets[:, 0, :] + 1j * targets[:, 1, :])
+            print('Loaded clutter and target data...')
+
+            # Run some plots for an idea of what's going on
+            freqs = np.fft.fftshift(np.fft.fftfreq(self.model.fft_sz, 1 / self.model.fs))
+            fig = plt.figure('Waveform PSD')
+            plt.plot(freqs, db(np.fft.fftshift(waves[0, 0])))
+            plt.plot(freqs, db(np.fft.fftshift(waves[0, 1])))
+            plt.plot(freqs, db(targets[0]), linestyle='--', linewidth=.3)
+            plt.plot(freqs, db(clutter[0]), linestyle=':', linewidth=.3)
+            plt.legend(['Waveform 1', 'Waveform 2', 'Target', 'Clutter'])
+            plt.ylabel('Relative Power (dB)')
+            plt.xlabel('Freq (Hz)')
+            self.logger.experiment.add_figure('Waveforms', fig, self.current_epoch)
 
     def on_train_epoch_end(self) -> None:
         sch = self.lr_schedulers()
@@ -308,7 +306,7 @@ class GeneratorExperiment(pl.LightningModule):
         train_loss = self.model.loss_function(results, clutter_spec, target_spec, bandwidth)
 
         train_loss['loss'] = torch.sqrt(torch.abs(
-            train_loss['target_loss'] * (1 + train_loss['sidelobe_loss'] + train_loss['ortho_loss'])))
+            train_loss['sidelobe_loss'] * (1 + train_loss['target_loss'] + train_loss['ortho_loss'])))
         return train_loss
 
 

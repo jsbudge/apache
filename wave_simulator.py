@@ -7,6 +7,7 @@ from apache_helper import ApachePlatform
 from models import Encoder
 from simulib.simulation_functions import llh2enu, db, azelToVec, genPulse
 from simulib import getMaxThreads, backproject, applyRadiationPatternCPU
+from simulib.cuda_mesh_kernels import genRangeProfileFromMesh
 from simulib.mimo_functions import genChirpAndMatchedFilters, genChannels, genSimPulseData
 from simulib.grid_helper import SDREnvironment
 import cupy as cupy
@@ -147,7 +148,7 @@ if __name__ == '__main__':
     try:
         target_target = int(sys.argv[1])
     except IndexError:
-        target_target = 2
+        target_target = sim_settings['target_target']
     if not sim_settings['use_sdr_waveform']:
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
         mfilt = sdr.genMatchedFilter(0, fft_len=fft_len)
@@ -170,7 +171,7 @@ if __name__ == '__main__':
                                     wave_mdl.fft_sz, axis=1)
         bandwidth_model = torch.tensor(settings['bandwidth'], device=wave_mdl.device)
         tsdata = np.fromfile('/home/jeff/repo/apache/data/targets.enc',
-                             dtype=np.float32).reshape((-1, 512)
+                             dtype=np.float32).reshape((-1, wave_config['target_exp_params']['model_params']['latent_dim'])
                                                        )[target_target, ...]
 
     # This replaces the ASI background with a custom image
@@ -235,8 +236,8 @@ if __name__ == '__main__':
     det_pts = []
     ex_chirps = []
 
-    camfig, camax = plt.subplots(1, 1)
-    cam = Camera(camfig)
+    if settings['simulation_params']['load_targets']:
+        pass
 
     data_gen = genSimPulseData(rpref, rps, bg, u.mean(), settings['plp'], settings['upsample'],
                                settings['grid_width'], settings['grid_height'], settings['pts_per_m'],

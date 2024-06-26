@@ -8,6 +8,7 @@ from pytorch_lightning import LightningModule
 import numpy as np
 from waveform_model import FlatModule
 import matplotlib.pyplot as plt
+from layers import SelfAttention2d
 
 
 def calc_conv_size(inp_sz, kernel_sz, stride, padding):
@@ -916,14 +917,20 @@ class TargetEncoder(FlatModule):
         for l in range(levels):
             layer_sz = [256 // (2**(l + 1)), 256 // (2**(l + 1))]
             self.encoder_reduce.append(nn.Sequential(
-                nn.Conv2d(channel_sz, channel_sz, 4, 2, 1),
+                nn.MaxPool2d(2),
+                nn.Conv2d(channel_sz, channel_sz, 3, 1, 1),
                 nn.GELU(),
             ))
+            self.encoder_attention.append(nn.Sequential(
+                nn.MaxPool2d(2),
+                nn.Conv2d(channel_sz, channel_sz, 3, 1, 1),
+                nn.GELU(),
+                nn.Conv2d(channel_sz, channel_sz, 3, 1, 'same', dilation=3),
+                nn.GELU(),
+                nn.Conv2d(channel_sz, channel_sz, 1, 1, 0),
+                nn.Sigmoid(),
+            ))
             self.encoder_conv.append(nn.Sequential(
-                nn.Conv2d(channel_sz, channel_sz, 3, 1, 1),
-                nn.GELU(),
-                nn.Conv2d(channel_sz, channel_sz, 3, 1, 1),
-                nn.GELU(),
                 nn.Conv2d(channel_sz, channel_sz, 3, 1, 1),
                 nn.GELU(),
                 nn.Conv2d(channel_sz, channel_sz, 3, 1, 1),
@@ -936,11 +943,17 @@ class TargetEncoder(FlatModule):
         )
         self.fc_z = nn.Sequential(
             nn.Linear(out_sz**2, latent_dim),
+            nn.GELU(),
+            nn.Linear(latent_dim, latent_dim),
             nn.Tanh(),
         )
 
         # Decoder
-        self.z_fc = nn.Linear(latent_dim, out_sz**2)
+        self.z_fc = nn.Sequential(
+            nn.Linear(latent_dim, latent_dim),
+            nn.GELU(),
+            nn.Linear(latent_dim, out_sz**2),
+        )
         self.decoder_flatten = nn.Sequential(
             nn.Conv2d(1, channel_sz, 1, 1, 0),
             nn.GELU(),
@@ -951,14 +964,18 @@ class TargetEncoder(FlatModule):
         for l in range(levels):
             layer_sz = [out_sz * (2 ** l), out_sz * (2 ** l)]
             self.decoder_reduce.append(nn.Sequential(
+                nn.ConvTranspose2d(channel_sz, channel_sz, 3, 1, 1),
+                nn.GELU(),
                 nn.ConvTranspose2d(channel_sz, channel_sz, 4, 2, 1),
                 nn.GELU(),
             ))
+            self.decoder_attention.append(nn.Sequential(
+                nn.ConvTranspose2d(channel_sz, channel_sz, 3, 1, 1),
+                nn.GELU(),
+                nn.ConvTranspose2d(channel_sz, channel_sz, 3, 1, 1),
+                nn.Sigmoid(),
+            ))
             self.decoder_conv.append(nn.Sequential(
-                nn.ConvTranspose2d(channel_sz, channel_sz, 3, 1, 1),
-                nn.GELU(),
-                nn.ConvTranspose2d(channel_sz, channel_sz, 3, 1, 1),
-                nn.GELU(),
                 nn.ConvTranspose2d(channel_sz, channel_sz, 3, 1, 1),
                 nn.GELU(),
                 nn.ConvTranspose2d(channel_sz, channel_sz, 3, 1, 1),
@@ -980,20 +997,18 @@ class TargetEncoder(FlatModule):
         :param inp: (Tensor) Input tensor to encoder [N x C x H x W]
         :return: (Tensor) List of latent codes
         """
-        fft_inp = torch.view_as_real(torch.fft.fft2(torch.complex(inp[:, 0, :, :], inp[:, 1, :, :]))).swapaxes(1, 3)
-        inp = self.encoder_inflate(fft_inp)
-        for conv, red in zip(self.encoder_conv, self.encoder_reduce):
-            inp = conv(red(inp))
+        inp = self.encoder_inflate(inp)
+        for conv, red, att in zip(self.encoder_conv, self.encoder_reduce, self.encoder_attention):
+            inp = conv(red(inp) * att(inp))
         inp = self.encoder_flatten(inp).view(-1, self.out_sz**2)
         return self.fc_z(inp)
 
     def decode(self, z: Tensor) -> Tensor:
         result = self.z_fc(z).view(-1, 1, self.out_sz, self.out_sz)
         result = self.decoder_flatten(result)
-        for conv, red in zip(self.decoder_conv, self.decoder_reduce):
-            result = red(conv(result))
-        result = self.decoder_output(result)
-        return torch.view_as_real(torch.fft.ifft2(torch.complex(result[:, 0, :, :], result[:, 1, :, :]))).swapaxes(1, 3)
+        for conv, red, att in zip(self.decoder_conv, self.decoder_reduce, self.decoder_attention):
+            result = red(conv(result) * att(result))
+        return self.decoder_output(result)
 
     def forward(self, inp: Tensor, **kwargs) -> Tensor:
         z = self.encode(inp)

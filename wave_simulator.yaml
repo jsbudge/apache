@@ -28,6 +28,7 @@ simulation_params:
   use_sdr_gps: False
   use_sdr_gimbal: True
   use_sdr_waveform: False
+  target_target: 9
   use_sdr_fc: True
   # This is for use_sdr_gps == False
   collect_duration: 1.
@@ -37,6 +38,7 @@ simulation_params:
   standoff_range: 2181.  # meters
   az_bw: .866
   el_bw: 2.
+  load_targets: True
 
 antenna_params:
   n_tx: 2
@@ -45,6 +47,11 @@ antenna_params:
   transmit_power: [100, 100]
   tx_pos: [[-0.015614190520833333, 0., 0.], [0.015614190520833333, 0, 0]]
   rx_pos: [[0., -0.015614190520833333, 0.], [0., 0.015614190520833333, 0]]
+
+target_params:
+  filename: /home/jeff/Documents/target_meshes/piper_pa18.obj
+  scaling: 1.
+  location: [40.138044, -111.660027, 1365.8849123907273]
 
 waveform_params:
   use_model: False
