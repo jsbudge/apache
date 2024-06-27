@@ -917,20 +917,23 @@ class TargetEncoder(FlatModule):
         for l in range(levels):
             layer_sz = [256 // (2**(l + 1)), 256 // (2**(l + 1))]
             self.encoder_reduce.append(nn.Sequential(
-                nn.MaxPool2d(2),
-                nn.Conv2d(channel_sz, channel_sz, 3, 1, 1),
+                nn.Conv2d(channel_sz, channel_sz, 4, 2, 1),
                 nn.GELU(),
             ))
             self.encoder_attention.append(nn.Sequential(
                 nn.MaxPool2d(2),
                 nn.Conv2d(channel_sz, channel_sz, 3, 1, 1),
                 nn.GELU(),
-                nn.Conv2d(channel_sz, channel_sz, 3, 1, 'same', dilation=3),
+                nn.Conv2d(channel_sz, channel_sz, 3, 1, 'same', dilation=6),
                 nn.GELU(),
                 nn.Conv2d(channel_sz, channel_sz, 1, 1, 0),
                 nn.Sigmoid(),
             ))
             self.encoder_conv.append(nn.Sequential(
+                nn.Conv2d(channel_sz, channel_sz, 3, 1, 1),
+                nn.GELU(),
+                nn.Conv2d(channel_sz, channel_sz, 3, 1, 1),
+                nn.GELU(),
                 nn.Conv2d(channel_sz, channel_sz, 3, 1, 1),
                 nn.GELU(),
                 nn.Conv2d(channel_sz, channel_sz, 3, 1, 1),
@@ -961,21 +964,27 @@ class TargetEncoder(FlatModule):
         self.decoder_reduce = nn.ModuleList()
         self.decoder_conv = nn.ModuleList()
         self.decoder_attention = nn.ModuleList()
-        for l in range(levels):
+        for l in range(1, levels + 1):
             layer_sz = [out_sz * (2 ** l), out_sz * (2 ** l)]
             self.decoder_reduce.append(nn.Sequential(
-                nn.ConvTranspose2d(channel_sz, channel_sz, 3, 1, 1),
-                nn.GELU(),
                 nn.ConvTranspose2d(channel_sz, channel_sz, 4, 2, 1),
                 nn.GELU(),
             ))
             self.decoder_attention.append(nn.Sequential(
-                nn.ConvTranspose2d(channel_sz, channel_sz, 3, 1, 1),
+                nn.ConvTranspose2d(channel_sz, channel_sz, 1, 1, 0),
+                nn.GELU(),
+                nn.ConvTranspose2d(channel_sz, channel_sz, 3, 1, 6, dilation=6),
                 nn.GELU(),
                 nn.ConvTranspose2d(channel_sz, channel_sz, 3, 1, 1),
+                nn.GELU(),
+                nn.ConvTranspose2d(channel_sz, channel_sz, 4, 2, 1),
                 nn.Sigmoid(),
             ))
             self.decoder_conv.append(nn.Sequential(
+                nn.ConvTranspose2d(channel_sz, channel_sz, 3, 1, 1),
+                nn.GELU(),
+                nn.ConvTranspose2d(channel_sz, channel_sz, 3, 1, 1),
+                nn.GELU(),
                 nn.ConvTranspose2d(channel_sz, channel_sz, 3, 1, 1),
                 nn.GELU(),
                 nn.ConvTranspose2d(channel_sz, channel_sz, 3, 1, 1),
@@ -1007,7 +1016,7 @@ class TargetEncoder(FlatModule):
         result = self.z_fc(z).view(-1, 1, self.out_sz, self.out_sz)
         result = self.decoder_flatten(result)
         for conv, red, att in zip(self.decoder_conv, self.decoder_reduce, self.decoder_attention):
-            result = red(conv(result) * att(result))
+            result = conv(red(result) * att(result))
         return self.decoder_output(result)
 
     def forward(self, inp: Tensor, **kwargs) -> Tensor:
