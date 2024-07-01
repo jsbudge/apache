@@ -738,6 +738,379 @@ class Encoder(FlatModule):
 
         # Encoder
         self.encoder_inflate = nn.Conv1d(in_channels, channel_sz, 3, 1, 1)
+        self.encoder_reduce = nn.ModuleList()
+        self.encoder_conv = nn.ModuleList()
+        self.encoder_attention = nn.ModuleList()
+        for n in range(1, levels + 1):
+            lin_sz = fft_len // (2 ** n)
+            self.encoder_reduce.append(nn.Sequential(
+                nn.Conv1d(channel_sz, channel_sz, 4, 2, 1),
+                nn.GELU(),
+            ))
+            self.encoder_conv.append(nn.Sequential(
+                nn.Linear(lin_sz, lin_sz),
+                nn.GELU(),
+            ))
+        self.encoder_squash = nn.Sequential(
+            nn.Conv1d(channel_sz, 1, 3, 1, 1),
+            nn.GELU(),
+        )
+        self.fc_z = nn.Sequential(
+            nn.Linear(fft_len // fft_scaling, latent_dim),
+            nn.Tanh(),
+        )
+
+        # Decoder
+        self.z_fc = nn.Linear(latent_dim, fft_len // fft_scaling)
+        self.decoder_inflate = nn.ConvTranspose1d(1, channel_sz, 3, 1, 1)
+        self.decoder_reduce = nn.ModuleList()
+        self.decoder_conv = nn.ModuleList()
+        self.decoder_attention = nn.ModuleList()
+        for n in range(levels, 0, -1):
+            lin_sz = fft_len // (2 ** n)
+            self.decoder_reduce.append(nn.Sequential(
+                nn.ConvTranspose1d(channel_sz, channel_sz, 4, 2, 1),
+                nn.GELU(),
+            ))
+            self.decoder_conv.append(nn.Sequential(
+                nn.Linear(lin_sz, lin_sz),
+                nn.GELU(),
+            ))
+        self.decoder_output = nn.Sequential(
+            nn.ConvTranspose1d(channel_sz, channel_sz, 3, 1, 1),
+            nn.Conv1d(channel_sz, in_channels, 1, 1, 0),
+        )
+
+        self.example_input_array = torch.randn((1, 2, self.fft_len))
+
+    def encode(self, inp: Tensor) -> Tensor:
+        """
+        Encodes the input by passing through the encoder network
+        and returns the latent codes.
+        :param inp: (Tensor) Input tensor to encoder [N x C x H x W]
+        :return: (Tensor) List of latent codes
+        """
+        inp = self.encoder_inflate(inp)
+        for conv, red in zip(self.encoder_conv, self.encoder_reduce):
+            inp = conv(red(inp))
+        inp = self.encoder_squash(inp).squeeze(1)
+        return self.fc_z(inp)
+
+    def decode(self, z: Tensor) -> Tensor:
+        result = self.z_fc(z).unsqueeze(1)
+        result = self.decoder_inflate(result)
+        for conv, red in zip(self.decoder_conv, self.decoder_reduce):
+            result = red(conv(result))
+        return self.decoder_output(result)
+
+    def forward(self, inp: Tensor, **kwargs) -> Tensor:
+        z = self.encode(inp)
+        return self.decode(z)
+
+    def loss_function(self, y, y_pred):
+        return tf.mse_loss(y, y_pred)
+
+    def on_fit_start(self) -> None:
+        if self.trainer.is_global_zero and self.logger:
+            self.logger.log_graph(self, self.example_input_array)
+
+    def training_step(self, batch, batch_idx):
+        opt = self.optimizers()
+        train_loss = self.train_val_get(batch, batch_idx)
+        opt.zero_grad()
+        self.manual_backward(train_loss)
+        opt.step()
+
+    def validation_step(self, batch, batch_idx):
+        self.train_val_get(batch, batch_idx, 'val')
+
+    def on_after_backward(self) -> None:
+        if self.trainer.is_global_zero and self.global_step % 100 == 0 and self.logger:
+            for name, params in self.named_parameters():
+                self.logger.experiment.add_histogram(name, params, self.global_step)
+
+    def on_validation_end(self) -> None:
+        if self.trainer.is_global_zero and not self.params['is_tuning']:
+            torch.save(self.state_dict(), './model/inference_model.state')
+            print('Model saved to disk.')
+
+            if self.current_epoch % 5 == 0:
+                # Log an image to get an idea of progress
+                img, _ = next(iter(self.trainer.val_dataloaders))
+                rec = self.forward(img.to(self.device))
+                rec = rec.to('cpu').data.numpy()
+                fig = plt.figure()
+                plt.subplot(2, 2, 1)
+                plt.title('Real Original')
+                plt.plot(img[0, 0, :])
+                plt.subplot(2, 2, 2)
+                plt.title('Imag Original')
+                plt.plot(img[0, 1, :])
+                plt.subplot(2, 2, 3)
+                plt.title('Real Reconstructed')
+                plt.plot(rec[0, 0, :])
+                plt.subplot(2, 2, 4)
+                plt.title('Imag Reconstructed')
+                plt.plot(rec[0, 1, :])
+                self.logger.experiment.add_figure('Reconstruction', fig, self.current_epoch)
+
+    def on_train_epoch_end(self) -> None:
+        if self.trainer.is_global_zero and not self.params['is_tuning'] and self.params['loss_landscape']:
+            self.optim_path.append(self.model.get_flat_params())
+
+    def on_validation_epoch_end(self) -> None:
+        sch = self.lr_schedulers()
+
+        # If the selected scheduler is a ReduceLROnPlateau scheduler.
+        if isinstance(sch, torch.optim.lr_scheduler.ReduceLROnPlateau):
+            sch.step(self.trainer.callback_metrics["val_loss"])
+            self.log('LR', sch.get_last_lr()[0], rank_zero_only=True)
+
+    def configure_optimizers(self):
+        optimizer = optim.AdamW(self.parameters(),
+                                lr=self.params['LR'],
+                                weight_decay=self.params['weight_decay'],
+                                betas=self.params['betas'],
+                                eps=1e-7)
+        optims = [optimizer]
+        if self.params['scheduler_gamma'] is None:
+            return optims
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optims[0], cooldown=self.params['step_size'],
+                                                         factor=self.params['scheduler_gamma'], threshold=1e-5)
+        scheds = [scheduler]
+
+        return optims, scheds
+
+    def train_val_get(self, batch, batch_idx, kind='train'):
+        img, img = batch
+
+        results = self.forward(img)
+        train_loss = self.loss_function(results, img)
+
+        self.log_dict({f'{kind}_loss': train_loss}, on_epoch=True,
+                      prog_bar=True, rank_zero_only=True)
+        return train_loss
+
+
+class TargetEncoder(FlatModule):
+    def __init__(self,
+                 in_channels: int,
+                 latent_dim: int,
+                 params: dict,
+                 channel_sz: int = 32,
+                 **kwargs) -> None:
+        super(TargetEncoder, self).__init__()
+
+        self.latent_dim = latent_dim
+        self.params = params
+        self.channel_sz = channel_sz
+        self.in_channels = in_channels
+        self.automatic_optimization = False
+        levels = 3
+        out_sz = 256 // (2**levels)
+
+        # Encoder
+        self.encoder_inflate = nn.Conv2d(in_channels, channel_sz, 3, 1, 1)
+        self.encoder_reduce = nn.ModuleList()
+        self.encoder_conv = nn.ModuleList()
+        self.encoder_attention = nn.ModuleList()
+        for l in range(levels):
+            layer_sz = [256 // (2**(l + 1)), 256 // (2**(l + 1))]
+            self.encoder_reduce.append(nn.Sequential(
+                nn.Conv2d(channel_sz, channel_sz, 4, 2, 1),
+                nn.GELU(),
+            ))
+            self.encoder_attention.append(nn.Sequential(
+                nn.MaxPool2d(2),
+                nn.Conv2d(channel_sz, channel_sz, 3, 1, 1),
+                nn.GELU(),
+                nn.Conv2d(channel_sz, channel_sz, 3, 1, 'same', dilation=6),
+                nn.GELU(),
+                nn.Conv2d(channel_sz, channel_sz, 1, 1, 0),
+                nn.Sigmoid(),
+            ))
+            self.encoder_conv.append(nn.Sequential(
+                nn.Conv2d(channel_sz, channel_sz, 3, 1, 1),
+                nn.GELU(),
+                nn.Conv2d(channel_sz, channel_sz, 3, 1, 1),
+                nn.GELU(),
+                nn.Conv2d(channel_sz, channel_sz, 3, 1, 1),
+                nn.GELU(),
+                nn.Conv2d(channel_sz, channel_sz, 3, 1, 1),
+                nn.GELU(),
+                nn.LayerNorm(layer_sz),
+            ))
+        self.encoder_flatten = nn.Sequential(
+            nn.Conv2d(channel_sz, 1, 1, 1, 0),
+            nn.GELU(),
+        )
+        self.fc_z = nn.Sequential(
+            nn.Linear(out_sz**2, latent_dim),
+            nn.GELU(),
+            nn.Linear(latent_dim, latent_dim),
+            nn.Tanh(),
+        )
+
+        # Decoder
+        self.z_fc = nn.Sequential(
+            nn.Linear(latent_dim, latent_dim),
+            nn.GELU(),
+            nn.Linear(latent_dim, out_sz**2),
+        )
+        self.decoder_flatten = nn.Sequential(
+            nn.Conv2d(1, channel_sz, 1, 1, 0),
+            nn.GELU(),
+        )
+        self.decoder_reduce = nn.ModuleList()
+        self.decoder_conv = nn.ModuleList()
+        self.decoder_attention = nn.ModuleList()
+        for l in range(1, levels + 1):
+            layer_sz = [out_sz * (2 ** l), out_sz * (2 ** l)]
+            self.decoder_reduce.append(nn.Sequential(
+                nn.ConvTranspose2d(channel_sz, channel_sz, 4, 2, 1),
+                nn.GELU(),
+            ))
+            self.decoder_attention.append(nn.Sequential(
+                nn.ConvTranspose2d(channel_sz, channel_sz, 1, 1, 0),
+                nn.GELU(),
+                nn.ConvTranspose2d(channel_sz, channel_sz, 3, 1, 6, dilation=6),
+                nn.GELU(),
+                nn.ConvTranspose2d(channel_sz, channel_sz, 3, 1, 1),
+                nn.GELU(),
+                nn.ConvTranspose2d(channel_sz, channel_sz, 4, 2, 1),
+                nn.Sigmoid(),
+            ))
+            self.decoder_conv.append(nn.Sequential(
+                nn.ConvTranspose2d(channel_sz, channel_sz, 3, 1, 1),
+                nn.GELU(),
+                nn.ConvTranspose2d(channel_sz, channel_sz, 3, 1, 1),
+                nn.GELU(),
+                nn.ConvTranspose2d(channel_sz, channel_sz, 3, 1, 1),
+                nn.GELU(),
+                nn.ConvTranspose2d(channel_sz, channel_sz, 3, 1, 1),
+                nn.GELU(),
+                nn.LayerNorm(layer_sz),
+            ))
+        self.decoder_output = nn.Sequential(
+            nn.ConvTranspose2d(channel_sz, in_channels, 1, 1, 0),
+        )
+
+        self.latent_dim = latent_dim
+        self.out_sz = out_sz
+        self.example_input_array = torch.randn((1, 2, 256, 256))
+
+    def encode(self, inp: Tensor) -> Tensor:
+        """
+        Encodes the input by passing through the encoder network
+        and returns the latent codes.
+        :param inp: (Tensor) Input tensor to encoder [N x C x H x W]
+        :return: (Tensor) List of latent codes
+        """
+        inp = self.encoder_inflate(inp)
+        for conv, red, att in zip(self.encoder_conv, self.encoder_reduce, self.encoder_attention):
+            inp = conv(red(inp) * att(inp))
+        inp = self.encoder_flatten(inp).view(-1, self.out_sz**2)
+        return self.fc_z(inp)
+
+    def decode(self, z: Tensor) -> Tensor:
+        result = self.z_fc(z).view(-1, 1, self.out_sz, self.out_sz)
+        result = self.decoder_flatten(result)
+        for conv, red, att in zip(self.decoder_conv, self.decoder_reduce, self.decoder_attention):
+            result = conv(red(result) * att(result))
+        return self.decoder_output(result)
+
+    def forward(self, inp: Tensor, **kwargs) -> Tensor:
+        z = self.encode(inp)
+        return self.decode(z)
+
+    def loss_function(self, y, y_pred):
+        return tf.mse_loss(y, y_pred)
+
+    def on_fit_start(self) -> None:
+        if self.trainer.is_global_zero and self.logger:
+            self.logger.log_graph(self, self.example_input_array)
+
+    def training_step(self, batch, batch_idx):
+        opt = self.optimizers()
+        train_loss = self.train_val_get(batch, batch_idx)
+        opt.zero_grad()
+        self.manual_backward(train_loss)
+        opt.step()
+
+    def validation_step(self, batch, batch_idx):
+        self.train_val_get(batch, batch_idx, 'val')
+
+    def on_after_backward(self) -> None:
+        if self.trainer.is_global_zero and self.global_step % 100 == 0 and self.logger:
+            for name, params in self.named_parameters():
+                self.logger.experiment.add_histogram(name, params, self.global_step)
+
+    def on_validation_end(self) -> None:
+        if self.trainer.is_global_zero and not self.params['is_tuning']:
+            torch.save(self.state_dict(), './model/inference_model.state')
+            print('Model saved to disk.')
+
+            if self.current_epoch % 5 == 0:
+                pass
+
+    def on_train_epoch_end(self) -> None:
+        if self.trainer.is_global_zero and not self.params['is_tuning'] and self.params['loss_landscape']:
+            self.optim_path.append(self.model.get_flat_params())
+
+    def on_validation_epoch_end(self) -> None:
+        sch = self.lr_schedulers()
+
+        # If the selected scheduler is a ReduceLROnPlateau scheduler.
+        if isinstance(sch, torch.optim.lr_scheduler.ReduceLROnPlateau):
+            sch.step(self.trainer.callback_metrics["val_loss"])
+            self.log('LR', sch.get_last_lr()[0], rank_zero_only=True)
+
+    def configure_optimizers(self):
+        optimizer = optim.AdamW(self.parameters(),
+                                lr=self.params['LR'],
+                                weight_decay=self.params['weight_decay'],
+                                betas=self.params['betas'],
+                                eps=1e-7)
+        optims = [optimizer]
+        if self.params['scheduler_gamma'] is None:
+            return optims
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optims[0], cooldown=self.params['step_size'],
+                                                         factor=self.params['scheduler_gamma'], threshold=1e-5)
+        scheds = [scheduler]
+
+        return optims, scheds
+
+    def train_val_get(self, batch, batch_idx, kind='train'):
+        img, img = batch
+
+        results = self.forward(img)
+        train_loss = self.loss_function(results, img)
+
+        self.log_dict({f'{kind}_loss': train_loss}, on_epoch=True,
+                      prog_bar=True, rank_zero_only=True)
+        return train_loss
+
+class Encoder(FlatModule):
+    def __init__(self,
+                 in_channels: int,
+                 latent_dim: int,
+                 fft_len: int,
+                 params: dict,
+                 channel_sz: int = 32,
+                 **kwargs) -> None:
+        super(Encoder, self).__init__()
+
+        self.latent_dim = latent_dim
+        self.fft_len = fft_len
+        self.params = params
+        self.channel_sz = channel_sz
+        self.in_channels = in_channels
+        self.automatic_optimization = False
+        levels = 3
+        fft_scaling = 2 ** levels
+
+        # Encoder
+        self.encoder_inflate = nn.Conv1d(in_channels, channel_sz, 3, 1, 1)
         self.encoder_attention = nn.ModuleList()
         self.encoder_reduce = nn.ModuleList()
         self.encoder_conv = nn.ModuleList()

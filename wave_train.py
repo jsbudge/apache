@@ -75,7 +75,8 @@ if __name__ == '__main__':
 
     print('Setting up wavemodel...')
     # Get the model, experiment, logger set up
-    decoder = Encoder(**exp_params['model_params'], fft_len=config['settings']['fft_len'], params=config['exp_params'])
+    decoder = Encoder(**config['exp_params']['model_params'], fft_len=config['settings']['fft_len'],
+                      params=config['exp_params'])
     print('Setting up decoder...')
     try:
         decoder.load_state_dict(torch.load('./model/inference_model.state'))
@@ -94,20 +95,24 @@ if __name__ == '__main__':
         except RuntimeError as e:
             print(f'Wavemodel save file does not match current structure. Re-running with new structure.\n{e}')
             wave_mdl = GeneratorModel(fft_sz=fft_len, decoder=decoder, channel_sz=exp_params['channel_sz'],
-                                      clutter_latent_size=exp_params['model_params']['latent_dim'],
-                                      target_latent_size=exp_params['model_params']['latent_dim'], n_ants=2)
+                                      clutter_latent_size=config['exp_params']['model_params']['latent_dim'],
+                                      target_latent_size=config['target_exp_params']['model_params']['latent_dim'],
+                                      n_ants=2)
     else:
         print('Initializing new wavemodel...')
         wave_mdl = GeneratorModel(fft_sz=fft_len, decoder=decoder, channel_sz=exp_params['channel_sz'],
-                                  clutter_latent_size=exp_params['model_params']['latent_dim'],
-                                  target_latent_size=exp_params['model_params']['latent_dim'], n_ants=2)
+                                  clutter_latent_size=config['exp_params']['model_params']['latent_dim'],
+                                  target_latent_size=config['target_exp_params']['model_params']['latent_dim'],
+                                  n_ants=2)
 
     # Since these are dependent on apache params, we set them up here instead of in the yaml file
     print('Setting up data generator...')
     config['wave_exp_params']['dataset_params']['max_pulse_length'] = nr
     config['wave_exp_params']['dataset_params']['min_pulse_length'] = 1000
 
-    data = WaveDataModule(latent_dim=exp_params['model_params']['latent_dim'], device=device, fft_sz=fft_len,
+    data = WaveDataModule(clutter_latent_dim=config['exp_params']['model_params']['latent_dim'],
+                          target_latent_dim=config['target_exp_params']['model_params']['latent_dim'], device=device,
+                          fft_sz=fft_len,
                           **exp_params["dataset_params"])
     data.setup()
 
@@ -130,7 +135,7 @@ if __name__ == '__main__':
 
     expected_lr = max((exp_params['LR'] *
                        exp_params['scheduler_gamma'] ** (
-                                   exp_params['max_epochs'] * exp_params['swa_start'])),
+                               exp_params['max_epochs'] * exp_params['swa_start'])),
                       1e-9)
     trainer = Trainer(logger=logger, max_epochs=config['wave_exp_params']['max_epochs'],
                       log_every_n_steps=exp_params['log_epoch'], devices=1, callbacks=

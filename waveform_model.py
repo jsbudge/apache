@@ -79,17 +79,25 @@ class GeneratorModel(FlatModule):
         self.decoder = decoder
         self.decoder.eval()
         self.decoder.requires_grad = False
+        self.channel_sz = channel_sz
 
-        self.transformer = nn.Transformer(clutter_latent_size, num_decoder_layers=6, num_encoder_layers=6,
+        self.transformer = nn.Transformer(clutter_latent_size, num_decoder_layers=5, num_encoder_layers=5,
                                           activation='gelu', batch_first=True)
         self.transformer.apply(init_weights)
-        self.last_transformer = nn.Transformer(clutter_latent_size, num_decoder_layers=6, num_encoder_layers=6,
+        self.last_transformer = nn.Transformer(clutter_latent_size, num_decoder_layers=5, num_encoder_layers=5,
                                                activation='gelu', batch_first=True)
         self.last_transformer.apply(init_weights)
+
+        self.target_compressor = nn.Sequential(
+            nn.Linear(target_latent_size, clutter_latent_size),
+            nn.Tanh(),
+        )
+        self.expand_to_ants.apply(init_weights)
 
         self.expand_to_ants = nn.Sequential(
             nn.Conv1d(1, channel_sz, 1, 1, 0),
             nn.GELU(),
+            Block1d(channel_sz),
             Block1d(channel_sz),
             nn.Conv1d(channel_sz, self.n_ants, 1, 1, 0),
             nn.GELU(),
@@ -122,6 +130,9 @@ class GeneratorModel(FlatModule):
         self.window_context = nn.Sequential(
             nn.Conv1d(self.n_ants * 4, channel_sz, 1, 1, 0),
             Block1d(channel_sz),
+            Block1d(channel_sz),
+            Block1d(channel_sz),
+            Block1d(channel_sz),
             nn.Conv1d(channel_sz, self.n_ants * 2, 1, 1, 0),
         )
         self.window_context.apply(init_weights)
@@ -138,7 +149,8 @@ class GeneratorModel(FlatModule):
         clutter, target, pulse_length, bandwidth = inp
         bw_info = self.fourier(torch.cat([pulse_length.float().view(-1, 1), bandwidth.view(-1, 1) / self.fs],
                                          dim=1))
-        x = self.transformer(clutter, torch.tile(target.unsqueeze(1), (1, clutter.shape[1], 1)))
+        x = self.transformer(clutter, torch.tile(self.target_compressor(target).unsqueeze(1),
+                                                 (1, clutter.shape[1], 1)))
         x = self.last_transformer(x, bw_info.unsqueeze(1))
         x = self.expand_to_ants(x)
         final_win = self.window(self.bw_integrate(x).squeeze(1), bandwidth.view(-1, 1) / self.fs).repeat_interleave(
@@ -226,7 +238,7 @@ class GeneratorModel(FlatModule):
             pickle.dump({'fft_sz': self.fft_sz,
                          'clutter_latent_size': self.clutter_latent_size,
                          'target_latent_size': self.target_latent_size, 'n_ants': self.n_ants,
-                         'state_file': f'{fpath}/{model_name}_wave_model.state'}, f)
+                         'state_file': f'{fpath}/{model_name}_wave_model.state', 'channel_sz': self.channel_sz}, f)
 
     def getWindow(self, params):
         # print(params)
