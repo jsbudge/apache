@@ -362,8 +362,8 @@ class RCSExperiment(pl.LightningModule):
     def sample_images(self):
         # Get sample reconstruction image
         opt_img, sar_img, pose = next(iter(self.trainer.datamodule.test_dataloader()))
-        opt_img = opt_img.to(self.curr_device)
-        pose = pose.to(self.curr_device)
+        opt_img = opt_img.to(self.device)
+        pose = pose.to(self.device)
 
         if self.current_epoch % self.params['log_epoch'] == 0:
             recons = self.model(opt_img, pose)
