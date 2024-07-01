@@ -44,19 +44,19 @@ exp_params:
   swa_start: .5
   log_epoch: 10
   save_model: True
-  transform_data: True
-  warm_start: True
+  transform_data: False
+  warm_start: False
   loss_landscape: False
   output_images: False
   model_type: Encoder
   patience: 150
   is_tuning: False
-  max_epochs: 5
-  exp_name: train-latent512tanh
+  max_epochs: 5000
+  exp_name: train-latent512tanh-wd1
   dataset_params:
     data_path: ./data
-    train_batch_size: 256
-    val_batch_size: 256
+    train_batch_size: 16
+    val_batch_size: 16
     num_workers: 0
     pin_memory: False
     split: .7
@@ -68,12 +68,7 @@ exp_params:
   model_params:
     in_channels: 2
     latent_dim: 512
-    max_capacity: 25
-    channel_sz: 2
-    capacity_max_iter: 10000
-    reg_weight: 7840.  # MMD weight
-    kernel_type: 'rbf'
-    activation: leaky
+    channel_sz: 8
     
 # This is for setting up training of target autoencoder
 target_exp_params:

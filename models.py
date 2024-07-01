@@ -8,6 +8,7 @@ from pytorch_lightning import LightningModule
 import numpy as np
 from waveform_model import FlatModule
 import matplotlib.pyplot as plt
+from layers import LocationAwareAttention
 
 
 def calc_conv_size(inp_sz, kernel_sz, stride, padding):
@@ -737,9 +738,9 @@ class Encoder(FlatModule):
 
         # Encoder
         self.encoder_inflate = nn.Conv1d(in_channels, channel_sz, 3, 1, 1)
+        self.encoder_attention = nn.ModuleList()
         self.encoder_reduce = nn.ModuleList()
         self.encoder_conv = nn.ModuleList()
-        self.encoder_attention = nn.ModuleList()
         for n in range(1, levels + 1):
             lin_sz = fft_len // (2 ** n)
             self.encoder_reduce.append(nn.Sequential(
@@ -747,8 +748,25 @@ class Encoder(FlatModule):
                 nn.GELU(),
             ))
             self.encoder_conv.append(nn.Sequential(
-                nn.Linear(lin_sz, lin_sz),
+                nn.Conv1d(channel_sz, channel_sz, 3, 1, 1),
                 nn.GELU(),
+                nn.Conv1d(channel_sz, channel_sz, 3, 1, 1),
+                nn.GELU(),
+                nn.Conv1d(channel_sz, channel_sz, 3, 1, 1),
+                nn.GELU(),
+                nn.Conv1d(channel_sz, channel_sz, 3, 1, 1),
+                nn.GELU(),
+                nn.LayerNorm(lin_sz),
+            ))
+            self.encoder_attention.append(nn.Sequential(
+                nn.Conv1d(channel_sz, channel_sz, 3, 1, 1),
+                nn.GELU(),
+                nn.Conv1d(channel_sz, channel_sz, 3, 1, 6, dilation=6),
+                nn.GELU(),
+                nn.Conv1d(channel_sz, channel_sz, 1, 1, 0),
+                nn.GELU(),
+                nn.Conv1d(channel_sz, channel_sz, 4, 2, 1),
+                nn.Sigmoid(),
             ))
         self.encoder_squash = nn.Sequential(
             nn.Conv1d(channel_sz, 1, 3, 1, 1),
@@ -760,20 +778,42 @@ class Encoder(FlatModule):
         )
 
         # Decoder
-        self.z_fc = nn.Linear(latent_dim, fft_len // fft_scaling)
+        self.z_fc = nn.Sequential(
+            nn.Linear(latent_dim, fft_len // fft_scaling),
+            nn.GELU(),
+            nn.Linear(fft_len // fft_scaling, fft_len // fft_scaling),
+            nn.GELU(),
+        )
         self.decoder_inflate = nn.ConvTranspose1d(1, channel_sz, 3, 1, 1)
         self.decoder_reduce = nn.ModuleList()
         self.decoder_conv = nn.ModuleList()
         self.decoder_attention = nn.ModuleList()
-        for n in range(levels, 0, -1):
+        for n in range(levels - 1, -1, -1):
             lin_sz = fft_len // (2 ** n)
             self.decoder_reduce.append(nn.Sequential(
                 nn.ConvTranspose1d(channel_sz, channel_sz, 4, 2, 1),
                 nn.GELU(),
             ))
             self.decoder_conv.append(nn.Sequential(
-                nn.Linear(lin_sz, lin_sz),
+                nn.ConvTranspose1d(channel_sz, channel_sz, 3, 1, 1),
                 nn.GELU(),
+                nn.ConvTranspose1d(channel_sz, channel_sz, 3, 1, 1),
+                nn.GELU(),
+                nn.ConvTranspose1d(channel_sz, channel_sz, 3, 1, 1),
+                nn.GELU(),
+                nn.ConvTranspose1d(channel_sz, channel_sz, 3, 1, 1),
+                nn.GELU(),
+                nn.LayerNorm(lin_sz),
+            ))
+            self.decoder_attention.append(nn.Sequential(
+                nn.ConvTranspose1d(channel_sz, channel_sz, 3, 1, 1),
+                nn.GELU(),
+                nn.ConvTranspose1d(channel_sz, channel_sz, 3, 1, 6, dilation=6),
+                nn.GELU(),
+                nn.ConvTranspose1d(channel_sz, channel_sz, 1, 1, 0),
+                nn.GELU(),
+                nn.ConvTranspose1d(channel_sz, channel_sz, 4, 2, 1),
+                nn.Sigmoid(),
             ))
         self.decoder_output = nn.Sequential(
             nn.ConvTranspose1d(channel_sz, channel_sz, 3, 1, 1),
@@ -790,16 +830,16 @@ class Encoder(FlatModule):
         :return: (Tensor) List of latent codes
         """
         inp = self.encoder_inflate(inp)
-        for conv, red in zip(self.encoder_conv, self.encoder_reduce):
-            inp = conv(red(inp))
+        for conv, red, att in zip(self.encoder_conv, self.encoder_reduce, self.encoder_attention):
+            inp = conv(red(inp) * att(inp))
         inp = self.encoder_squash(inp).squeeze(1)
         return self.fc_z(inp)
 
     def decode(self, z: Tensor) -> Tensor:
         result = self.z_fc(z).unsqueeze(1)
         result = self.decoder_inflate(result)
-        for conv, red in zip(self.decoder_conv, self.decoder_reduce):
-            result = red(conv(result))
+        for conv, red, att in zip(self.decoder_conv, self.decoder_reduce, self.decoder_attention):
+            result = conv(red(result) * att(result))
         return self.decoder_output(result)
 
     def forward(self, inp: Tensor, **kwargs) -> Tensor:
