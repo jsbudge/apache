@@ -215,7 +215,7 @@ class BaseModule(LightningDataModule):
         self.train_dataset = None
         self.train_batch_size = train_batch_size
         self.val_batch_size = val_batch_size
-        self.num_workers = 0  #cpu_count() // 2
+        self.num_workers = cpu_count() // 2
         self.pin_memory = pin_memory
         self.single_example = single_example
         self.device = device

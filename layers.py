@@ -6,7 +6,7 @@ from torch import nn
 from pytorch_lightning import LightningModule
 from torch.nn import functional as F
 from torch.distributions import Normal
-from simulib import genPulse
+from simulib.simulation_functions import genPulse
 
 Tensor = TypeVar('torch.tensor')
 

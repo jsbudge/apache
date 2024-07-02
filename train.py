@@ -40,7 +40,8 @@ else:
     print('Initializing new model...')
     model.apply(init_weights)
 
-task = Task.init(project_name='Encoder', task_name=exp_params['exp_name'])
+if exp_params['init_task']:
+    task = Task.init(project_name='Encoder', task_name=exp_params['exp_name'])
 
 logger = loggers.TensorBoardLogger(param_dict['train_params']['log_dir'], name="Encoder")
 expected_lr = max((exp_params['LR'] *
@@ -111,4 +112,5 @@ if trainer.is_global_zero:
                 for chunk in np.arange(chunk_start, dt.shape[0], batch_sz):
                     out_data = model.encode(torch.tensor(dt[chunk:chunk + batch_sz, :, :-2], dtype=torch.float32)).data.numpy()
                     out_data.tofile(writer)
-task.close()
+    if exp_params['init_task']:
+        task.close()
