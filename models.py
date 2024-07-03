@@ -736,47 +736,49 @@ class Encoder(FlatModule):
         fft_scaling = 2 ** levels
 
         # Encoder
-        self.encoder_inflate = nn.Conv1d(in_channels, channel_sz, 1, 1, 0)
+        self.encoder_inflate = nn.Conv1d(in_channels, channel_sz // 2**levels, 1, 1, 0)
         self.encoder_attention = nn.ModuleList()
         self.encoder_reduce = nn.ModuleList()
         self.encoder_conv = nn.ModuleList()
         for n in range(1, levels + 1):
+            curr_channel_sz = channel_sz // 2**(levels - n + 1)
+            next_channel_sz = channel_sz // 2**(levels - n)
             lin_sz = fft_len // (2 ** n)
             self.encoder_reduce.append(nn.Sequential(
-                nn.Conv1d(channel_sz, channel_sz, 4, 2, 1),
+                nn.Conv1d(curr_channel_sz, curr_channel_sz, 4, 2, 1),
                 nn.GELU(),
             ))
             self.encoder_conv.append(nn.Sequential(
-                nn.Conv1d(channel_sz, channel_sz, 3, 1, 1),
+                nn.Conv1d(curr_channel_sz, curr_channel_sz, 3, 1, 1),
                 nn.GELU(),
-                nn.Conv1d(channel_sz, channel_sz, 3, 1, 6, dilation=6),
+                nn.Conv1d(curr_channel_sz, curr_channel_sz, 3, 1, 6, dilation=6),
                 nn.GELU(),
-                nn.Conv1d(channel_sz, channel_sz, 1, 1, 0),
-                nn.GELU(),
-                nn.LayerNorm(lin_sz),
-                nn.Conv1d(channel_sz, channel_sz, 3, 1, 1),
-                nn.GELU(),
-                nn.Conv1d(channel_sz, channel_sz, 3, 1, 6, dilation=6),
-                nn.GELU(),
-                nn.Conv1d(channel_sz, channel_sz, 1, 1, 0),
+                nn.Conv1d(curr_channel_sz, curr_channel_sz, 1, 1, 0),
                 nn.GELU(),
                 nn.LayerNorm(lin_sz),
-                nn.Conv1d(channel_sz, channel_sz, 3, 1, 1),
+                nn.Conv1d(curr_channel_sz, curr_channel_sz, 3, 1, 1),
                 nn.GELU(),
-                nn.Conv1d(channel_sz, channel_sz, 3, 1, 6, dilation=6),
+                nn.Conv1d(curr_channel_sz, curr_channel_sz, 3, 1, 6, dilation=6),
                 nn.GELU(),
-                nn.Conv1d(channel_sz, channel_sz, 1, 1, 0),
+                nn.Conv1d(curr_channel_sz, curr_channel_sz, 1, 1, 0),
+                nn.GELU(),
+                nn.LayerNorm(lin_sz),
+                nn.Conv1d(curr_channel_sz, curr_channel_sz, 3, 1, 1),
+                nn.GELU(),
+                nn.Conv1d(curr_channel_sz, curr_channel_sz, 3, 1, 6, dilation=6),
+                nn.GELU(),
+                nn.Conv1d(curr_channel_sz, next_channel_sz, 1, 1, 0),
                 nn.GELU(),
                 nn.LayerNorm(lin_sz),
             ))
             self.encoder_attention.append(nn.Sequential(
-                nn.Conv1d(channel_sz, channel_sz, 3, 1, 1),
+                nn.Conv1d(curr_channel_sz, curr_channel_sz, 3, 1, 1),
                 nn.GELU(),
-                nn.Conv1d(channel_sz, channel_sz, 3, 1, 6, dilation=6),
+                nn.Conv1d(curr_channel_sz, curr_channel_sz, 3, 1, 6, dilation=6),
                 nn.GELU(),
-                nn.Conv1d(channel_sz, channel_sz, 1, 1, 0),
+                nn.Conv1d(curr_channel_sz, curr_channel_sz, 1, 1, 0),
                 nn.GELU(),
-                nn.Conv1d(channel_sz, channel_sz, 4, 2, 1),
+                nn.Conv1d(curr_channel_sz, curr_channel_sz, 4, 2, 1),
                 nn.Sigmoid(),
             ))
         self.encoder_squash = nn.Sequential(
@@ -803,46 +805,48 @@ class Encoder(FlatModule):
         self.decoder_attention = nn.ModuleList()
         for n in range(levels - 1, -1, -1):
             lin_sz = fft_len // (2 ** n)
+            next_channel_sz = channel_sz // 2 ** (levels - n)
+            curr_channel_sz = channel_sz // 2 ** (levels - n - 1)
             self.decoder_reduce.append(nn.Sequential(
-                nn.ConvTranspose1d(channel_sz, channel_sz, 4, 2, 1),
+                nn.ConvTranspose1d(curr_channel_sz, curr_channel_sz, 4, 2, 1),
                 nn.GELU(),
             ))
             self.decoder_conv.append(nn.Sequential(
-                nn.ConvTranspose1d(channel_sz, channel_sz, 3, 1, 1),
+                nn.ConvTranspose1d(curr_channel_sz, curr_channel_sz, 3, 1, 1),
                 nn.GELU(),
-                nn.ConvTranspose1d(channel_sz, channel_sz, 3, 1, 6, dilation=6),
+                nn.ConvTranspose1d(curr_channel_sz, curr_channel_sz, 3, 1, 6, dilation=6),
                 nn.GELU(),
-                nn.ConvTranspose1d(channel_sz, channel_sz, 1, 1, 0),
-                nn.GELU(),
-                nn.LayerNorm(lin_sz),
-                nn.ConvTranspose1d(channel_sz, channel_sz, 3, 1, 1),
-                nn.GELU(),
-                nn.ConvTranspose1d(channel_sz, channel_sz, 3, 1, 6, dilation=6),
-                nn.GELU(),
-                nn.ConvTranspose1d(channel_sz, channel_sz, 1, 1, 0),
+                nn.ConvTranspose1d(curr_channel_sz, curr_channel_sz, 1, 1, 0),
                 nn.GELU(),
                 nn.LayerNorm(lin_sz),
-                nn.ConvTranspose1d(channel_sz, channel_sz, 3, 1, 1),
+                nn.ConvTranspose1d(curr_channel_sz, curr_channel_sz, 3, 1, 1),
                 nn.GELU(),
-                nn.ConvTranspose1d(channel_sz, channel_sz, 3, 1, 6, dilation=6),
+                nn.ConvTranspose1d(curr_channel_sz, curr_channel_sz, 3, 1, 6, dilation=6),
                 nn.GELU(),
-                nn.ConvTranspose1d(channel_sz, channel_sz, 1, 1, 0),
+                nn.ConvTranspose1d(curr_channel_sz, curr_channel_sz, 1, 1, 0),
+                nn.GELU(),
+                nn.LayerNorm(lin_sz),
+                nn.ConvTranspose1d(curr_channel_sz, curr_channel_sz, 3, 1, 1),
+                nn.GELU(),
+                nn.ConvTranspose1d(curr_channel_sz, curr_channel_sz, 3, 1, 6, dilation=6),
+                nn.GELU(),
+                nn.ConvTranspose1d(curr_channel_sz, next_channel_sz, 1, 1, 0),
                 nn.GELU(),
                 nn.LayerNorm(lin_sz),
             ))
             self.decoder_attention.append(nn.Sequential(
-                nn.ConvTranspose1d(channel_sz, channel_sz, 3, 1, 1),
+                nn.ConvTranspose1d(curr_channel_sz, curr_channel_sz, 3, 1, 1),
                 nn.GELU(),
-                nn.ConvTranspose1d(channel_sz, channel_sz, 3, 1, 6, dilation=6),
+                nn.ConvTranspose1d(curr_channel_sz, curr_channel_sz, 3, 1, 6, dilation=6),
                 nn.GELU(),
-                nn.ConvTranspose1d(channel_sz, channel_sz, 1, 1, 0),
+                nn.ConvTranspose1d(curr_channel_sz, curr_channel_sz, 1, 1, 0),
                 nn.GELU(),
-                nn.ConvTranspose1d(channel_sz, channel_sz, 4, 2, 1),
+                nn.ConvTranspose1d(curr_channel_sz, curr_channel_sz, 4, 2, 1),
                 nn.Sigmoid(),
             ))
         self.decoder_output = nn.Sequential(
-            nn.ConvTranspose1d(channel_sz, channel_sz, 3, 1, 1),
-            nn.Conv1d(channel_sz, in_channels, 1, 1, 0),
+            nn.ConvTranspose1d(channel_sz // 2**levels, channel_sz // 2**levels, 3, 1, 1),
+            nn.Conv1d(channel_sz // 2**levels, in_channels, 1, 1, 0),
         )
 
         self.example_input_array = torch.randn((1, 2, self.fft_len))

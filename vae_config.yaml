@@ -38,7 +38,7 @@ generate_data_settings:
 exp_params:
   LR: 0.001
   weight_decay: 0.0
-  scheduler_gamma: 0.1
+  scheduler_gamma: 0.5
   betas: [.07, .9]
   step_size: 1
   swa_start: .5
@@ -51,8 +51,8 @@ exp_params:
   model_type: Encoder
   patience: 150
   is_tuning: False
-  max_epochs: 500
-  exp_name: train-latent512tanh-64chan
+  max_epochs: 5000
+  exp_name: train-latent512tanh-gradchan
   init_task: True
   dataset_params:
     data_path: ./data
@@ -68,7 +68,7 @@ exp_params:
   model_params:
     in_channels: 2
     latent_dim: 512
-    channel_sz: 64
+    channel_sz: 128
     
 # This is for setting up training of target autoencoder
 target_exp_params:
