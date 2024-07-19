@@ -7,7 +7,6 @@ from pathlib import Path
 from simulib.simulation_functions import llh2enu, db, azelToVec
 from simulib.cuda_mesh_kernels import readCombineMeshFile, genRangeProfileFromMesh
 from simulib.platform_helper import SDRPlatform
-from simulib import getPulseTimeGen
 from simulib.cuda_kernels import cpudiff, getMaxThreads
 from generate_trainingdata import formatTargetClutterData
 from models import Encoder
@@ -43,7 +42,7 @@ if __name__ == '__main__':
     target_obj_files = {'air_balloon.obj': 30., 'black_bird_sr71_obj.obj': .25, 'cessna-172-obj.obj': 41.08, 'helic.obj': 1.8, 
                         'Humvee.obj': 60, 'Intergalactic_Spaceships_Version_2.obj': 1., 'piper_pa18.obj': 1., 
                         'Porsche_911_GT2.obj': .8, 'Seahawk.obj': 12., 't-90a(Elements_of_war).obj': 1.,
-                        'Tiger.obj': 156.25, 'G7_1200.obj': 1., 'x-wing.obj': 1.,
+                        'Tiger.obj': 156.25, 'G7_1200.obj': 1., 'x-wing.obj': 1., 'tacoma_VTC.dat': -1.,
                         }
     target_obj_files = list(target_obj_files.items())
 
@@ -62,62 +61,86 @@ if __name__ == '__main__':
     pan[pan == 2 * np.pi] = 1e-9
     tilt[tilt == 0] = 1e-9
     tilt[tilt == 2 * np.pi] = 1e-9
+
+    poses_gpu = cupy.array(poses, dtype=np.float32)
+    pan_gpu = cupy.array(pan, dtype=np.float32)
+    tilt_gpu = cupy.array(tilt, dtype=np.float32)
     plt.ion()
 
     for tidx, (tobj, scaling) in tqdm(enumerate(target_obj_files)):
-        try:
-            mesh = readCombineMeshFile(f'{config["generate_data_settings"]["obj_path"]}/{tobj}')
-        except IndexError:
-            print(f'{tobj} not found.')
-            continue
-        mesh.scale(1 / scaling, center=(0, 0, 0))
-        pt_sample = []
-        # Apply random rotations and scalings for augmenting of training data
-        for i in range(200):
-            if i != 0:
-                mesh.rotate(mesh.get_rotation_matrix_from_xyz((np.random.rand() * 2 * np.pi, np.random.rand() * 2 * np.pi,
-                                                                 np.random.rand() * 2 * np.pi)), center=(0, 0, 0))
-            # sample_points = nmesh.sample_points_poisson_disk(30000)
-            face_centers = np.asarray(mesh.vertices)
-            face_normals = np.asarray(mesh.vertex_normals)
+        if scaling > 0:
+            try:
+                mesh = readCombineMeshFile(f'{config["generate_data_settings"]["obj_path"]}/{tobj}')
+            except IndexError:
+                print(f'{tobj} not found.')
+                continue
+            mesh.scale(1 / scaling, center=(0, 0, 0))
+            pt_sample = []
+            # Apply random rotations and scalings for augmenting of training data
+            for i in range(300):
+                if i != 0:
+                    mesh.rotate(mesh.get_rotation_matrix_from_xyz((np.random.rand() * 2 * np.pi, np.random.rand() * 2 * np.pi,
+                                                                     np.random.rand() * 2 * np.pi)), center=(0, 0, 0))
+                # sample_points = nmesh.sample_points_poisson_disk(30000)
+                face_centers = np.asarray(mesh.vertices)
+                face_normals = np.asarray(mesh.vertex_normals)
 
-            pd_r = cupy.zeros((256, len(pan)), dtype=np.float32)
-            pd_i = cupy.zeros((256, len(pan)), dtype=np.float32)
-            near_range_s = (standoff - 10) / c0
+                pd_r = cupy.zeros((256, len(pan)), dtype=np.float32)
+                pd_i = cupy.zeros((256, len(pan)), dtype=np.float32)
+                near_range_s = (standoff - 10) / c0
 
-            face_centers_gpu = cupy.array(face_centers, dtype=np.float32)
-            face_normals_gpu = cupy.array(face_normals, dtype=np.float32)
-            reflectivity_gpu = cupy.array(np.ones(face_centers.shape[0]), dtype=np.float32)
-            poses_gpu = cupy.array(poses, dtype=np.float32)
-            pan_gpu = cupy.array(pan, dtype=np.float32)
-            tilt_gpu = cupy.array(pan, dtype=np.float32)
+                face_centers_gpu = cupy.array(face_centers, dtype=np.float32)
+                face_normals_gpu = cupy.array(face_normals, dtype=np.float32)
+                reflectivity_gpu = cupy.array(np.ones(face_centers.shape[0]), dtype=np.float32)
 
-            threads_per_block = getMaxThreads()
-            bpg_bpj = (max(1, face_centers.shape[0] // threads_per_block[0] + 1), len(pan) // threads_per_block[1] + 1)
-            genRangeProfileFromMesh[bpg_bpj, threads_per_block](face_centers_gpu, face_normals_gpu, reflectivity_gpu,
-                                                                poses_gpu,
-                                                                poses_gpu,
-                                                                pan_gpu, tilt_gpu, pan_gpu, tilt_gpu, pd_r, pd_i,
-                                                                c0 / 9.6e9,
-                                                                near_range_s, 2e9, 10 * DTR,
-                                                                10 * DTR, 1.)
+                threads_per_block = getMaxThreads()
+                bpg_bpj = (max(1, face_centers.shape[0] // threads_per_block[0] + 1), len(pan) // threads_per_block[1] + 1)
+                genRangeProfileFromMesh[bpg_bpj, threads_per_block](face_centers_gpu, face_normals_gpu, reflectivity_gpu,
+                                                                    poses_gpu,
+                                                                    poses_gpu,
+                                                                    pan_gpu, tilt_gpu, pan_gpu, tilt_gpu, pd_r, pd_i,
+                                                                    c0 / 9.6e9,
+                                                                    near_range_s, 2e9, 10 * DTR,
+                                                                    10 * DTR, 1., False, False)
 
-            pd = pd_r.get() + 1j * pd_i.get()
-            if i == 0:
-                pt_sample = np.concatenate((pt_sample, pd[pd != 0]))
-            pd = ((pd - config['target_exp_params']['dataset_params']['mu']) /
-                  config['target_exp_params']['dataset_params']['var'])
-            plt.gca().cla()
-            plt.imshow(db(pd))
-            plt.draw()
-            plt.pause(.1)
-            pd_cat = np.stack([pd.real, pd.imag]).astype(np.float32)
+                pd = pd_r.get() + 1j * pd_i.get()
+                if i == 0:
+                    pt_sample = np.concatenate((pt_sample, pd[pd != 0]))
+                pd[pd != 0] = ((pd[pd != 0] - config['target_exp_params']['dataset_params']['mu']) /
+                      config['target_exp_params']['dataset_params']['var'])
+                plt.gca().cla()
+                plt.imshow(db(pd))
+                plt.draw()
+                plt.pause(.1)
+                pd_cat = np.stack([pd.real, pd.imag]).astype(np.float32)
 
-            if i == 0:
-                with open(f'{save_path}/targetpatterns.dat', 'ab') as w:
+                if i == 0:
+                    with open(f'{save_path}/targetpatterns.dat', 'ab') as w:
+                        pd_cat.tofile(w)
+                with open(f'{save_path}/targetprofiles.dat', 'ab') as w:
                     pd_cat.tofile(w)
-            with open(f'{save_path}/targetprofiles.dat', 'ab') as w:
-                pd_cat.tofile(w)
+        else:
+            pass
+            '''with open(f'{config["generate_data_settings"]["obj_path"]}/{tobj}', 'r') as f:
+                # Total azimuths, elevations, scatterers
+                header = [int(k) for k in f.readline().strip().split(' ')]
+                scatterers = np.zeros((header[2], 5))
+                nblock = 0
+                scat_data = []
+                angles = []
+                while nblock < header[2]:
+                    subhead = [int(k) for k in f.readline().strip().split(' ')]
+                    angles.append(subhead[:2])
+                    for scat in range(subhead[2]):
+                        scatdata = np.array([float(k) for k in f.readline().strip().split(' ')])
+                        scatterers[nblock + scat, :] = scatdata[:5]
+                    blockdata = scatterers[nblock:nblock + scat, :]
+                    scat_data.append(blockdata[blockdata[:, 3] + blockdata[:, 4] > 1e-1])
+                    nblock += subhead[2]
+
+                poses_gpu = cupy.array(poses, dtype=np.float32)
+                pan_gpu = cupy.array(pan, dtype=np.float32)
+                tilt_gpu = cupy.array(pan, dtype=np.float32)'''
 
         if config['settings']['save_as_target']:
             for clut in clutter_files:
