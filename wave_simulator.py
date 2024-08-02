@@ -6,7 +6,7 @@ import torch
 from apache_helper import ApachePlatform
 from models import Encoder
 from simulib.simulation_functions import llh2enu, db, azelToVec, genPulse
-from simulib import getMaxThreads, backproject, applyRadiationPatternCPU
+from simulib.cuda_kernels import getMaxThreads, backproject, applyRadiationPatternCPU
 from simulib.cuda_mesh_kernels import genRangeProfileFromMesh
 from simulib.mimo_functions import genChirpAndMatchedFilters, genChannels, genSimPulseData
 from simulib.grid_helper import SDREnvironment
@@ -259,8 +259,11 @@ if __name__ == '__main__':
                 ts_hat = ts.min()
                 compressed_data = np.zeros((gap_len, nsam * settings['upsample']), dtype=np.complex128)
                 for ch_idx, rp in enumerate(rps):
-                    tmp_data = pdata[rp.rx_num] * mfilts[ch_idx].get()
-                    tmp_exp = np.zeros((pdata.shape[1], up_fft_len), dtype=np.complex128)
+                    try:
+                        tmp_data = pdata[rp.rx_num] * mfilts[ch_idx]
+                    except TypeError:
+                        tmp_data = pdata[rp.rx_num] * mfilts[ch_idx].get()
+                    tmp_exp = np.zeros((tmp_data.shape[0], up_fft_len), dtype=np.complex128)
                     tmp_exp[:, :fft_len // 2] = tmp_data[:, :fft_len // 2]
                     tmp_exp[:, -fft_len // 2:] = tmp_data[:, -fft_len // 2:]
                     compressed_data += np.fft.ifft(tmp_exp, axis=1)[:, :nsam * settings['upsample']] * avec[ch_idx]
@@ -319,8 +322,8 @@ if __name__ == '__main__':
                         active_clutter = np.fft.fft(np.fft.ifft(compressed_data, axis=1),
                                                     wave_config['settings']['fft_len'], axis=1)
                 idx += 1
-    except ValueError:
-        print('ValueError.')
+    except ValueError as ev:
+        print(ev)
 
     """
     ----------------------------PLOTS-------------------------------
@@ -370,11 +373,11 @@ if __name__ == '__main__':
 
         plt.figure('Comparison')
         plt.subplot(2, 1, 1)
-        plt.imshow(db(refgrid), extent=(gx.min(), gx.max(), gy.min(), gy.max()), clim=clims)
+        plt.imshow(db(refgrid), extent=(gx.min(), gx.max(), gy.min(), gy.max()), clim=clims, cmap='gray')
         # plt.scatter(gx.flatten(), gy.flatten(), c=db(refgrid).flatten(), clim=clims)
         plt.scatter([plane_pos[0]], [plane_pos[1]], s=40)
         plt.subplot(2, 1, 2)
-        plt.imshow(db(rbi_image), extent=(gx.min(), gx.max(), gy.min(), gy.max()), clim=[-30, 10])
+        plt.imshow(db(rbi_image), extent=(gx.min(), gx.max(), gy.min(), gy.max()), clim=[-30, 10], cmap='gray')
         plt.scatter([plane_pos[0]], [plane_pos[1]], s=40)
 
         '''plane_vec = plane_pos - rpref.pos(rpref.gpst).mean(axis=0)

@@ -1,7 +1,7 @@
 import pickle
-
+from utils import upsample, normalize, fs
 import numpy as np
-from simulib import genPulse, findPowerOf2, db
+from simulib.simulation_functions import genPulse, findPowerOf2, db
 import matplotlib.pyplot as plt
 from scipy.signal import stft, istft
 import torch
@@ -15,38 +15,11 @@ from waveform_model import GeneratorModel
 from os import listdir
 from clearml import Task
 
-fs = 2e9
-c0 = 299792458.0
-TAC = 125e6
-DTR = np.pi / 180
-inch_to_m = .0254
-m_to_ft = 3.2808
-
 
 def force_cudnn_initialization():
     s = 32
     dev = torch.device('cuda')
     torch.nn.functional.conv2d(torch.zeros(s, s, s, s, device=dev), torch.zeros(s, s, s, s, device=dev))
-
-
-def upsample(val, fac=8):
-    upval = np.zeros(len(val) * fac, dtype=np.complex128)
-    upval[:len(val) // 2] = val[:len(val) // 2]
-    upval[-len(val) // 2:] = val[-len(val) // 2:]
-    return upval
-
-
-'''def outBeamTime(theta_az, theta_el):
-    return (np.pi ** 2 * wheel_height_m - 8 * np.pi * blade_chord_m * np.tan(theta_el) -
-            4 * wheel_height_m * theta_az) / (8 * np.pi * wheel_height_m * rotor_velocity_rad_s)'''
-
-
-def normalize(data):
-    return data / np.expand_dims(np.sqrt(np.sum(data * data.conj(), axis=-1).real), axis=len(data.shape) - 1)
-
-
-def getRange(alt, theta_el):
-    return alt * np.sin(theta_el) * 2 / c0
 
 
 if __name__ == '__main__':
@@ -166,6 +139,7 @@ if __name__ == '__main__':
             # nn_numpy = nn_output[0, 0, ...].cpu().data.numpy()
 
             waves = wave_mdl.getWaveform(nn_output=nn_output).cpu().data.numpy()
+            # waves = save_waves
             # waves = np.fft.fft(np.fft.ifft(waves, axis=2)[:, :, :nr], fft_len, axis=2)
             print('Loaded waveforms...')
 

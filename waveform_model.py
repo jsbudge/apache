@@ -6,7 +6,7 @@ from torch import nn, Tensor
 from pytorch_lightning import LightningModule
 from torch.nn import functional as nn_func
 from torchvision import transforms
-from layers import FourierFeature, WindowConvolution, Block1d, WindowGenerate, PulseLength
+from layers import FourierFeature, WindowConvolution, Block1d, WindowGenerate, PulseLength, LKA1d
 
 
 def init_weights(m):
@@ -81,24 +81,25 @@ class GeneratorModel(FlatModule):
         self.decoder.requires_grad = False
         self.channel_sz = channel_sz
 
-        self.transformer = nn.Transformer(clutter_latent_size, num_decoder_layers=5, num_encoder_layers=5,
+        self.transformer = nn.Transformer(clutter_latent_size, nhead=6, num_decoder_layers=6, num_encoder_layers=6,
                                           activation='gelu', batch_first=True)
         self.transformer.apply(init_weights)
-        self.last_transformer = nn.Transformer(clutter_latent_size, num_decoder_layers=5, num_encoder_layers=5,
+        self.last_transformer = nn.Transformer(clutter_latent_size, nhead=6, num_decoder_layers=5, num_encoder_layers=5,
                                                activation='gelu', batch_first=True)
         self.last_transformer.apply(init_weights)
 
         self.target_compressor = nn.Sequential(
             nn.Linear(target_latent_size, clutter_latent_size),
+            nn.GELU(),
+            nn.Linear(clutter_latent_size, clutter_latent_size),
             nn.Tanh(),
         )
-        self.expand_to_ants.apply(init_weights)
 
         self.expand_to_ants = nn.Sequential(
             nn.Conv1d(1, channel_sz, 1, 1, 0),
             nn.GELU(),
-            Block1d(channel_sz),
-            Block1d(channel_sz),
+            LKA1d(channel_sz, dilation=12),
+            nn.LayerNorm(clutter_latent_size),
             nn.Conv1d(channel_sz, self.n_ants, 1, 1, 0),
             nn.GELU(),
             nn.Linear(clutter_latent_size, clutter_latent_size),
@@ -118,8 +119,8 @@ class GeneratorModel(FlatModule):
         self.bw_integrate = nn.Sequential(
             nn.Conv1d(self.n_ants, channel_sz, 1, 1, 0),
             nn.GELU(),
-            Block1d(channel_sz),
-            nn.BatchNorm1d(channel_sz),
+            LKA1d(channel_sz, kernel_sizes=(15, 15), dilation=12),
+            nn.LayerNorm(clutter_latent_size),
             nn.Conv1d(channel_sz, 1, 1, 1, 0),
             nn.GELU(),
             nn.Linear(clutter_latent_size, self.n_ants, bias=False),
@@ -129,10 +130,13 @@ class GeneratorModel(FlatModule):
 
         self.window_context = nn.Sequential(
             nn.Conv1d(self.n_ants * 4, channel_sz, 1, 1, 0),
-            Block1d(channel_sz),
-            Block1d(channel_sz),
-            Block1d(channel_sz),
-            Block1d(channel_sz),
+            LKA1d(channel_sz, kernel_sizes=(15, 15), dilation=12),
+            LKA1d(channel_sz, kernel_sizes=(15, 15), dilation=6),
+            LKA1d(channel_sz, kernel_sizes=(15, 15), dilation=3),
+            nn.LayerNorm(fft_sz),
+            nn.Linear(fft_sz, fft_sz),
+            nn.GELU(),
+            LKA1d(channel_sz, kernel_sizes=(15, 15), dilation=12),
             nn.Conv1d(channel_sz, self.n_ants * 2, 1, 1, 0),
         )
         self.window_context.apply(init_weights)
@@ -174,7 +178,7 @@ class GeneratorModel(FlatModule):
         # Now that everything is formatted, get the waveform
         unformatted_waveform = (
             self.getWaveform(nn_output=self.forward([clutter.unsqueeze(0),
-                                                     torch.tensor(target_array, dtype=torch.float32).unsqueeze(0),
+                                                     torch.tensor(target_array, dtype=torch.float32, device=self.device).unsqueeze(0),
                                                      pl, bw])).cpu().data.numpy())
 
         # Return it in complex form without the leading dimension
@@ -215,7 +219,7 @@ class GeneratorModel(FlatModule):
         slf_max = nn_func.max_pool1d_with_indices(
             sidelobe_func, 17, 12, padding=8)[0].detach()[:, :, -2]
         # Get the ISLR for this waveform
-        sidelobe_loss = torch.nanmean(torch.max(sidelobe_func, dim=-1)[0] / slf_max)
+        sidelobe_loss = 100. / torch.nanmean(torch.abs(slf_max - torch.max(sidelobe_func, dim=-1)[0]))
 
         # Orthogonality
         cross_sidelobe = torch.abs(torch.fft.ifft(crossfiltered, dim=2))
@@ -225,7 +229,7 @@ class GeneratorModel(FlatModule):
                                    (1e-12 + torch.abs(cross_sidelobe.sum(dim=1)[:, 0])))**2
 
         # Apply hinge loss to sidelobes
-        sidelobe_loss = torch.abs(sidelobe_loss - .1)
+        sidelobe_loss = torch.abs(sidelobe_loss)
         ortho_loss = torch.abs(ortho_loss - .3)
         target_loss = torch.abs(target_loss)
 

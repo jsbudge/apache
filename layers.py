@@ -286,6 +286,41 @@ class Block1d(LightningModule):
         return self.block(x)
 
 
+class LKA(LightningModule):
+
+    def __init__(self, channel_sz, *args: Any, **kwargs: Any):
+        super().__init__(*args, **kwargs)
+        self.kernel = nn.Sequential(
+            nn.Conv2d(channel_sz, channel_sz, 3, 1, 1),
+            nn.GELU(),
+            nn.Conv2d(channel_sz, channel_sz, 3, 1, 6, dilation=6),
+            nn.GELU(),
+            nn.Conv2d(channel_sz, channel_sz, 1, 1, 0),
+            nn.GELU(),
+        )
+
+    def forward(self, x):
+        return self.kernel(x) * x
+
+
+class LKA1d(LightningModule):
+
+    def __init__(self, channel_sz, kernel_sizes=(3, 3), dilation=6, *args: Any, **kwargs: Any):
+        super().__init__(*args, **kwargs)
+        padding = int(dilation * (kernel_sizes[1] - 1) // 2)
+        self.kernel = nn.Sequential(
+            nn.Conv1d(channel_sz, channel_sz, kernel_sizes[0], 1, int(kernel_sizes[0] // 2)),
+            nn.GELU(),
+            nn.Conv1d(channel_sz, channel_sz, kernel_sizes[1], 1, padding, dilation=dilation),
+            nn.GELU(),
+            nn.Conv1d(channel_sz, channel_sz, 1, 1, 0),
+            nn.GELU(),
+        )
+
+    def forward(self, x):
+        return self.kernel(x) * x
+
+
 class SelfAttention2d(LightningModule):
     """ Self attention Layer"""
 

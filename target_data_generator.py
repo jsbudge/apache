@@ -27,6 +27,31 @@ TAC = 125e6
 DTR = np.pi / 180
 inch_to_m = .0254
 
+
+def getSpectrumFromTargetProfile(sdr, rp, ts, tcdata, fft_len):
+    pulse = np.fft.fft(sdr[0].cal_chirp, fft_len)
+    mfilt = sdr.genMatchedFilter(0, fft_len=fft_len) / 1e4
+    pans, tilts = np.meshgrid(np.linspace(0, 2 * np.pi, 16, endpoint=False),
+                              np.linspace(np.pi / 2 - .1, -np.pi / 2 + .1, 16))
+    pan = pans.flatten()
+    tilt = tilts.flatten()
+    pan[pan == 0] = 1e-9
+    pan[pan == 2 * np.pi] = 1e-9
+    tilt[tilt == 0] = 1e-9
+    tilt[tilt == 2 * np.pi] = 1e-9
+    sdr_pan = rp.pan(ts)
+    sdr_pan = sdr_pan + 2 * np.pi
+    sdr_tilt = rp.tilt(ts)
+    sdr_tilt = sdr_tilt + 2 * np.pi
+    tpsd = np.array([tcdata[:, np.logical_and(abs(cpudiff(pan, sdr_pan[n])) < 0.19634954,
+                                              abs(cpudiff(tilt, sdr_tilt[n])) < 0.19634954)].flatten() for n in
+                     range(len(ts))])
+    tpsd = np.fft.fft(tpsd, fft_len, axis=1) * 1e12 * pulse * mfilt
+    if sdr[0].baseband_fc != 0:
+        tpsd = np.roll(tpsd, -int(sdr[0].baseband_fc / rp.fs * fft_len), axis=1)
+    return tpsd
+
+
 if __name__ == '__main__':
 
     with open('./vae_config.yaml', 'r') as file:
@@ -167,16 +192,7 @@ if __name__ == '__main__':
                         break
                     ts = sdr_ch[0].pulse_time[n:n + config['settings']['cpi_len']]
                     # Get the appropriate pan and tilt values from the profile
-                    sdr_pan = rp.pan(ts)
-                    sdr_pan = sdr_pan + 2 * np.pi
-                    sdr_tilt = rp.tilt(ts)
-                    sdr_tilt = sdr_tilt + 2 * np.pi
-                    tpsd = np.array([pd[:, np.logical_and(abs(cpudiff(pan, sdr_pan[n])) < 0.19634954,
-                                                          abs(cpudiff(tilt, sdr_tilt[n])) < 0.19634954)].flatten() for n in range(len(ts))])
-                    tpsd = np.fft.fft(tpsd, fft_len, axis=1) * 1e12 * pulse * mfilt
-                    if sdr_ch[0].baseband_fc != 0:
-                        tpsd = np.roll(tpsd, -int(sdr_ch[0].baseband_fc / rp.fs * fft_len), axis=1)
-                    # tpsd /= 12.5
+                    tpsd = getSpectrumFromTargetProfile(sdr_ch, rp, ts, pd, fft_len)
                     tmp_mu = abs(tpsd[:, valids].mean(axis=0)).max()
                     tmp_std = abs(tpsd[:, valids].std(axis=0)).max()
                     p_muscale = np.repeat(config['exp_params']['dataset_params']['mu'] / abs(tpsd[:, valids].mean(axis=1)),

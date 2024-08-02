@@ -8,7 +8,7 @@ import pytorch_lightning as pl
 from pathlib import Path
 import torchvision.utils as vutils
 from torch.nn import functional as nn_func
-from simulib import db
+from simulib.simulation_functions import db
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -248,7 +248,6 @@ class GeneratorExperiment(pl.LightningModule):
         if self.trainer.is_global_zero and not self.params['is_tuning'] and self.params['save_model']:
             self.model.save('./model')
             print('Model saved to disk.')
-<<<<<<< HEAD
             '''if self.current_epoch % 5 == 0:
                 # Log an image to get an idea of progress
                 clutter_enc, target_enc, clutter_spec, target_spec, pulse_length = (
@@ -276,8 +275,7 @@ class GeneratorExperiment(pl.LightningModule):
                 plt.ylabel('Relative Power (dB)')
                 plt.xlabel('Freq (Hz)')
                 self.logger.experiment.add_figure('Waveforms', fig, self.current_epoch)'''
-=======
-            cc, tc, cs, ts, plength, dset_bandwidth = next(iter(self.trainer.datamodule.test_dataloader()))
+            '''cc, tc, cs, ts, plength, dset_bandwidth = next(iter(self.trainer.datamodule.test_dataloader()))
 
             nn_output = self.model([cc.to(self.device), tc.to(self.device), plength.to(self.device),
                                   dset_bandwidth.to(self.device)])
@@ -301,8 +299,7 @@ class GeneratorExperiment(pl.LightningModule):
             plt.legend(['Waveform 1', 'Waveform 2', 'Target', 'Clutter'])
             plt.ylabel('Relative Power (dB)')
             plt.xlabel('Freq (Hz)')
-            self.logger.experiment.add_figure('Waveforms', fig, self.current_epoch)
->>>>>>> time_domain
+            self.logger.experiment.add_figure('Waveforms', fig, self.current_epoch)'''
 
     def on_train_epoch_end(self) -> None:
         sch = self.lr_schedulers()
@@ -336,11 +333,7 @@ class GeneratorExperiment(pl.LightningModule):
         train_loss = self.model.loss_function(results, clutter_spec, target_spec, bandwidth)
 
         train_loss['loss'] = torch.sqrt(torch.abs(
-<<<<<<< HEAD
-            train_loss['target_loss'] * (1 + train_loss['sidelobe_loss'] + train_loss['ortho_loss'])))
-=======
             train_loss['sidelobe_loss'] * (1 + train_loss['target_loss'] + train_loss['ortho_loss'])))
->>>>>>> time_domain
         return train_loss
 
 

@@ -1,19 +1,16 @@
 from glob import glob
-from typing import List, Optional, Sequence, Union
+from typing import List, Optional, Union
 import os
 import yaml
 from pytorch_lightning import LightningDataModule
 from torch.utils.data import DataLoader, Dataset, ConcatDataset
 import torch
-from torchvision import transforms
 from pathlib import Path
 import numpy as np
 from multiprocessing import cpu_count
-from scipy.ndimage import sobel
-from scipy.signal.windows import taylor
 from sklearn.model_selection import train_test_split
 
-from models import BaseVAE, InfoVAE, WAE_MMD, BetaVAE
+from models import InfoVAE, WAE_MMD, BetaVAE
 
 
 class PulseDataset(Dataset):
@@ -45,35 +42,6 @@ class PulseDataset(Dataset):
         clutter_files = glob(f'{self.root_dir}/clutter_*.spec')
         dt = [np.fromfile(c, dtype=np.float32).reshape((-1, 2, self.fft_len + 2)) for c in clutter_files]
         return clutter_files, np.concatenate(dt) if concat else dt
-
-
-class RCSDataset(Dataset):
-    def __init__(self, datapath='./data', split=None):
-        # Load in data
-        optical_data = np.fromfile('/home/jeff/repo/apache/data/ge_img.dat',
-                                   dtype=np.float32).reshape((-1, 256, 256, 3)).swapaxes(1, 3)
-        sar_data = 10 * np.log(np.fromfile('/home/jeff/repo/apache/data/sar_img.dat',
-                                           dtype=np.float32).reshape((-1, 1, 256, 256)))
-        param_data = np.fromfile('/home/jeff/repo/apache/data/params.dat', dtype=np.float32).reshape((-1, 7))
-        # Insert some fourier featurization to try and get a better gradient
-        pfourier = np.zeros((param_data.shape[0], 7 * 6), dtype=np.float32)
-        for n in range(7):
-            pfourier[:, n * 6:(n + 1) * 6] = np.array([np.sin(2 * np.pi * 2**m * param_data[:, m]) for m in range(6)]).T
-        self.optical_data = torch.tensor(optical_data)
-        self.sar_data = torch.tensor(1 - sar_data / sar_data.min())
-        self.param_data = torch.tensor(pfourier)
-
-        if split:
-            idxes = np.random.choice(np.arange(self.optical_data.shape[0]), split)
-            self.optical_data = self.optical_data[idxes, ...]
-            self.sar_data = self.sar_data[idxes, ...]
-            self.param_data = self.param_data[idxes, ...]
-
-    def __getitem__(self, idx):
-        return self.optical_data[idx, :], self.sar_data[idx, :], self.param_data[idx, :]
-
-    def __len__(self):
-        return self.optical_data.shape[0]
     
     
 class TargetDataset(Dataset):
@@ -120,7 +88,8 @@ class WaveDataset(ConcatDataset):
         file_idx = 0
         for fl, tp in [(clutter_spec_files, 'cs'), (clutter_enc_files, 'cc'), (target_spec_files, 'ts')]:
             for cs in fl:
-                path_stem = '_'.join(Path(cs).stem.split('_')[1:]) if tp in ['cs', 'cc'] else '_'.join(Path(cs).stem.split('_')[2:])
+                path_stem = '_'.join(Path(cs).stem.split('_')[1:]) \
+                    if tp in ['cs', 'cc'] else '_'.join(Path(cs).stem.split('_')[2:])
                 if path_stem in pair_dict:
                     pair_dict[path_stem][tp] = cs
                 else:
@@ -135,8 +104,8 @@ class WaveDataset(ConcatDataset):
                     pair_dict[path_stem]['tc'] = patterns[int(Path(cs).stem.split('_')[1])]
 
         pairs = [l for _, l in pair_dict.items()]
-        datasets = [WaveFileDataset(p, clutter_latent_dim, fft_sz, split, single_example, min_pulse_length, max_pulse_length,
-                                    seq_len, is_val, seed) for p in pairs]
+        datasets = [WaveFileDataset(p, clutter_latent_dim, fft_sz, split, single_example, min_pulse_length,
+                                    max_pulse_length, seq_len, is_val, seed) for p in pairs]
         super().__init__(datasets)
 
 
@@ -150,7 +119,7 @@ class WaveFileDataset(Dataset):
         tmp_cs = np.fromfile(files['cs'], dtype=np.float32).reshape((-1, 2, fft_sz + 2))
         # Scale appropriately
         tmp_cs = tmp_cs[:, :, :fft_sz]
-        tmp_cc = np.fromfile(files['cc'], dtype=np.float32).reshape((-1, latent_dim))[:-255, :]
+        tmp_cc = np.fromfile(files['cc'], dtype=np.float32).reshape((-1, latent_dim))
 
         # Target data
         tmp_ts = np.fromfile(files['ts'], dtype=np.float32).reshape((-1, 2, fft_sz + 2))
@@ -215,7 +184,7 @@ class BaseModule(LightningDataModule):
         self.train_dataset = None
         self.train_batch_size = train_batch_size
         self.val_batch_size = val_batch_size
-        self.num_workers = 0 #cpu_count() // 2
+        self.num_workers = cpu_count() // 2
         self.pin_memory = pin_memory
         self.single_example = single_example
         self.device = device
@@ -315,26 +284,6 @@ class WaveDataModule(BaseModule):
                                        target_latent_dim=self.target_latent_dim, fft_sz=self.fft_sz, split=self.split,
                                        single_example=self.single_example, min_pulse_length=self.min_pulse_length,
                                        max_pulse_length=self.max_pulse_length, is_val=True)
-
-
-class RCSModule(BaseModule):
-    def __init__(
-            self,
-            dataset_size: int = 256,
-            train_batch_size: int = 8,
-            val_batch_size: int = 8,
-            pin_memory: bool = False,
-            single_example: bool = False,
-            device: str = 'cpu',
-            **kwargs,
-    ):
-        super().__init__(train_batch_size, val_batch_size, pin_memory, single_example, device)
-
-        self.dataset_size = dataset_size
-
-    def setup(self, stage: Optional[str] = None) -> None:
-        self.train_dataset = RCSDataset(split=self.train_split)
-        self.val_dataset = RCSDataset(split=self.val_split)
 
 
 class EncoderModule(BaseModule):
