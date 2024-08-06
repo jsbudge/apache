@@ -80,13 +80,11 @@ class GeneratorModel(FlatModule):
         self.decoder.eval()
         self.decoder.requires_grad = False
         self.channel_sz = channel_sz
+        de_ch_sz = channel_sz // 16
 
-        self.transformer = nn.Transformer(clutter_latent_size, nhead=6, num_decoder_layers=6, num_encoder_layers=6,
-                                          activation='gelu', batch_first=True)
-        self.transformer.apply(init_weights)
-        self.last_transformer = nn.Transformer(clutter_latent_size, nhead=6, num_decoder_layers=5, num_encoder_layers=5,
-                                               activation='gelu', batch_first=True)
-        self.last_transformer.apply(init_weights)
+        self.predict_decoder = nn.Transformer(clutter_latent_size, num_decoder_layers=9, num_encoder_layers=9, nhead=6,
+                                              batch_first=True, activation='gelu')
+        self.predict_decoder.apply(init_weights)
 
         self.target_compressor = nn.Sequential(
             nn.Linear(target_latent_size, clutter_latent_size),
@@ -96,9 +94,21 @@ class GeneratorModel(FlatModule):
         )
 
         self.expand_to_ants = nn.Sequential(
+            nn.Linear(clutter_latent_size, clutter_latent_size),
+            nn.GELU(),
             nn.Conv1d(1, channel_sz, 1, 1, 0),
             nn.GELU(),
             LKA1d(channel_sz, dilation=12),
+            nn.LayerNorm(clutter_latent_size),
+            LKA1d(channel_sz, dilation=6),
+            nn.LayerNorm(clutter_latent_size),
+            LKA1d(channel_sz, dilation=3),
+            nn.LayerNorm(clutter_latent_size),
+            LKA1d(channel_sz, dilation=12),
+            nn.LayerNorm(clutter_latent_size),
+            LKA1d(channel_sz, dilation=6),
+            nn.LayerNorm(clutter_latent_size),
+            LKA1d(channel_sz, dilation=3),
             nn.LayerNorm(clutter_latent_size),
             nn.Conv1d(channel_sz, self.n_ants, 1, 1, 0),
             nn.GELU(),
@@ -120,28 +130,37 @@ class GeneratorModel(FlatModule):
             nn.Conv1d(self.n_ants, channel_sz, 1, 1, 0),
             nn.GELU(),
             LKA1d(channel_sz, kernel_sizes=(15, 15), dilation=12),
-            nn.LayerNorm(clutter_latent_size),
+            nn.Conv1d(channel_sz, channel_sz, 4, 2, 1),
+            nn.GELU(),
+            nn.Conv1d(channel_sz, channel_sz, 4, 2, 1),
+            nn.GELU(),
+            nn.LayerNorm(clutter_latent_size // 4),
             nn.Conv1d(channel_sz, 1, 1, 1, 0),
             nn.GELU(),
-            nn.Linear(clutter_latent_size, self.n_ants, bias=False),
+            nn.Linear(clutter_latent_size // 4, self.n_ants, bias=False),
             nn.Softsign(),
         )
         self.bw_integrate.apply(init_weights)
 
         self.window_context = nn.Sequential(
-            nn.Conv1d(self.n_ants * 4, channel_sz, 1, 1, 0),
-            LKA1d(channel_sz, kernel_sizes=(15, 15), dilation=12),
-            LKA1d(channel_sz, kernel_sizes=(15, 15), dilation=6),
-            LKA1d(channel_sz, kernel_sizes=(15, 15), dilation=3),
+            nn.Conv1d(self.n_ants * 2, de_ch_sz, 1, 1, 0),
+            LKA1d(de_ch_sz, kernel_sizes=(15, 15), dilation=12),
+            nn.LayerNorm(fft_sz),
+            LKA1d(de_ch_sz, kernel_sizes=(15, 15), dilation=6),
+            nn.LayerNorm(fft_sz),
+            LKA1d(de_ch_sz, kernel_sizes=(15, 15), dilation=3),
             nn.LayerNorm(fft_sz),
             nn.Linear(fft_sz, fft_sz),
             nn.GELU(),
-            LKA1d(channel_sz, kernel_sizes=(15, 15), dilation=12),
-            nn.Conv1d(channel_sz, self.n_ants * 2, 1, 1, 0),
+            nn.Linear(fft_sz, fft_sz),
+            nn.GELU(),
+            nn.Conv1d(de_ch_sz, self.n_ants * 2, 1, 1, 0),
         )
         self.window_context.apply(init_weights)
 
         self.window = WindowGenerate(self.fft_sz, self.n_ants)
+
+        self.window_threshold = nn.Threshold(1e-9, 0.)
 
         self.plength = PulseLength()
 
@@ -153,14 +172,13 @@ class GeneratorModel(FlatModule):
         clutter, target, pulse_length, bandwidth = inp
         bw_info = self.fourier(torch.cat([pulse_length.float().view(-1, 1), bandwidth.view(-1, 1) / self.fs],
                                          dim=1))
-        x = self.transformer(clutter, torch.tile(self.target_compressor(target).unsqueeze(1),
-                                                 (1, clutter.shape[1], 1)))
-        x = self.last_transformer(x, bw_info.unsqueeze(1))
-        x = self.expand_to_ants(x)
+        x = self.predict_decoder(clutter, self.target_compressor(target).unsqueeze(1))
+        x = self.expand_to_ants(x + bw_info.unsqueeze(1))
         final_win = self.window(self.bw_integrate(x).squeeze(1), bandwidth.view(-1, 1) / self.fs).repeat_interleave(
             2, dim=1)
+        win_pos = self.window_threshold(final_win)
         decoded = torch.cat([self.decoder.decode(x[:, n, :]) for n in range(self.n_ants)], dim=1)
-        x = self.window_context(torch.cat([decoded, final_win], dim=1)) * final_win
+        x = self.window_context(decoded * win_pos) * final_win
         x = self.plength(x, pulse_length)
         x = x.view(-1, self.n_ants, 2, self.fft_sz)
         return x, bandwidth.view(-1, 1)
@@ -178,7 +196,8 @@ class GeneratorModel(FlatModule):
         # Now that everything is formatted, get the waveform
         unformatted_waveform = (
             self.getWaveform(nn_output=self.forward([clutter.unsqueeze(0),
-                                                     torch.tensor(target_array, dtype=torch.float32, device=self.device).unsqueeze(0),
+                                                     torch.tensor(target_array, dtype=torch.float32,
+                                                                  device=self.device).unsqueeze(0),
                                                      pl, bw])).cpu().data.numpy())
 
         # Return it in complex form without the leading dimension

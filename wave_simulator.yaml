@@ -28,7 +28,7 @@ simulation_params:
   use_sdr_gps: False
   use_sdr_gimbal: True
   use_sdr_waveform: False
-  target_target: 9
+  target_target: 2
   use_sdr_fc: True
   # This is for use_sdr_gps == False
   collect_duration: 1.

@@ -109,27 +109,27 @@ target_exp_params:
 
 # For training of wavemodel
 wave_exp_params:
-  LR: 0.0000001
+  LR: 0.00000001
   weight_decay: 0.1
   scheduler_gamma: 0.5
   swa_start: .6
   warm_start: False
   betas: [.9, .99]
   step_size: 1
-  log_epoch: 100
+  log_epoch: 50
   is_tuning: False
   save_model: True
   loss_landscape: False
   patience: 350
-  channel_sz: 64
+  channel_sz: 128
   bandwidth: 400000000.
-  max_epochs: 30
-  init_task: True
-  exp_name: wavemodel-double6x5-newloss-targettransform
+  max_epochs: 1
+  init_task: False
+  exp_name: wavemodel-9x9-newloss-lkadilation
   dataset_params:
     data_path: ./data
-    train_batch_size: 1
-    val_batch_size: 1
+    train_batch_size: 2
+    val_batch_size: 2
     num_workers: 0
     pin_memory: False
     split: .7

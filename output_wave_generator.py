@@ -13,12 +13,21 @@ from simulib.platform_helper import SDRPlatform
 from utils import upsample, normalize, fs
 
 
+# Good SAR backgrounds
+# Airport
+# /data6/SAR_DATA/2024/08012024/SAR_08012024_132556.sar
+# Fields with a river
+# /data6/SAR_DATA/2024/08012024/SAR_08012024_132744.sar
+# Outskirts of Spanish Fork
+# /data6/SAR_DATA/2024/06212024/SAR_06212024_124710.sar
+
+
 '''-------------------USER PARAMETERS--------------------------'''
-pulse_length = 4.0e-6
-pulse_bw = 1000e6
-target_target = 1
-fnme = '/data6/SAR_DATA/2024/06212024/SAR_06212024_124710.sar'
-wave_fnme = './data/generated_waveform_rolled.wave'
+pulse_length = 4.096e-6
+pulse_bw = 600e6
+target_target = 4
+fnme = '/data6/SAR_DATA/2024/08012024/SAR_08012024_132556.sar'
+wave_fnme = './data/humvee_airport.wave'
 save_file = False
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -71,8 +80,9 @@ wave_mdl.to(device)
 wave_mdl.eval()
 pnums = np.arange(1700, 1756)
 _, raw_pulse_data = sdr.getPulses(pnums, 0)
+mfilt = sdr.genMatchedFilter(0, fft_len=fft_len)
 ts = sdr[0].pulse_time[pnums]
-pulse_data = np.fft.fft(raw_pulse_data.T, wave_mdl.fft_sz, axis=1)
+pulse_data = np.fft.fft(raw_pulse_data.T, wave_mdl.fft_sz, axis=1) * mfilt
 tsdata = np.fromfile('/home/jeff/repo/apache/data/targets.enc',
                      dtype=np.float32).reshape((-1, config['target_exp_params']['model_params']['latent_dim'])
                                                )[target_target, ...]
