@@ -70,13 +70,13 @@ if __name__ == '__main__':
             wave_mdl = GeneratorModel(fft_sz=fft_len, decoder=decoder, channel_sz=exp_params['channel_sz'],
                                       clutter_latent_size=config['exp_params']['model_params']['latent_dim'],
                                       target_latent_size=config['target_exp_params']['model_params']['latent_dim'],
-                                      n_ants=2)
+                                      n_ants=1)
     else:
         print('Initializing new wavemodel...')
         wave_mdl = GeneratorModel(fft_sz=fft_len, decoder=decoder, channel_sz=exp_params['channel_sz'],
                                   clutter_latent_size=config['exp_params']['model_params']['latent_dim'],
                                   target_latent_size=config['target_exp_params']['model_params']['latent_dim'],
-                                  n_ants=2)
+                                  n_ants=1)
 
     # Since these are dependent on apache params, we set them up here instead of in the yaml file
     print('Setting up data generator...')
@@ -111,7 +111,7 @@ if __name__ == '__main__':
                                exp_params['max_epochs'] * exp_params['swa_start'])),
                       1e-9)
     trainer = Trainer(logger=logger, max_epochs=config['wave_exp_params']['max_epochs'],
-                      log_every_n_steps=exp_params['log_epoch'], devices=1, callbacks=
+                      log_every_n_steps=exp_params['log_epoch'], devices=[0], callbacks=
                       [EarlyStopping(monitor='target_loss', patience=exp_params['patience'],
                                      check_finite=True),
                        StochasticWeightAveraging(swa_lrs=expected_lr,
@@ -153,19 +153,29 @@ if __name__ == '__main__':
             freqs = np.fft.fftshift(np.fft.fftfreq(fft_len, 1 / fs))
             plt.figure('Waveform PSD')
             plt.plot(freqs, db(np.fft.fftshift(waves[0, 0])))
-            plt.plot(freqs, db(np.fft.fftshift(waves[0, 1])))
+            if wave_mdl.n_ants > 1:
+                plt.plot(freqs, db(np.fft.fftshift(waves[0, 1])))
             plt.plot(freqs, db(targets[0]), linestyle='--', linewidth=.3)
             plt.plot(freqs, db(clutter[0]), linestyle=':', linewidth=.3)
-            plt.legend(['Waveform 1', 'Waveform 2', 'Target', 'Clutter'])
+            if wave_mdl.n_ants > 1:
+                plt.legend(['Waveform 1', 'Waveform 2', 'Target', 'Clutter'])
+            else:
+                plt.legend(['Waveform', 'Target', 'Clutter'])
             plt.ylabel('Relative Power (dB)')
             plt.xlabel('Freq (Hz)')
 
-            clutter_corr = np.fft.ifft(
-                np.fft.fftshift(clutter[0]) * waves[0, 0] * waves[0, 0].conj() + np.fft.fftshift(clutter[0]) * waves[
-                    0, 1] * waves[0, 1].conj())
-            target_corr = np.fft.ifft(
-                np.fft.fftshift(targets[0]) * waves[0, 0] * waves[0, 0].conj() + np.fft.fftshift(targets[0]) * waves[
-                    0, 1] * waves[0, 1].conj())
+            if wave_mdl.n_ants > 1:
+                clutter_corr = np.fft.ifft(
+                    np.fft.fftshift(clutter[0]) * waves[0, 0] * waves[0, 0].conj() + np.fft.fftshift(clutter[0]) * waves[
+                        0, 1] * waves[0, 1].conj())
+                target_corr = np.fft.ifft(
+                    np.fft.fftshift(targets[0]) * waves[0, 0] * waves[0, 0].conj() + np.fft.fftshift(targets[0]) * waves[
+                        0, 1] * waves[0, 1].conj())
+            else:
+                clutter_corr = np.fft.ifft(
+                    np.fft.fftshift(clutter[0]) * waves[0, 0] * waves[0, 0].conj())
+                target_corr = np.fft.ifft(
+                    np.fft.fftshift(targets[0]) * waves[0, 0] * waves[0, 0].conj())
             plt.figure('MIMO Correlations')
             plt.plot(db(clutter_corr))
             plt.plot(db(target_corr))
@@ -182,30 +192,36 @@ if __name__ == '__main__':
             linear = linear / sum(linear * linear.conj())  # Unit energy
             inp_wave = waves[0, 0] * waves[0, 0].conj()
             autocorr1 = np.fft.fftshift(db(np.fft.ifft(upsample(inp_wave))))
-            inp_wave = waves[0, 1] * waves[0, 1].conj()
-            autocorr2 = np.fft.fftshift(db(np.fft.ifft(upsample(inp_wave))))
-            inp_wave = waves[0, 0] * waves[0, 1].conj()
-            autocorrcr = np.fft.fftshift(db(np.fft.ifft(upsample(inp_wave))))
+            if wave_mdl.n_ants > 1:
+                inp_wave = waves[0, 1] * waves[0, 1].conj()
+                autocorr2 = np.fft.fftshift(db(np.fft.ifft(upsample(inp_wave))))
+                inp_wave = waves[0, 0] * waves[0, 1].conj()
+                autocorrcr = np.fft.fftshift(db(np.fft.ifft(upsample(inp_wave))))
             perf_autocorr = np.fft.fftshift(db(np.fft.ifft(upsample(linear * linear.conj()))))
             lags = np.arange(len(autocorr1)) - len(autocorr1) // 2
             plt.plot(lags[len(lags) // 2 - 200:len(lags) // 2 + 200],
                      autocorr1[len(lags) // 2 - 200:len(lags) // 2 + 200] - autocorr1.max())
-            plt.plot(lags[len(lags) // 2 - 200:len(lags) // 2 + 200],
-                     autocorr2[len(lags) // 2 - 200:len(lags) // 2 + 200] - autocorr2.max())
-            plt.plot(lags[len(lags) // 2 - 200:len(lags) // 2 + 200],
-                     autocorrcr[len(lags) // 2 - 200:len(lags) // 2 + 200] - autocorr1.max())
+            if wave_mdl.n_ants > 1:
+                plt.plot(lags[len(lags) // 2 - 200:len(lags) // 2 + 200],
+                         autocorr2[len(lags) // 2 - 200:len(lags) // 2 + 200] - autocorr2.max())
+                plt.plot(lags[len(lags) // 2 - 200:len(lags) // 2 + 200],
+                         autocorrcr[len(lags) // 2 - 200:len(lags) // 2 + 200] - autocorr1.max())
             plt.plot(lags[len(lags) // 2 - 200:len(lags) // 2 + 200],
                      perf_autocorr[len(lags) // 2 - 200:len(lags) // 2 + 200] - perf_autocorr.max(),
                      linestyle='--')
-            plt.legend(['Waveform 1', 'Waveform 2', 'Cross Correlation', 'Linear Chirp'])
+            if wave_mdl.n_ants > 1:
+                plt.legend(['Waveform 1', 'Waveform 2', 'Cross Correlation', 'Linear Chirp'])
+            else:
+                plt.legend(['Waveform', 'Linear Chirp'])
             plt.xlabel('Lag')
 
             plt.figure('Time Series')
             wave1 = waves.copy()
             plot_t = np.arange(nr) / fs
             plt.plot(plot_t, np.fft.ifft(wave1[0, 0]).real[:nr])
-            plt.plot(plot_t, np.fft.ifft(wave1[0, 1]).real[:nr])
-            plt.legend(['Waveform 1', 'Waveform 2'])
+            if wave_mdl.n_ants > 1:
+                plt.plot(plot_t, np.fft.ifft(wave1[0, 1]).real[:nr])
+                plt.legend(['Waveform 1', 'Waveform 2'])
             plt.xlabel('Time')
 
             wave_t = np.fft.ifft(waves[0, 0])[:nr]

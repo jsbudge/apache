@@ -50,7 +50,7 @@ if __name__ == '__main__':
                        exp_params['scheduler_gamma'] ** (exp_params['max_epochs'] *
                                                          exp_params['swa_start'])), 1e-9)
     trainer = Trainer(logger=logger, max_epochs=exp_params['max_epochs'],
-                      log_every_n_steps=exp_params['log_epoch'], devices=1, callbacks=
+                      log_every_n_steps=exp_params['log_epoch'], devices=[0], callbacks=
                       [EarlyStopping(monitor='val_loss', patience=exp_params['patience'],
                                      check_finite=True),
                        StochasticWeightAveraging(swa_lrs=expected_lr, swa_epoch_start=exp_params['swa_start'])])

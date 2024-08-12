@@ -98,11 +98,11 @@ class GeneratorModel(FlatModule):
             nn.GELU(),
             nn.Conv1d(1, channel_sz, 1, 1, 0),
             nn.GELU(),
-            LKA1d(channel_sz, dilation=12),
+            LKA1d(channel_sz, kernel_sizes=(15, 15), dilation=12),
             nn.LayerNorm(clutter_latent_size),
-            LKA1d(channel_sz, dilation=6),
+            LKA1d(channel_sz, kernel_sizes=(65, 65), dilation=6),
             nn.LayerNorm(clutter_latent_size),
-            LKA1d(channel_sz, dilation=3),
+            LKA1d(channel_sz, kernel_sizes=(255, 255), dilation=3),
             nn.LayerNorm(clutter_latent_size),
             LKA1d(channel_sz, dilation=12),
             nn.LayerNorm(clutter_latent_size),
@@ -241,15 +241,20 @@ class GeneratorModel(FlatModule):
         sidelobe_loss = 100. / torch.nanmean(torch.abs(slf_max - torch.max(sidelobe_func, dim=-1)[0]))
 
         # Orthogonality
-        cross_sidelobe = torch.abs(torch.fft.ifft(crossfiltered, dim=2))
-        cross_sidelobe[cross_sidelobe == 0] = 1e-9
-        cross_sidelobe = 10 * torch.log(cross_sidelobe / 10)
-        ortho_loss = torch.nanmean(torch.abs(sidelobe_func.sum(dim=1)[:, 0]) /
-                                   (1e-12 + torch.abs(cross_sidelobe.sum(dim=1)[:, 0])))**2
+        if self.n_ants > 1:
+            cross_sidelobe = torch.abs(torch.fft.ifft(crossfiltered, dim=2))
+            cross_sidelobe[cross_sidelobe == 0] = 1e-9
+            cross_sidelobe = 10 * torch.log(cross_sidelobe / 10)
+            ortho_loss = torch.nanmean(torch.abs(sidelobe_func.sum(dim=1)[:, 0]) /
+                                       (1e-12 + torch.abs(cross_sidelobe.sum(dim=1)[:, 0])))**2
 
-        # Apply hinge loss to sidelobes
+            # Apply hinge loss
+            ortho_loss = torch.abs(ortho_loss - .3)
+        else:
+            ortho_loss = torch.tensor(0., device=self.device)
+
+        # Make sure the losses are positive (they should always be)
         sidelobe_loss = torch.abs(sidelobe_loss)
-        ortho_loss = torch.abs(ortho_loss - .3)
         target_loss = torch.abs(target_loss)
 
         return {'target_loss': target_loss,

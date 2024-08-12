@@ -45,10 +45,12 @@ class PulseDataset(Dataset):
     
     
 class TargetDataset(Dataset):
-    def __init__(self, datapath: str = './data', split: float = 1., is_val: bool = False, seed: int = 7):
+    def __init__(self, datapath: str = './data', split: float = 1., is_val: bool = False, mu: float = .01,
+                 var: float = 4.9, seed: int = 7):
         # Load in data
         optical_data = np.fromfile(f'{datapath}/targetprofiles.dat',
                                    dtype=np.float32).reshape((-1, 2, 256, 256))
+        optical_data[optical_data != 0] = (optical_data[optical_data != 0] - mu) / var
         self.data = torch.tensor(optical_data)
 
         if split < 1:
@@ -298,6 +300,8 @@ class EncoderModule(BaseModule):
             pin_memory: bool = False,
             single_example: bool = False,
             device: str = 'cpu',
+            mu: float = .01,
+            var: float = 4.9,
             **kwargs,
     ):
         super().__init__(train_batch_size, val_batch_size, pin_memory, single_example, device)
@@ -306,6 +310,8 @@ class EncoderModule(BaseModule):
         self.data_path = data_path
         self.fft_len = fft_len
         self.split = split
+        self.mu = mu
+        self.var = var
 
     def setup(self, stage: Optional[str] = None) -> None:
         self.train_dataset = PulseDataset(self.data_path, self.fft_len, self.split, self.single_example)
@@ -324,6 +330,8 @@ class TargetEncoderModule(BaseModule):
             pin_memory: bool = False,
             single_example: bool = False,
             device: str = 'cpu',
+            mu: float = .01,
+            var: float = 4.9,
             **kwargs,
     ):
         super().__init__(train_batch_size, val_batch_size, pin_memory, single_example, device)
@@ -331,11 +339,14 @@ class TargetEncoderModule(BaseModule):
         self.dataset_size = dataset_size
         self.data_path = data_path
         self.split = split
+        self.mu = mu
+        self.var = var
 
     def setup(self, stage: Optional[str] = None) -> None:
-        self.train_dataset = TargetDataset(self.data_path, self.split, self.single_example)
+        self.train_dataset = TargetDataset(self.data_path, self.split, self.single_example, mu=self.mu,
+                                          var=self.var)
         self.val_dataset = TargetDataset(self.data_path, split=1 - self.split if self.split < 1 else 1.,
-                                         is_val=True)
+                                         is_val=True, mu=self.mu, var=self.var)
 
 
 if __name__ == '__main__':

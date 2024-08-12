@@ -24,104 +24,106 @@ settings:
   plp: .5
   n_ants: 2
   fft_len: 8192
-  save_as_target: False
+  save_as_target: True
 
 generate_data_settings:
   iterations: 500
-  run_clutter: True
-  run_targets: False
   use_local_storage: True
+  save_files: False
   local_path: ./data
   obj_path: /home/jeff/Documents/target_meshes
 
 # This is for setting up training of autoencoder
 exp_params:
-  LR: 0.001
-  weight_decay: 0.1
+  LR: 0.000001
+  weight_decay: 0.0
   scheduler_gamma: 0.5
   betas: [.07, .9]
   step_size: 1
   swa_start: .5
-  log_epoch: 10
+  log_epoch: 50
   save_model: True
-  transform_data: False
+  transform_data: True
   warm_start: True
   loss_landscape: False
   output_images: False
   model_type: Encoder
   patience: 150
   is_tuning: False
-  max_epochs: 5000
-  exp_name: train-latent512tanh-gradchan
-  init_task: True
+  max_epochs: 1
+  exp_name: train-latent612-channel64
+  init_task: False
   dataset_params:
     data_path: ./data
-    train_batch_size: 32
-    val_batch_size: 32
+    train_batch_size: 2
+    val_batch_size: 2
     pin_memory: False
     split: .7
     single_example: False
     # These values are taken from a sampling of data
-    mu: 274662906.04691434
-    var: 49527137064.739006
+    mu: 199926611.3141519
+    var: 52500339516.69853
     noise_level: 0.
   model_params:
     in_channels: 2
     latent_dim: 612
-    channel_sz: 256
+    channel_sz: 72
     
 # This is for setting up training of target autoencoder
 target_exp_params:
-  LR: 0.001
+  LR: 0.0001
   weight_decay: 0.0
   scheduler_gamma: 0.7
   betas: [ .07, .9 ]
-  step_size: 2
+  step_size: 1
   swa_start: .7
   log_epoch: 10
-  save_model: True
+  save_model: False
   transform_data: True
-  warm_start: False
+  warm_start: True
   loss_landscape: False
   output_images: False
   model_type: TargetEncoder
   patience: 550
   is_tuning: False
-  max_epochs: 15000
+  max_epochs: 5
   init_task: False
-  exp_name: train-targetencoder-lka-attention
+  exp_name: train-targetencoder-lka-attention-normalized
   dataset_params:
     data_path: ./data
-    train_batch_size: 32
-    val_batch_size: 32
+    train_batch_size: 16
+    val_batch_size: 16
     num_workers: 0
     pin_memory: False
     split: .7
     single_example: False
     # These values are taken from a sampling of data
-    mu: 0.011546927006842008
-    var: 4.939321435461906
+    mu: 0.11414164548838476
+    var: 0.18655171873981186
     noise_level: 0.
   model_params:
     in_channels: 2
     latent_dim: 1024
-    channel_sz: 48
+    channel_sz: 16
+    # These values are taken from a sampling of data, should be the same as the dataset params
+    mu: 0.11414164548838476
+    var: 0.18655171873981186
 
 # For training of wavemodel
 wave_exp_params:
-  LR: 0.00000001
+  LR: 0.001
   weight_decay: 0.1
   scheduler_gamma: 0.5
   swa_start: .6
   warm_start: False
-  betas: [.9, .99]
+  betas: [.07, .99]
   step_size: 1
   log_epoch: 50
   is_tuning: False
-  save_model: True
+  save_model: False
   loss_landscape: False
   patience: 350
-  channel_sz: 128
+  channel_sz: 256
   bandwidth: 400000000.
   max_epochs: 1
   init_task: False
@@ -135,8 +137,8 @@ wave_exp_params:
     split: .7
     single_example: False
     # These values are taken from a sampling of data
-    mu: 274662906.04691434
-    var: 49527137064.739006
+    mu: 199926611.3141519
+    var: 52500339516.69853
     noise_level: 0.
     collate: True
 

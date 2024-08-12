@@ -94,6 +94,7 @@ if trainer.is_global_zero:
 
     if exp_params['transform_data']:
         print('Running data transformation of files...')
+        model.to('cuda:0')
         batch_sz = exp_params['dataset_params']['train_batch_size']
         fnmes, fdata = data.train_dataset.get_filedata(concat=False)
         save_path = param_dict['generate_data_settings']['local_path'] if (
@@ -105,12 +106,12 @@ if trainer.is_global_zero:
                 chunk_start = 1
                 with open(enc_fnme, 'wb') as f:
                     out_data = model.encode(
-                        torch.tensor(dt[:batch_sz, :, :-2], dtype=torch.float32)).data.numpy()
+                        torch.tensor(dt[:batch_sz, :, :-2], dtype=torch.float32, device=model.device)).cpu().data.numpy()
                     out_data.tofile(f)
             with open(
                     f'{save_path}/{fn.split("/")[-1].split(".")[0]}.enc', 'ab') as writer:
                 for chunk in np.arange(chunk_start, dt.shape[0], batch_sz):
-                    out_data = model.encode(torch.tensor(dt[chunk:chunk + batch_sz, :, :-2], dtype=torch.float32)).data.numpy()
+                    out_data = model.encode(torch.tensor(dt[chunk:chunk + batch_sz, :, :-2], dtype=torch.float32, device=model.device)).cpu().data.numpy()
                     out_data.tofile(writer)
     if exp_params['init_task']:
         task.close()

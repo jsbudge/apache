@@ -6,6 +6,8 @@ from torch.nn import functional as tf
 from abc import abstractmethod
 from pytorch_lightning import LightningModule
 import numpy as np
+
+from layers import LKA, LKATranspose, LKA1d, LKATranspose1d
 from waveform_model import FlatModule
 import matplotlib.pyplot as plt
 
@@ -736,53 +738,63 @@ class Encoder(FlatModule):
         fft_scaling = 2 ** levels
 
         # Encoder
-        self.encoder_inflate = nn.Conv1d(in_channels, channel_sz // 2**levels, 1, 1, 0)
+        self.encoder_inflate = nn.Sequential(
+            nn.Conv1d(in_channels, channel_sz, 1, 1, 0),
+            nn.GELU(),
+        )
         self.encoder_attention = nn.ModuleList()
         self.encoder_reduce = nn.ModuleList()
         self.encoder_conv = nn.ModuleList()
-        for n in range(1, levels + 1):
-            curr_channel_sz = channel_sz // 2**(levels - n + 1)
-            next_channel_sz = channel_sz // 2**(levels - n)
-            lin_sz = fft_len // (2 ** n)
+        decoder_reduce = []
+        decoder_conv = []
+        decoder_attention = []
+        for n in range(levels):
+            curr_channel_sz = channel_sz * 2**n
+            next_channel_sz = channel_sz * 2**(n + 1)
+            lin_sz = fft_len // (2 ** (n + 1))
+            dec_lin_sz = fft_len // (2 ** n)
             self.encoder_reduce.append(nn.Sequential(
                 nn.Conv1d(curr_channel_sz, curr_channel_sz, 4, 2, 1),
                 nn.GELU(),
             ))
             self.encoder_conv.append(nn.Sequential(
-                nn.Conv1d(curr_channel_sz, curr_channel_sz, 3, 1, 1),
-                nn.GELU(),
-                nn.Conv1d(curr_channel_sz, curr_channel_sz, 3, 1, 6, dilation=6),
-                nn.GELU(),
-                nn.Conv1d(curr_channel_sz, curr_channel_sz, 1, 1, 0),
-                nn.GELU(),
+                LKA1d(curr_channel_sz, dilation=9),
                 nn.LayerNorm(lin_sz),
-                nn.Conv1d(curr_channel_sz, curr_channel_sz, 3, 1, 1),
-                nn.GELU(),
-                nn.Conv1d(curr_channel_sz, curr_channel_sz, 3, 1, 6, dilation=6),
-                nn.GELU(),
-                nn.Conv1d(curr_channel_sz, curr_channel_sz, 1, 1, 0),
-                nn.GELU(),
+                LKA1d(curr_channel_sz, dilation=6),
                 nn.LayerNorm(lin_sz),
-                nn.Conv1d(curr_channel_sz, curr_channel_sz, 3, 1, 1),
-                nn.GELU(),
-                nn.Conv1d(curr_channel_sz, curr_channel_sz, 3, 1, 6, dilation=6),
-                nn.GELU(),
+                LKA1d(curr_channel_sz, dilation=3),
+                nn.LayerNorm(lin_sz),
                 nn.Conv1d(curr_channel_sz, next_channel_sz, 1, 1, 0),
                 nn.GELU(),
-                nn.LayerNorm(lin_sz),
             ))
             self.encoder_attention.append(nn.Sequential(
-                nn.Conv1d(curr_channel_sz, curr_channel_sz, 3, 1, 1),
-                nn.GELU(),
-                nn.Conv1d(curr_channel_sz, curr_channel_sz, 3, 1, 6, dilation=6),
-                nn.GELU(),
-                nn.Conv1d(curr_channel_sz, curr_channel_sz, 1, 1, 0),
-                nn.GELU(),
+                LKA1d(curr_channel_sz, kernel_sizes=(3, 9), dilation=12),
                 nn.Conv1d(curr_channel_sz, curr_channel_sz, 4, 2, 1),
                 nn.Sigmoid(),
             ))
+            decoder_reduce.append(nn.Sequential(
+                nn.ConvTranspose1d(next_channel_sz, next_channel_sz, 4, 2, 1),
+                nn.GELU(),
+            ))
+            decoder_conv.append(nn.Sequential(
+                LKATranspose1d(next_channel_sz, dilation=9),
+                nn.LayerNorm(dec_lin_sz),
+                LKATranspose1d(next_channel_sz, dilation=6),
+                nn.LayerNorm(dec_lin_sz),
+                LKATranspose1d(next_channel_sz, dilation=3),
+                nn.LayerNorm(dec_lin_sz),
+                nn.ConvTranspose1d(next_channel_sz, curr_channel_sz, 1, 1, 0),
+                nn.GELU(),
+            ))
+            decoder_attention.append(nn.Sequential(
+                LKATranspose1d(next_channel_sz, kernel_sizes=(3, 9), dilation=12),
+                nn.ConvTranspose1d(next_channel_sz, next_channel_sz, 4, 2, 1),
+                nn.Sigmoid(),
+            ))
         self.encoder_squash = nn.Sequential(
-            nn.Conv1d(channel_sz, 1, 3, 1, 1),
+            nn.Conv1d(channel_sz * 2**levels, channel_sz, 3, 1, 1),
+            nn.GELU(),
+            nn.Conv1d(channel_sz, 1, 1, 1, 0),
             nn.GELU(),
         )
         self.fc_z = nn.Sequential(
@@ -799,54 +811,23 @@ class Encoder(FlatModule):
             nn.Linear(fft_len // fft_scaling, fft_len // fft_scaling),
             nn.GELU(),
         )
-        self.decoder_inflate = nn.ConvTranspose1d(1, channel_sz, 1, 1, 0)
-        self.decoder_reduce = nn.ModuleList()
-        self.decoder_conv = nn.ModuleList()
-        self.decoder_attention = nn.ModuleList()
-        for n in range(levels - 1, -1, -1):
-            lin_sz = fft_len // (2 ** n)
-            next_channel_sz = channel_sz // 2 ** (levels - n)
-            curr_channel_sz = channel_sz // 2 ** (levels - n - 1)
-            self.decoder_reduce.append(nn.Sequential(
-                nn.ConvTranspose1d(curr_channel_sz, curr_channel_sz, 4, 2, 1),
-                nn.GELU(),
-            ))
-            self.decoder_conv.append(nn.Sequential(
-                nn.ConvTranspose1d(curr_channel_sz, curr_channel_sz, 3, 1, 1),
-                nn.GELU(),
-                nn.ConvTranspose1d(curr_channel_sz, curr_channel_sz, 3, 1, 6, dilation=6),
-                nn.GELU(),
-                nn.ConvTranspose1d(curr_channel_sz, curr_channel_sz, 1, 1, 0),
-                nn.GELU(),
-                nn.LayerNorm(lin_sz),
-                nn.ConvTranspose1d(curr_channel_sz, curr_channel_sz, 3, 1, 1),
-                nn.GELU(),
-                nn.ConvTranspose1d(curr_channel_sz, curr_channel_sz, 3, 1, 6, dilation=6),
-                nn.GELU(),
-                nn.ConvTranspose1d(curr_channel_sz, curr_channel_sz, 1, 1, 0),
-                nn.GELU(),
-                nn.LayerNorm(lin_sz),
-                nn.ConvTranspose1d(curr_channel_sz, curr_channel_sz, 3, 1, 1),
-                nn.GELU(),
-                nn.ConvTranspose1d(curr_channel_sz, curr_channel_sz, 3, 1, 6, dilation=6),
-                nn.GELU(),
-                nn.ConvTranspose1d(curr_channel_sz, next_channel_sz, 1, 1, 0),
-                nn.GELU(),
-                nn.LayerNorm(lin_sz),
-            ))
-            self.decoder_attention.append(nn.Sequential(
-                nn.ConvTranspose1d(curr_channel_sz, curr_channel_sz, 3, 1, 1),
-                nn.GELU(),
-                nn.ConvTranspose1d(curr_channel_sz, curr_channel_sz, 3, 1, 6, dilation=6),
-                nn.GELU(),
-                nn.ConvTranspose1d(curr_channel_sz, curr_channel_sz, 1, 1, 0),
-                nn.GELU(),
-                nn.ConvTranspose1d(curr_channel_sz, curr_channel_sz, 4, 2, 1),
-                nn.Sigmoid(),
-            ))
+
+        # Flip the lists
+        decoder_attention.reverse()
+        decoder_conv.reverse()
+        decoder_reduce.reverse()
+        self.decoder_conv = nn.ModuleList(decoder_conv)
+        self.decoder_attention = nn.ModuleList(decoder_attention)
+        self.decoder_reduce = nn.ModuleList(decoder_reduce)
+        self.decoder_inflate = nn.Sequential(
+            nn.ConvTranspose1d(1, channel_sz * 2**levels, 1, 1, 0),
+            nn.GELU(),
+            nn.ConvTranspose1d(channel_sz * 2**levels, channel_sz * 2**levels, 3, 1, 1),
+            nn.GELU(),
+        )
         self.decoder_output = nn.Sequential(
-            nn.ConvTranspose1d(channel_sz // 2**levels, channel_sz // 2**levels, 3, 1, 1),
-            nn.Conv1d(channel_sz // 2**levels, in_channels, 1, 1, 0),
+            nn.ConvTranspose1d(channel_sz, channel_sz, 3, 1, 1),
+            nn.Conv1d(channel_sz, in_channels, 1, 1, 0),
         )
 
         self.example_input_array = torch.randn((1, 2, self.fft_len))
@@ -860,7 +841,7 @@ class Encoder(FlatModule):
         """
         inp = self.encoder_inflate(inp)
         for conv, red, att in zip(self.encoder_conv, self.encoder_reduce, self.encoder_attention):
-            inp = conv(red(inp) * att(inp))
+            inp = conv(red(inp) + att(inp))
         inp = self.encoder_squash(inp).squeeze(1)
         return self.fc_z(inp)
 
@@ -868,7 +849,7 @@ class Encoder(FlatModule):
         result = self.z_fc(z).unsqueeze(1)
         result = self.decoder_inflate(result)
         for conv, red, att in zip(self.decoder_conv, self.decoder_reduce, self.decoder_attention):
-            result = conv(red(result) * att(result))
+            result = conv(red(result) + att(result))
         return self.decoder_output(result)
 
     def forward(self, inp: Tensor, **kwargs) -> Tensor:
@@ -966,6 +947,8 @@ class TargetEncoder(FlatModule):
                  latent_dim: int,
                  params: dict,
                  channel_sz: int = 32,
+                 mu: float = .01,
+                 var: float = 4.9,
                  **kwargs) -> None:
         super(TargetEncoder, self).__init__()
 
@@ -974,42 +957,44 @@ class TargetEncoder(FlatModule):
         self.channel_sz = channel_sz
         self.in_channels = in_channels
         self.automatic_optimization = False
+
+        # Parameters for normalizing data correctly
+        self.mu = mu
+        self.var = var
         levels = 3
         out_sz = 256 // (2 ** levels)
 
         # Encoder
-        self.encoder_inflate = nn.Conv2d(in_channels, channel_sz, 3, 1, 1)
+        self.encoder_inflate = nn.Conv2d(in_channels, channel_sz, 1, 1, 0)
+        prev_lev_enc = channel_sz
         self.encoder_reduce = nn.ModuleList()
+        self.encoder_pool = nn.ModuleList()
         self.encoder_conv = nn.ModuleList()
-        self.encoder_attention = nn.ModuleList()
         for l in range(levels):
+            ch_lev_enc = prev_lev_enc * 2
             layer_sz = [256 // (2 ** (l + 1)), 256 // (2 ** (l + 1))]
             self.encoder_reduce.append(nn.Sequential(
-                nn.Conv2d(channel_sz, channel_sz, 4, 2, 1),
+                nn.Conv2d(prev_lev_enc, ch_lev_enc, 4, 2, 1),
                 nn.GELU(),
             ))
-            self.encoder_attention.append(nn.Sequential(
-                nn.MaxPool2d(2),
-                nn.Conv2d(channel_sz, channel_sz, 3, 1, 1),
-                nn.GELU(),
-                nn.Conv2d(channel_sz, channel_sz, 3, 1, 'same', dilation=6),
-                nn.GELU(),
-                nn.Conv2d(channel_sz, channel_sz, 1, 1, 0),
-                nn.Sigmoid(),
-            ))
+            self.encoder_pool.append(nn.Sequential(nn.Conv2d(prev_lev_enc, ch_lev_enc, 1, 1, 0),
+                                                   nn.MaxPool2d(2)))
             self.encoder_conv.append(nn.Sequential(
-                nn.Conv2d(channel_sz, channel_sz, 3, 1, 1),
+                LKA(ch_lev_enc, kernel_sizes=(15, 15), dilation=6),
+                nn.LayerNorm(layer_sz),
+                nn.Conv2d(ch_lev_enc, ch_lev_enc, 3, 1, 1),
                 nn.GELU(),
-                nn.Conv2d(channel_sz, channel_sz, 3, 1, 1),
+                nn.Conv2d(ch_lev_enc, ch_lev_enc, 3, 1, 1),
                 nn.GELU(),
-                nn.Conv2d(channel_sz, channel_sz, 3, 1, 1),
-                nn.GELU(),
-                nn.Conv2d(channel_sz, channel_sz, 3, 1, 1),
+                nn.Conv2d(ch_lev_enc, ch_lev_enc, 3, 1, 1),
                 nn.GELU(),
                 nn.LayerNorm(layer_sz),
             ))
+            prev_lev_enc = ch_lev_enc + 0
+
+        prev_lev_dec = prev_lev_enc
         self.encoder_flatten = nn.Sequential(
-            nn.Conv2d(channel_sz, 1, 1, 1, 0),
+            nn.Conv2d(prev_lev_dec, 1, 1, 1, 0),
             nn.GELU(),
         )
         self.fc_z = nn.Sequential(
@@ -1026,39 +1011,34 @@ class TargetEncoder(FlatModule):
             nn.Linear(latent_dim, out_sz ** 2),
         )
         self.decoder_flatten = nn.Sequential(
-            nn.Conv2d(1, channel_sz, 1, 1, 0),
+            nn.Conv2d(1, prev_lev_dec, 1, 1, 0),
             nn.GELU(),
         )
         self.decoder_reduce = nn.ModuleList()
+        self.decoder_pool = nn.ModuleList()
         self.decoder_conv = nn.ModuleList()
-        self.decoder_attention = nn.ModuleList()
         for l in range(1, levels + 1):
+            ch_lev_dec = prev_lev_dec // 2
             layer_sz = [out_sz * (2 ** l), out_sz * (2 ** l)]
             self.decoder_reduce.append(nn.Sequential(
-                nn.ConvTranspose2d(channel_sz, channel_sz, 4, 2, 1),
+                nn.ConvTranspose2d(prev_lev_dec, ch_lev_dec, 4, 2, 1),
                 nn.GELU(),
             ))
-            self.decoder_attention.append(nn.Sequential(
-                nn.ConvTranspose2d(channel_sz, channel_sz, 1, 1, 0),
-                nn.GELU(),
-                nn.ConvTranspose2d(channel_sz, channel_sz, 3, 1, 6, dilation=6),
-                nn.GELU(),
-                nn.ConvTranspose2d(channel_sz, channel_sz, 3, 1, 1),
-                nn.GELU(),
-                nn.ConvTranspose2d(channel_sz, channel_sz, 4, 2, 1),
-                nn.Sigmoid(),
-            ))
+            self.decoder_pool.append(nn.Sequential(
+                nn.ConvTranspose2d(prev_lev_dec, ch_lev_dec, 1, 1, 0),
+                nn.UpsamplingNearest2d(scale_factor=2)))
             self.decoder_conv.append(nn.Sequential(
-                nn.ConvTranspose2d(channel_sz, channel_sz, 3, 1, 1),
+                LKATranspose(ch_lev_dec, kernel_sizes=(15, 15), dilation=6),
+                nn.LayerNorm(layer_sz),
+                nn.ConvTranspose2d(ch_lev_dec, ch_lev_dec, 3, 1, 1),
                 nn.GELU(),
-                nn.ConvTranspose2d(channel_sz, channel_sz, 3, 1, 1),
+                nn.ConvTranspose2d(ch_lev_dec, ch_lev_dec, 3, 1, 1),
                 nn.GELU(),
-                nn.ConvTranspose2d(channel_sz, channel_sz, 3, 1, 1),
-                nn.GELU(),
-                nn.ConvTranspose2d(channel_sz, channel_sz, 3, 1, 1),
+                nn.ConvTranspose2d(ch_lev_dec, ch_lev_dec, 3, 1, 1),
                 nn.GELU(),
                 nn.LayerNorm(layer_sz),
             ))
+            prev_lev_dec = ch_lev_dec + 0
         self.decoder_output = nn.Sequential(
             nn.ConvTranspose2d(channel_sz, in_channels, 1, 1, 0),
         )
@@ -1075,21 +1055,27 @@ class TargetEncoder(FlatModule):
         :return: (Tensor) List of latent codes
         """
         inp = self.encoder_inflate(inp)
-        for conv, red, att in zip(self.encoder_conv, self.encoder_reduce, self.encoder_attention):
-            inp = conv(red(inp) * att(inp))
+        for conv, red, pool in zip(self.encoder_conv, self.encoder_reduce, self.encoder_pool):
+            inp = conv(red(inp) * pool(inp))
         inp = self.encoder_flatten(inp).view(-1, self.out_sz ** 2)
         return self.fc_z(inp)
 
     def decode(self, z: Tensor) -> Tensor:
         result = self.z_fc(z).view(-1, 1, self.out_sz, self.out_sz)
         result = self.decoder_flatten(result)
-        for conv, red, att in zip(self.decoder_conv, self.decoder_reduce, self.decoder_attention):
-            result = conv(red(result) * att(result))
+        for conv, red, pool in zip(self.decoder_conv, self.decoder_reduce, self.decoder_pool):
+            result = conv(red(result) * pool(result))
         return self.decoder_output(result)
 
     def forward(self, inp: Tensor, **kwargs) -> Tensor:
         z = self.encode(inp)
         return self.decode(z)
+
+    def full_encode(self, inp: np.ndarray):
+        return self.encode(torch.tensor((inp - self.mu) / self.var, torch.float32, device=self.device))
+
+    def full_decode(self, z: np.ndarray):
+        return self.decode(torch.tensor(z, torch.float32, device=self.device)).detach().numpy() * self.var + self.mu
 
     def loss_function(self, y, y_pred):
         return tf.mse_loss(y, y_pred)
@@ -1115,7 +1101,7 @@ class TargetEncoder(FlatModule):
 
     def on_validation_end(self) -> None:
         if self.trainer.is_global_zero and not self.params['is_tuning']:
-            torch.save(self.state_dict(), './model/inference_model.state')
+            torch.save(self.state_dict(), './model/target_model.state')
             print('Model saved to disk.')
 
             if self.current_epoch % 5 == 0:
