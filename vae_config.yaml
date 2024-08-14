@@ -77,8 +77,8 @@ target_exp_params:
   betas: [ .07, .9 ]
   step_size: 1
   swa_start: .7
-  log_epoch: 10
-  save_model: False
+  log_epoch: 100
+  save_model: True
   transform_data: True
   warm_start: True
   loss_landscape: False
@@ -86,8 +86,8 @@ target_exp_params:
   model_type: TargetEncoder
   patience: 550
   is_tuning: False
-  max_epochs: 5
-  init_task: False
+  max_epochs: 15000
+  init_task: True
   exp_name: train-targetencoder-lka-attention-normalized
   dataset_params:
     data_path: ./data
@@ -111,23 +111,23 @@ target_exp_params:
 
 # For training of wavemodel
 wave_exp_params:
-  LR: 0.001
-  weight_decay: 0.1
+  LR: 0.00000001
+  weight_decay: 0.8
   scheduler_gamma: 0.5
   swa_start: .6
   warm_start: False
-  betas: [.07, .99]
+  betas: [.07, .09]
   step_size: 1
-  log_epoch: 50
+  log_epoch: 100
   is_tuning: False
-  save_model: False
+  save_model: True
   loss_landscape: False
   patience: 350
-  channel_sz: 256
+  channel_sz: 64
   bandwidth: 400000000.
-  max_epochs: 1
-  init_task: False
-  exp_name: wavemodel-9x9-newloss-lkadilation
+  max_epochs: 50
+  init_task: True
+  exp_name: wavemodel-6x6-goodsidelobes
   dataset_params:
     data_path: ./data
     train_batch_size: 2

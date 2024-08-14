@@ -180,6 +180,8 @@ if __name__ == '__main__':
             plt.plot(db(clutter_corr))
             plt.plot(db(target_corr))
             plt.legend(['Clutter', 'Target'])
+            plt.xlabel('Lag')
+            plt.ylabel('Power (dB)')
 
             # Save the model structure out to a PNG
             # plot_model(mdl, to_file='./mdl_plot.png', show_shapes=True)

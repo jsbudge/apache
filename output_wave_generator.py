@@ -12,7 +12,6 @@ from data_converter.SDRParsing import load
 from simulib.platform_helper import SDRPlatform
 from utils import upsample, normalize, fs
 
-
 # Good SAR backgrounds
 # Airport
 # /data6/SAR_DATA/2024/08012024/SAR_08012024_132556.sar
@@ -26,11 +25,16 @@ from utils import upsample, normalize, fs
 pulse_length = 4.096e-6
 pulse_bw = 600e6
 target_target = 4
-fnme = '/data6/SAR_DATA/2024/08012024/SAR_08012024_132556.sar'
-wave_fnme = './data/humvee_airport.wave'
-save_file = False
+fnme = '/data6/SAR_DATA/2024/08012024/SAR_08012024_132744.sar'
+wave_fnme = './data/humvee_field.wave'
+save_file = True
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
+try:
+    with open('./data/target_ids.txt', 'r') as f:
+        target_ids = f.readlines()
+except:
+    print('Error with the target IDs.')
 
 print(f'WAVEFORM GENERATOR-------------------------\n'
       f'Pulse Length {pulse_length * 1e6:.2f}us\n'
@@ -104,16 +108,16 @@ print('Loaded clutter and target data...')
 # Run some plots for an idea of what's going on
 freqs = np.fft.fftshift(np.fft.fftfreq(fft_len, 1 / fs))
 plt.figure('Waveform PSD')
-plt.plot(freqs, db(np.fft.fftshift(waves[0])))
-plt.plot(freqs, db(np.fft.fftshift(waves[1])))
+for wave in range(waves.shape[0]):
+    plt.plot(freqs, db(np.fft.fftshift(waves[wave])))
 plt.plot(freqs, db(np.fft.fftshift(targets)), linestyle='--', linewidth=.3)
 plt.plot(freqs, db(np.fft.fftshift(clutter)), linestyle=':', linewidth=.3)
-plt.legend(['Waveform 1', 'Waveform 2', 'Target', 'Clutter'])
+plt.legend([f'Waveform {w}' for w in range(waves.shape[0])] + ['Target', 'Clutter'])
 plt.ylabel('Relative Power (dB)')
 plt.xlabel('Freq (Hz)')
 
-clutter_corr = np.fft.ifft(clutter * waves[0] * waves[0].conj() + clutter * waves[1] * waves[1].conj())
-target_corr = np.fft.ifft(targets * waves[0] * waves[0].conj() + targets * waves[1] * waves[1].conj())
+clutter_corr = np.fft.ifft(np.sum([clutter * waves[n] * waves[n].conj() for n in range(waves.shape[0])], axis=0))
+target_corr = np.fft.ifft(np.sum([targets * waves[n] * waves[n].conj() for n in range(waves.shape[0])], axis=0))
 plt.figure('MIMO Correlations')
 plt.plot(db(clutter_corr))
 plt.plot(db(target_corr))
@@ -130,18 +134,19 @@ linear = np.fft.fft(
 linear = linear / sum(linear * linear.conj())  # Unit energy
 inp_wave = waves[0] * waves[0].conj()
 autocorr1 = np.fft.fftshift(db(np.fft.ifft(upsample(inp_wave))))
-inp_wave = waves[1] * waves[1].conj()
-autocorr2 = np.fft.fftshift(db(np.fft.ifft(upsample(inp_wave))))
-inp_wave = waves[0] * waves[1].conj()
-autocorrcr = np.fft.fftshift(db(np.fft.ifft(upsample(inp_wave))))
-perf_autocorr = np.fft.fftshift(db(np.fft.ifft(upsample(linear * linear.conj()))))
 lags = np.arange(len(autocorr1)) - len(autocorr1) // 2
+perf_autocorr = np.fft.fftshift(db(np.fft.ifft(upsample(linear * linear.conj()))))
+if waves.shape[0] > 1:
+    inp_wave = waves[1] * waves[1].conj()
+    autocorr2 = np.fft.fftshift(db(np.fft.ifft(upsample(inp_wave))))
+    plt.plot(lags[len(lags) // 2 - 200:len(lags) // 2 + 200],
+             autocorr2[len(lags) // 2 - 200:len(lags) // 2 + 200] - autocorr2.max())
+    inp_wave = waves[0] * waves[1].conj()
+    autocorrcr = np.fft.fftshift(db(np.fft.ifft(upsample(inp_wave))))
+    plt.plot(lags[len(lags) // 2 - 200:len(lags) // 2 + 200],
+             autocorrcr[len(lags) // 2 - 200:len(lags) // 2 + 200] - autocorr1.max())
 plt.plot(lags[len(lags) // 2 - 200:len(lags) // 2 + 200],
          autocorr1[len(lags) // 2 - 200:len(lags) // 2 + 200] - autocorr1.max())
-plt.plot(lags[len(lags) // 2 - 200:len(lags) // 2 + 200],
-         autocorr2[len(lags) // 2 - 200:len(lags) // 2 + 200] - autocorr2.max())
-plt.plot(lags[len(lags) // 2 - 200:len(lags) // 2 + 200],
-         autocorrcr[len(lags) // 2 - 200:len(lags) // 2 + 200] - autocorr1.max())
 plt.plot(lags[len(lags) // 2 - 200:len(lags) // 2 + 200],
          perf_autocorr[len(lags) // 2 - 200:len(lags) // 2 + 200] - perf_autocorr.max(),
          linestyle='--')
@@ -149,11 +154,10 @@ plt.legend(['Waveform 1', 'Waveform 2', 'Cross Correlation', 'Linear Chirp'])
 plt.xlabel('Lag')
 
 plt.figure('Time Series')
-wave1 = waves.copy()
 plot_t = np.arange(nr) / fs
-plt.plot(plot_t, np.fft.ifft(wave1[0]).real[:nr])
-plt.plot(plot_t, np.fft.ifft(wave1[1]).real[:nr])
-plt.legend(['Waveform 1', 'Waveform 2'])
+for w in range(waves.shape[0]):
+    plt.plot(plot_t, np.fft.ifft(waves[w]).real[:nr])
+plt.legend([f'Waveform {w}' for w in range(waves.shape[0])])
 plt.xlabel('Time')
 
 wave_t = np.fft.ifft(waves[0])[:nr]
