@@ -3,8 +3,7 @@ from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import EarlyStopping, StochasticWeightAveraging
 import yaml
 from dataloaders import EncoderModule
-from experiment import VAExperiment
-from models import BetaVAE, InfoVAE, WAE_MMD, init_weights, Encoder
+from models import init_weights, Encoder
 import optuna
 import sys
 
@@ -61,10 +60,8 @@ def objective(trial: optuna.Trial):
     model = Encoder(**param_dict['model_params'], fft_len=param_dict['settings']['fft_len'], params=param_dict['exp_params'])
     model.apply(init_weights)
     trainer = Trainer(logger=False, max_epochs=5, enable_checkpointing=False,
-                      strategy='ddp', deterministic=True, devices=1, callbacks=
-                      [EarlyStopping(monitor='val_loss', patience=5,
-                                     check_finite=True),
-                       StochasticWeightAveraging(swa_lrs=expected_lr,
+                      strategy='ddp', deterministic=True, devices=[0], callbacks=
+                      [StochasticWeightAveraging(swa_lrs=expected_lr,
                                                  swa_epoch_start=param_dict['exp_params']['swa_start'])])
     trainer.fit(model, datamodule=data)
 

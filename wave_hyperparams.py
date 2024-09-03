@@ -1,5 +1,3 @@
-import pickle
-
 import torch
 from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import EarlyStopping, StochasticWeightAveraging

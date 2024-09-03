@@ -1,4 +1,3 @@
-from scipy.stats import rayleigh
 import numpy as np
 from data_converter.SDRParsing import SDRParse, load, loadXMLFile
 from tqdm import tqdm

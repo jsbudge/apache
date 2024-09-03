@@ -5,8 +5,7 @@ import torch
 from torch import nn, Tensor
 from pytorch_lightning import LightningModule
 from torch.nn import functional as nn_func
-from torchvision import transforms
-from layers import FourierFeature, WindowConvolution, Block1d, WindowGenerate, PulseLength, LKA1d
+from layers import FourierFeature, WindowGenerate, PulseLength, LKA1d
 
 
 def init_weights(m):
@@ -20,6 +19,10 @@ def init_weights(m):
 
 
 class FlatModule(LightningModule):
+    """
+    Base Module for different encoder models and generators. This adds
+    parameters to flatten the model to use in a loss landscape, should it be desired.
+    """
 
     def __init__(self):
         super(FlatModule, self).__init__()
@@ -302,60 +305,3 @@ class GeneratorModel(FlatModule):
                                                                          torch.conj(complex_wave),
                                                                          dim=1))[:, None])  # Unit energy calculation
         return gen_waveform
-
-
-class RCSModel(FlatModule):
-    def __init__(self,
-                 ) -> None:
-        super(RCSModel, self).__init__()
-
-        nchan = 12
-
-        self.optical_stack = nn.Sequential(
-            nn.Conv2d(nchan, nchan, 3, 1, 1),
-            nn.GELU(),
-            nn.Conv2d(nchan, nchan, 4, 2, 1),
-            nn.GELU(),
-            nn.Conv2d(nchan, nchan, 4, 2, 1),
-            nn.GELU(),
-            nn.Conv2d(nchan, nchan, 3, 1, 1),
-            nn.GELU(),
-        )
-
-        self.optical_input = nn.Conv2d(3, nchan, 1, 1, 0)
-
-        self.optical_attention = nn.Sequential(
-            AttentionConv(3, nchan, 3, 1, 1),
-        )
-
-        self.pose_stack = nn.Sequential(
-            nn.Linear(7 * 6, nchan),
-            nn.GELU(),
-            nn.Linear(nchan, nchan),
-            nn.Tanh(),
-        )
-
-        self.comb_stack = nn.Sequential(
-            nn.Conv2d(nchan, nchan, 3, 1, 1),
-            nn.GELU(),
-            nn.Conv2d(nchan, nchan, 3, 1, 1),
-            nn.GELU(),
-            nn.ConvTranspose2d(nchan, nchan, 4, 2, 1),
-            nn.GELU(),
-            nn.ConvTranspose2d(nchan, nchan, 4, 2, 1),
-            nn.GELU(),
-            nn.Conv2d(nchan, 1, 1, 1, 0),
-            nn.Sigmoid(),
-        )
-
-        self.loss = nn.BCELoss()
-        self.nchan = nchan
-
-    def forward(self, opt_data: torch.tensor, pose_data: torch.tensor) -> torch.tensor:
-        w = self.pose_stack(pose_data).view(-1, self.nchan, 1, 1)
-        x = self.optical_stack(self.optical_input(opt_data) * self.optical_attention(opt_data))
-        x = x * w
-        return self.comb_stack(x).swapaxes(2, 3)
-
-    def loss_function(self, *args, **kwargs) -> dict:
-        return {'loss': self.loss(args[0], args[1])}

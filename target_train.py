@@ -1,4 +1,3 @@
-from glob import glob
 from clearml import Task
 import torch
 from pytorch_lightning import Trainer, loggers, seed_everything
@@ -8,7 +7,6 @@ import yaml
 from dataloaders import TargetEncoderModule
 from models import init_weights, TargetEncoder
 import matplotlib.pyplot as plt
-from pathlib import Path
 import numpy as np
 
 

@@ -1,18 +1,13 @@
-import contextlib
-import copy
 from glob import glob
 import os
 import numpy as np
 from pathlib import Path
-from simulib.simulation_functions import llh2enu, db, azelToVec
+from simulib.simulation_functions import db, azelToVec
 from simulib.cuda_mesh_kernels import readCombineMeshFile, genRangeProfileFromMesh
 from simulib.platform_helper import SDRPlatform
-from simulib.cuda_kernels import cpudiff, getMaxThreads, applyRadiationPatternCPU
+from simulib.cuda_kernels import cpudiff, getMaxThreads
 from generate_trainingdata import formatTargetClutterData
-from models import Encoder
-import torch
 import matplotlib.pyplot as plt
-import plotly.express as px
 import plotly.io as pio
 from tqdm import tqdm
 import yaml
@@ -26,11 +21,23 @@ c0 = 299792458.0
 TAC = 125e6
 DTR = np.pi / 180
 inch_to_m = .0254
+TARGET_PROFILE_MIN_BEAMWIDTH = 0.19634954
 
 
 def getSpectrumFromTargetProfile(sdr, rp, ts, tcdata, fft_len):
+    """
+    Given a target profile matrix, generates pulses for a sample set of times and a trajectory.
+    :param sdr: SDRParse object for trajectory.
+    :param rp: RadarPlatform object to interpolate correct trajectory values.
+    :param ts: Array of sample times (GPS times)
+    :param tcdata: Target profile matrix.
+    :param fft_len: Length of the FFT to return.
+    :return: Match filtered, frequency domain data for the target profile.
+    """
     pulse = np.fft.fft(sdr[0].cal_chirp, fft_len)
     mfilt = sdr.genMatchedFilter(0, fft_len=fft_len) / 1e4
+
+    # Generate the pans and tilts that correspond to columns in the target profile matrix.
     pans, tilts = np.meshgrid(np.linspace(0, 2 * np.pi, 16, endpoint=False),
                               np.linspace(np.pi / 2 - .1, -np.pi / 2 + .1, 16))
     pan = pans.flatten()
@@ -43,9 +50,10 @@ def getSpectrumFromTargetProfile(sdr, rp, ts, tcdata, fft_len):
     sdr_pan = sdr_pan + 2 * np.pi
     sdr_tilt = rp.tilt(ts)
     sdr_tilt = sdr_tilt + 2 * np.pi
-    tpsd = np.array([tcdata[:, np.logical_and(abs(cpudiff(pan, sdr_pan[n])) < 0.19634954,
-                                              abs(cpudiff(tilt, sdr_tilt[n])) < 0.19634954)].flatten() for n in
-                     range(len(ts))])
+
+    tpsd = np.array([tcdata[:, np.logical_and(abs(cpudiff(pan, sdr_pan[n])) < TARGET_PROFILE_MIN_BEAMWIDTH,
+                                              abs(cpudiff(tilt, sdr_tilt[n])) < TARGET_PROFILE_MIN_BEAMWIDTH)].flatten()
+                     for n in range(len(ts))])
     tpsd = np.fft.fft(tpsd, fft_len, axis=1) * 1e12 * pulse * mfilt
     return tpsd
 

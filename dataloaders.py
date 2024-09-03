@@ -10,8 +10,6 @@ import numpy as np
 from multiprocessing import cpu_count
 from sklearn.model_selection import train_test_split
 
-from models import InfoVAE, WAE_MMD, BetaVAE
-
 
 class PulseDataset(Dataset):
     def __init__(self, root_dir, fft_len, split=1., single_example=False, is_val=False, seed=42):
@@ -356,12 +354,3 @@ if __name__ == '__main__':
             param_dict = yaml.safe_load(file)
         except yaml.YAMLError as exc:
             print(exc)
-
-    if param_dict['exp_params']['model_type'] == 'InfoVAE':
-        model = InfoVAE(**param_dict['model_params'])
-    elif param_dict['exp_params']['model_type'] == 'WAE_MMD':
-        model = WAE_MMD(**param_dict['model_params'])
-    else:
-        model = BetaVAE(**param_dict['model_params'])
-    print('Setting up model...')
-    model.load_state_dict(torch.load('./model/inference_model.state'))

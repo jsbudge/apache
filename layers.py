@@ -1,14 +1,11 @@
-from typing import List, Any, TypeVar, Optional, Tuple
+from typing import Any, Optional, Tuple
 import math
 import numpy as np
 import torch
-from torch import nn
+from torch import nn, Tensor
 from pytorch_lightning import LightningModule
-from torch.nn import functional as F
+from torch.nn import functional as tf
 from torch.distributions import Normal
-from simulib.simulation_functions import genPulse
-
-Tensor = TypeVar('torch.tensor')
 
 
 def gaussian_kernel_1d(sigma: float, num_sigmas: float = 3.) -> torch.Tensor:
@@ -24,8 +21,8 @@ def mu_2d(img: torch.Tensor, sigma: float) -> tuple[torch.Tensor, torch.Tensor]:
 
     padding = len(kernel_1d) // 2  # Ensure that image size does not change
     # Convolve along columns and rows
-    mu_x = F.conv2d(img, weight=kernel_1d.view(1, 1, -1, 1), padding=(padding, 0))
-    mu_y = F.conv2d(img, weight=kernel_1d.view(1, 1, 1, -1), padding=(0, padding))
+    mu_x = tf.conv2d(img, weight=kernel_1d.view(1, 1, -1, 1), padding=(padding, 0))
+    mu_y = tf.conv2d(img, weight=kernel_1d.view(1, 1, 1, -1), padding=(0, padding))
     return mu_x, mu_y
 
 
@@ -70,7 +67,7 @@ class Linear2d(LightningModule):
     def forward(self, x):
         x = x.view(-1, self.total_weights)
         x = self.linear(x)
-        x = F.leaky_relu(x)
+        x = tf.leaky_relu(x)
         x = x.view(-1, self.nchan, self.width, self.height)
         return x
 
@@ -93,7 +90,7 @@ class SelfAttention(LightningModule):
         size = x.size()
         x = x.view(*size[:2], -1)
         f, g, h = self.query(x), self.key(x), self.value(x)
-        beta = F.softmax(torch.bmm(f.transpose(1, 2), g), dim=1)
+        beta = tf.softmax(torch.bmm(f.transpose(1, 2), g), dim=1)
         o = self.gamma * torch.bmm(h, beta) + x
         return o.view(*size).contiguous()
 
@@ -113,7 +110,7 @@ class STFTAttention(LightningModule):
 
     def forward(self, x):
         f, g = self.query(x[:, :, 0, :]), self.key(x[:, :, :, 0])
-        beta = self.value(F.softmax(torch.bmm(g.transpose(1, 2), f), dim=1).unsqueeze(1))
+        beta = self.value(tf.softmax(torch.bmm(g.transpose(1, 2), f), dim=1).unsqueeze(1))
         o = self.gamma * beta + x
         return o.contiguous()
 
@@ -129,7 +126,7 @@ class LSTMAttention(LightningModule):
         # Calculate the attention scores.
         scores = torch.bmm(encoder_outputs, decoder_hidden.unsqueeze(2)).squeeze(2)  # (batch_size, seq_len)
 
-        attn_weights = F.softmax(scores, dim=1)  # (batch_size, seq_len)
+        attn_weights = tf.softmax(scores, dim=1)  # (batch_size, seq_len)
 
         context_vector = torch.bmm(attn_weights.unsqueeze(1), encoder_outputs).squeeze(1)  # (batch_size, hidden_dim)
 
@@ -208,7 +205,7 @@ class AttentionConv(LightningModule):
     def forward(self, x):
         batch, channels, height, width = x.size()
 
-        padded_x = F.pad(x, [self.padding, self.padding, self.padding, self.padding])
+        padded_x = tf.pad(x, [self.padding, self.padding, self.padding, self.padding])
         q_out = self.query_conv(x)
         k_out = self.key_conv(padded_x)
         v_out = self.value_conv(padded_x)
@@ -225,7 +222,7 @@ class AttentionConv(LightningModule):
         q_out = q_out.view(batch, self.groups, self.out_channels // self.groups, height, width, 1)
 
         out = q_out * k_out
-        out = F.softmax(out, dim=-1)
+        out = tf.softmax(out, dim=-1)
         out = torch.einsum('bnchwk,bnchwk -> bnchw', out, v_out).view(batch, -1, height, width)
 
         return out
@@ -437,7 +434,7 @@ class ScaledDotProductAttention(LightningModule):
         if mask is not None:
             score.masked_fill_(mask.view(score.size()), -float('Inf'))
 
-        attn = F.softmax(score, -1)
+        attn = tf.softmax(score, -1)
         context = torch.bmm(attn, value)
         return context, attn
 
@@ -454,7 +451,7 @@ class DotProductAttention(LightningModule):
         batch_size, hidden_dim, input_size = query.size(0), query.size(2), value.size(1)
 
         score = torch.bmm(query, value.transpose(1, 2))
-        attn = F.softmax(score.view(-1, input_size), dim=1).view(batch_size, -1, input_size)
+        attn = tf.softmax(score.view(-1, input_size), dim=1).view(batch_size, -1, input_size)
         context = torch.bmm(attn, value)
 
         return context, attn
@@ -489,7 +486,7 @@ class AdditiveAttention(LightningModule):
 
     def forward(self, query: Tensor, key: Tensor, value: Tensor) -> Tuple[Tensor, Tensor]:
         score = self.score_proj(torch.tanh(self.key_proj(key) + self.query_proj(query) + self.bias)).squeeze(-1)
-        attn = F.softmax(score, dim=-1)
+        attn = tf.softmax(score, dim=-1)
         context = torch.bmm(attn.unsqueeze(1), value)
         return context, attn
 
@@ -548,7 +545,7 @@ class LocationAwareAttention(LightningModule):
             score = torch.sigmoid(score)
             attn = torch.div(score, score.sum(dim=-1).unsqueeze(dim=-1))
         else:
-            attn = F.softmax(score, dim=-1)
+            attn = tf.softmax(score, dim=-1)
 
         context = torch.bmm(attn.unsqueeze(dim=1), value).squeeze(dim=1)  # Bx1xT X BxTxD => Bx1xD => BxD
 
@@ -608,7 +605,7 @@ class MultiHeadLocationAwareAttention(LightningModule):
         value = value.contiguous().view(-1, seq_len, self.dim)
 
         score = self.score_proj(torch.tanh(value + query + loc_energy + self.bias)).squeeze(2)
-        attn = F.softmax(score, dim=1)
+        attn = tf.softmax(score, dim=1)
 
         value = value.view(batch_size, seq_len, self.num_heads, self.dim).permute(0, 2, 1, 3)
         value = value.contiguous().view(-1, seq_len, self.dim)
@@ -663,7 +660,7 @@ class MultiHeadAttention(LightningModule):
 
         assert d_model % num_heads == 0, "d_model % num_heads should be zero."
 
-        self.d_head = int(d_model / num_heads)
+        self.d_head = d_model // num_heads
         self.num_heads = num_heads
         self.scaled_dot_attn = ScaledDotProductAttention(self.d_head)
         self.query_proj = nn.Linear(d_model, self.d_head * num_heads)
@@ -728,7 +725,7 @@ class RelativeMultiHeadAttention(LightningModule):
         super(RelativeMultiHeadAttention, self).__init__()
         assert d_model % num_heads == 0, "d_model % num_heads should be zero."
         self.d_model = d_model
-        self.d_head = int(d_model / num_heads)
+        self.d_head = d_model // num_heads
         self.num_heads = num_heads
         self.sqrt_dim = math.sqrt(d_model)
 
@@ -770,7 +767,7 @@ class RelativeMultiHeadAttention(LightningModule):
             mask = mask.unsqueeze(1)
             score.masked_fill_(mask, -1e9)
 
-        attn = F.softmax(score, -1)
+        attn = tf.softmax(score, -1)
         attn = self.dropout(attn)
 
         context = torch.matmul(attn, value).transpose(1, 2)
@@ -821,7 +818,7 @@ class CustomizingAttention(LightningModule):
         super(CustomizingAttention, self).__init__()
         self.hidden_dim = hidden_dim
         self.num_heads = num_heads
-        self.dim = int(hidden_dim / num_heads)
+        self.dim = hidden_dim // num_heads
         self.scaled_dot_attn = ScaledDotProductAttention(self.dim)
         self.conv1d = nn.Conv1d(1, conv_out_channel, kernel_size=3, padding=1)
         self.query_proj = nn.Linear(hidden_dim, self.dim * num_heads, bias=True)

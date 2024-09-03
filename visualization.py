@@ -1,8 +1,6 @@
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
-from generate_trainingdata import getVAECov
-from models import InfoVAE, BetaVAE, WAE_MMD
 from glob import glob
 from torchvision import transforms
 from simulib.simulation_functions import db
@@ -10,25 +8,14 @@ import yaml
 from celluloid import Camera
 from data_converter.SDRParsing import load
 from tqdm import tqdm
-from jax.numpy import fft as jaxfft
 from sklearn.decomposition import KernelPCA
 import matplotlib.animation as animation
-
-from waveform_model import getTrainTransforms
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 with open('./vae_config.yaml') as y:
     param_dict = yaml.safe_load(y.read())
 
 batch_sz = param_dict['settings']['batch_sz']
-
-# Get the model, experiment, logger set up
-if param_dict['exp_params']['model_type'] == 'InfoVAE':
-    model = InfoVAE(**param_dict['model_params'])
-elif param_dict['exp_params']['model_type'] == 'WAE_MMD':
-    model = WAE_MMD(**param_dict['model_params'])
-else:
-    model = BetaVAE(**param_dict['model_params'])
 model.load_state_dict(torch.load('./model/inference_model.state'))
 model.eval()  # Set to inference mode
 model.to(device)

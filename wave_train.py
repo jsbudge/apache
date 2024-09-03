@@ -1,9 +1,9 @@
 import pickle
 from utils import upsample, normalize, fs
 import numpy as np
-from simulib.simulation_functions import genPulse, findPowerOf2, db
+from simulib.simulation_functions import genPulse, db
 import matplotlib.pyplot as plt
-from scipy.signal import stft, istft
+from scipy.signal import stft
 import torch
 from pytorch_lightning import Trainer, loggers, seed_everything
 from pytorch_lightning.callbacks import EarlyStopping, StochasticWeightAveraging

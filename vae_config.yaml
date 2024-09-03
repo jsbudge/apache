@@ -35,28 +35,28 @@ generate_data_settings:
 
 # This is for setting up training of autoencoder
 exp_params:
-  LR: 0.000001
-  weight_decay: 0.0
+  LR: 0.00000001
+  weight_decay: 0.2
   scheduler_gamma: 0.5
   betas: [.07, .9]
   step_size: 1
   swa_start: .5
   log_epoch: 50
   save_model: True
-  transform_data: True
-  warm_start: True
+  transform_data: False
+  warm_start: False
   loss_landscape: False
   output_images: False
   model_type: Encoder
   patience: 150
   is_tuning: False
-  max_epochs: 1
+  max_epochs: 150
   exp_name: train-latent612-channel64
   init_task: False
   dataset_params:
     data_path: ./data
-    train_batch_size: 2
-    val_batch_size: 2
+    train_batch_size: 1
+    val_batch_size: 1
     pin_memory: False
     split: .7
     single_example: False
@@ -66,8 +66,8 @@ exp_params:
     noise_level: 0.
   model_params:
     in_channels: 2
-    latent_dim: 612
-    channel_sz: 72
+    latent_dim: 1024
+    channel_sz: 2
     
 # This is for setting up training of target autoencoder
 target_exp_params:
@@ -111,8 +111,8 @@ target_exp_params:
 
 # For training of wavemodel
 wave_exp_params:
-  LR: 0.00000001
-  weight_decay: 0.8
+  LR: 0.00001
+  weight_decay: 0.9
   scheduler_gamma: 0.5
   swa_start: .6
   warm_start: False
@@ -122,10 +122,10 @@ wave_exp_params:
   is_tuning: False
   save_model: True
   loss_landscape: False
-  patience: 350
+  patience: 5
   channel_sz: 64
   bandwidth: 400000000.
-  max_epochs: 50
+  max_epochs: 500
   init_task: True
   exp_name: wavemodel-6x6-goodsidelobes
   dataset_params:
