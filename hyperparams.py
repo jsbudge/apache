@@ -31,9 +31,9 @@ with open('./vae_config.yaml') as y:
 
 def objective(trial: optuna.Trial):
 
-    batch_sz = trial.suggest_categorical('batch_size', [128, 256])
+    batch_sz = trial.suggest_categorical('batch_size', [2, 8, 16])
     weight_decay = trial.suggest_float('weight_decay', 0.0, .99, step=.01)
-    lr = trial.suggest_categorical('lr', [.0005, .005, .0001, .01, .00001, .000001, .00005])
+    lr = trial.suggest_categorical('lr', [.00000001, .001, .0001, .01, .00001, .000001, .0000001])
     swa_start = trial.suggest_float('swa_start', .1, .9, step=.1)
     scheduler_gamma = trial.suggest_float('scheduler_gamma', .1, .99, step=.01)
     beta0 = trial.suggest_float('beta0', .01, .99, step=.01)
@@ -69,7 +69,7 @@ def objective(trial: optuna.Trial):
 
 
 study = optuna.create_study()
-study.optimize(objective, n_trials=2000, callbacks=[log_callback])
+study.optimize(objective, n_trials=20, callbacks=[log_callback])
 
 print(study.best_params)
 
