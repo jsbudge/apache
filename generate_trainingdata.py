@@ -150,6 +150,10 @@ if __name__ == '__main__':
             p_stdscale = np.repeat(per_pulse_std, 2).astype(np.float32)
             # Normalize each pulse against itself; each one has mu of zero and std of one
             pulse_data[valids, :] = (pulse_data[valids, :] - per_pulse_mu) / per_pulse_std
+            # Shift the data so it's centered around zero (for the autoencoder)
+            if sdr_f[0].baseband_fc != 0.:
+                shift_bin = int(sdr_f[0].baseband_fc / sdr_f[0].fs * fft_len)
+                pulse_data = np.roll(pulse_data, -shift_bin, 0)
             inp_data = formatTargetClutterData(pulse_data.T, fft_len).astype(np.float32)
             inp_data = np.concatenate((inp_data, p_muscale.reshape(-1, 2, 1),
                                        p_stdscale.reshape(-1, 2, 1)), axis=2)

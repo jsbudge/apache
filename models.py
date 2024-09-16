@@ -67,7 +67,7 @@ class Encoder(FlatModule):
                 nn.LayerNorm(lin_sz),
                 LKA1d(curr_channel_sz, kernel_sizes=(first_layer_size, 129), dilation=6),
                 nn.LayerNorm(lin_sz),
-                LKA1d(curr_channel_sz, kernel_sizes=(first_layer_size, 129), dilation=3),
+                LKA1d(curr_channel_sz, kernel_sizes=(first_layer_size, 257), dilation=3),
                 nn.LayerNorm(lin_sz),
                 nn.Conv1d(curr_channel_sz, next_channel_sz, 1, 1, 0),
                 nn.GELU(),
@@ -86,7 +86,7 @@ class Encoder(FlatModule):
                 nn.LayerNorm(dec_lin_sz),
                 LKATranspose1d(next_channel_sz, kernel_sizes=(first_layer_size, 129), dilation=6),
                 nn.LayerNorm(dec_lin_sz),
-                LKATranspose1d(next_channel_sz, kernel_sizes=(first_layer_size, 129), dilation=3),
+                LKATranspose1d(next_channel_sz, kernel_sizes=(first_layer_size, 257), dilation=3),
                 nn.LayerNorm(dec_lin_sz),
                 nn.ConvTranspose1d(next_channel_sz, curr_channel_sz, 1, 1, 0),
                 nn.GELU(),
@@ -131,6 +131,8 @@ class Encoder(FlatModule):
         )
         self.decoder_output = nn.Sequential(
             nn.ConvTranspose1d(channel_sz, channel_sz, 3, 1, 1),
+            nn.ConvTranspose1d(channel_sz, channel_sz, 1, 1, 0),
+            nn.ConvTranspose1d(channel_sz, channel_sz, 1, 1, 0),
             nn.Conv1d(channel_sz, in_channels, 1, 1, 0),
         )
 
@@ -154,13 +156,15 @@ class Encoder(FlatModule):
         result = self.decoder_inflate(result)
         for conv, red, att in zip(self.decoder_conv, self.decoder_reduce, self.decoder_attention):
             result = conv(red(result) + att(result))
-        return self.decoder_output(result) * 1000
+        return self.decoder_output(result)
 
     def forward(self, inp: Tensor, **kwargs) -> Tensor:
         z = self.encode(inp)
         return self.decode(z)
 
     def loss_function(self, y, y_pred):
+        # y = y / torch.sqrt(torch.sum(y * torch.conj(y), dim=1))[:, None]
+        # y_pred = y_pred / torch.sqrt(torch.sum(y_pred * torch.conj(y_pred), dim=1))[:, None]
         return tf.mse_loss(y, y_pred)
 
     def on_fit_start(self) -> None:

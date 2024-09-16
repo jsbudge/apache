@@ -118,7 +118,7 @@ if __name__ == '__main__':
             mesh.scale(1 / scaling, center=(0, 0, 0))
 
             # Apply random rotations and scalings for augmenting of training data
-            for i in range(1):
+            for i in range(200):
                 if i != 0:
                     mesh.rotate(
                         mesh.get_rotation_matrix_from_xyz((np.random.rand() * 2 * np.pi, np.random.rand() * 2 * np.pi,
@@ -184,7 +184,7 @@ if __name__ == '__main__':
                     nblock += subhead[2]
 
             # Generate target profile on CPU
-            for i in range(1):
+            for i in range(200):
                 rotmat = mesh.get_rotation_matrix_from_xyz((np.random.rand() * 2 * np.pi, np.random.rand() * 2 * np.pi,
                                                    np.random.rand() * 2 * np.pi))
                 pd = np.zeros((256, 256), dtype=np.complex128)
@@ -253,6 +253,10 @@ if __name__ == '__main__':
                         np.float32)
                     tpsd[:, valids] = (tpsd[:, valids] - config['exp_params']['dataset_params']['mu']) / \
                                       config['exp_params']['dataset_params']['var']
+                    # Shift the data so it's centered around zero (for the autoencoder)
+                    if sdr_ch[0].baseband_fc != 0.:
+                        shift_bin = int(sdr_ch[0].baseband_fc / sdr_ch[0].fs * fft_len)
+                        pulse_data = np.roll(tpsd, -shift_bin, 1)
                     inp_data = formatTargetClutterData(tpsd, fft_len).astype(np.float32)
                     inp_data = np.concatenate((inp_data, p_muscale.reshape(-1, 2, 1), p_stdscale.reshape(-1, 2, 1)),
                                               axis=2)

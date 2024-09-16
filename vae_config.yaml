@@ -29,13 +29,13 @@ settings:
 generate_data_settings:
   iterations: 500
   use_local_storage: True
-  save_files: False
+  save_files: True
   local_path: ./data
   obj_path: /home/jeff/Documents/target_meshes
 
 # This is for setting up training of autoencoder
 exp_params:
-  LR: 0.00000001
+  LR: 0.00001
   weight_decay: 0.2
   scheduler_gamma: 0.5
   betas: [.07, .9]
@@ -78,7 +78,7 @@ target_exp_params:
   step_size: 1
   swa_start: .7
   log_epoch: 100
-  save_model: True
+  save_model: False
   transform_data: True
   warm_start: True
   loss_landscape: False
@@ -86,8 +86,8 @@ target_exp_params:
   model_type: TargetEncoder
   patience: 550
   is_tuning: False
-  max_epochs: 15000
-  init_task: True
+  max_epochs: 2
+  init_task: False
   exp_name: train-targetencoder-lka-attention-normalized
   dataset_params:
     data_path: ./data
