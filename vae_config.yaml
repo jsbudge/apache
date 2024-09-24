@@ -35,8 +35,8 @@ generate_data_settings:
 
 # This is for setting up training of autoencoder
 exp_params:
-  LR: 0.00001
-  weight_decay: 0.2
+  LR: 0.001
+  weight_decay: 0.3
   scheduler_gamma: 0.5
   betas: [.07, .9]
   step_size: 1
@@ -44,13 +44,13 @@ exp_params:
   log_epoch: 50
   save_model: True
   transform_data: False
-  warm_start: False
+  warm_start: True
   loss_landscape: False
   output_images: False
   model_type: Encoder
   patience: 150
   is_tuning: False
-  max_epochs: 150
+  max_epochs: 15
   exp_name: train-latent612-channel64
   init_task: False
   dataset_params:
@@ -66,7 +66,7 @@ exp_params:
     noise_level: 0.
   model_params:
     in_channels: 2
-    latent_dim: 1024
+    latent_dim: 2048
     channel_sz: 2
     
 # This is for setting up training of target autoencoder

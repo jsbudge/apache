@@ -40,7 +40,7 @@ class Encoder(FlatModule):
         self.automatic_optimization = False
         levels = 3
         fft_scaling = 2 ** levels
-        first_layer_size = 129
+        first_layer_size = 257
 
         # Encoder
         self.encoder_inflate = nn.Sequential(
@@ -63,17 +63,17 @@ class Encoder(FlatModule):
                 nn.GELU(),
             ))
             self.encoder_conv.append(nn.Sequential(
-                LKA1d(curr_channel_sz, kernel_sizes=(first_layer_size, 65), dilation=9),
+                LKA1d(curr_channel_sz, kernel_sizes=(first_layer_size, 65), dilation=126),
                 nn.LayerNorm(lin_sz),
-                LKA1d(curr_channel_sz, kernel_sizes=(first_layer_size, 129), dilation=6),
+                LKA1d(curr_channel_sz, kernel_sizes=(first_layer_size, 129), dilation=66),
                 nn.LayerNorm(lin_sz),
-                LKA1d(curr_channel_sz, kernel_sizes=(first_layer_size, 257), dilation=3),
+                LKA1d(curr_channel_sz, kernel_sizes=(first_layer_size, 257), dilation=66),
                 nn.LayerNorm(lin_sz),
                 nn.Conv1d(curr_channel_sz, next_channel_sz, 1, 1, 0),
                 nn.GELU(),
             ))
             self.encoder_attention.append(nn.Sequential(
-                LKA1d(curr_channel_sz, kernel_sizes=(first_layer_size, 9), dilation=12),
+                LKA1d(curr_channel_sz, kernel_sizes=(first_layer_size, 65), dilation=120),
                 nn.Conv1d(curr_channel_sz, curr_channel_sz, 4, 2, 1),
                 nn.Sigmoid(),
             ))
@@ -82,17 +82,17 @@ class Encoder(FlatModule):
                 nn.GELU(),
             ))
             decoder_conv.append(nn.Sequential(
-                LKATranspose1d(next_channel_sz, kernel_sizes=(first_layer_size, 65), dilation=9),
+                LKATranspose1d(next_channel_sz, kernel_sizes=(first_layer_size, 65), dilation=126),
                 nn.LayerNorm(dec_lin_sz),
-                LKATranspose1d(next_channel_sz, kernel_sizes=(first_layer_size, 129), dilation=6),
+                LKATranspose1d(next_channel_sz, kernel_sizes=(first_layer_size, 129), dilation=66),
                 nn.LayerNorm(dec_lin_sz),
-                LKATranspose1d(next_channel_sz, kernel_sizes=(first_layer_size, 257), dilation=3),
+                LKATranspose1d(next_channel_sz, kernel_sizes=(first_layer_size, 257), dilation=66),
                 nn.LayerNorm(dec_lin_sz),
                 nn.ConvTranspose1d(next_channel_sz, curr_channel_sz, 1, 1, 0),
                 nn.GELU(),
             ))
             decoder_attention.append(nn.Sequential(
-                LKATranspose1d(next_channel_sz, kernel_sizes=(first_layer_size, 9), dilation=12),
+                LKATranspose1d(next_channel_sz, kernel_sizes=(first_layer_size, 65), dilation=120),
                 nn.ConvTranspose1d(next_channel_sz, next_channel_sz, 4, 2, 1),
                 nn.Sigmoid(),
             ))
@@ -124,16 +124,14 @@ class Encoder(FlatModule):
         self.decoder_attention = nn.ModuleList(decoder_attention)
         self.decoder_reduce = nn.ModuleList(decoder_reduce)
         self.decoder_inflate = nn.Sequential(
-            nn.ConvTranspose1d(1, channel_sz * 2**levels, 1, 1, 0),
+                nn.ConvTranspose1d(1, channel_sz * 2**levels, 1, 1, 0),
             nn.GELU(),
             nn.ConvTranspose1d(channel_sz * 2**levels, channel_sz * 2**levels, 3, 1, 1),
             nn.GELU(),
         )
         self.decoder_output = nn.Sequential(
-            nn.ConvTranspose1d(channel_sz, channel_sz, 3, 1, 1),
-            nn.ConvTranspose1d(channel_sz, channel_sz, 1, 1, 0),
-            nn.ConvTranspose1d(channel_sz, channel_sz, 1, 1, 0),
-            nn.Conv1d(channel_sz, in_channels, 1, 1, 0),
+            nn.ConvTranspose1d(channel_sz, in_channels, 1, 1, 0),
+            nn.LayerNorm(fft_len)
         )
 
         self.example_input_array = torch.randn((1, 2, self.fft_len))
@@ -163,8 +161,6 @@ class Encoder(FlatModule):
         return self.decode(z)
 
     def loss_function(self, y, y_pred):
-        # y = y / torch.sqrt(torch.sum(y * torch.conj(y), dim=1))[:, None]
-        # y_pred = y_pred / torch.sqrt(torch.sum(y_pred * torch.conj(y_pred), dim=1))[:, None]
         return tf.mse_loss(y, y_pred)
 
     def on_fit_start(self) -> None:
