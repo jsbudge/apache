@@ -40,7 +40,7 @@ class Encoder(FlatModule):
         self.automatic_optimization = False
         levels = 3
         fft_scaling = 2 ** levels
-        first_layer_size = 257
+        first_layer_size = 513
 
         # Encoder
         self.encoder_inflate = nn.Sequential(
