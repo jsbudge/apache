@@ -34,7 +34,7 @@ def getModelTrainerDataModule(a_params):
                        ep['scheduler_gamma'] ** (ep['max_epochs'] *
                                                          ep['swa_start'])), 1e-9)
     a_trainer = Trainer(logger=logger, max_epochs=ep['max_epochs'],
-                      log_every_n_steps=ep['log_epoch'], devices=[0], callbacks=
+                      log_every_n_steps=ep['log_epoch'], devices=[1], callbacks=
                       [EarlyStopping(monitor='val_loss', patience=ep['patience'],
                                      check_finite=True),
                        StochasticWeightAveraging(swa_lrs=expected_lr, swa_epoch_start=ep['swa_start'])])

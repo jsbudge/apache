@@ -35,15 +35,15 @@ generate_data_settings:
 
 # This is for setting up training of autoencoder
 exp_params:
-  LR: 0.00001
-  weight_decay: 0.1
+  LR: 0.001
+  weight_decay: 0.01
   scheduler_gamma: 0.5
   betas: [.07, .9]
   step_size: 1
   swa_start: .5
   log_epoch: 50
   save_model: True
-  transform_data: False
+  transform_data: True
   warm_start: True
   loss_landscape: False
   output_images: False
@@ -66,7 +66,7 @@ exp_params:
     noise_level: 0.
   model_params:
     in_channels: 2
-    latent_dim: 1024
+    latent_dim: 768
     channel_sz: 8
     
 # This is for setting up training of target autoencoder

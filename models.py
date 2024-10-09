@@ -38,7 +38,7 @@ class Encoder(FlatModule):
         self.channel_sz = channel_sz
         self.in_channels = in_channels
         self.automatic_optimization = False
-        levels = 3
+        levels = 2
         fft_scaling = 2 ** levels
         first_layer_size = 513
 
@@ -82,14 +82,15 @@ class Encoder(FlatModule):
                 nn.GELU(),
             ))
             decoder_conv.append(nn.Sequential(
-                LKATranspose1d(next_channel_sz, kernel_sizes=(first_layer_size, 65), dilation=126),
-                nn.LayerNorm(dec_lin_sz),
-                LKATranspose1d(next_channel_sz, kernel_sizes=(first_layer_size, 129), dilation=66),
-                nn.LayerNorm(dec_lin_sz),
-                LKATranspose1d(next_channel_sz, kernel_sizes=(first_layer_size, 257), dilation=66),
-                nn.LayerNorm(dec_lin_sz),
                 nn.ConvTranspose1d(next_channel_sz, curr_channel_sz, 1, 1, 0),
                 nn.GELU(),
+                LKATranspose1d(curr_channel_sz, kernel_sizes=(first_layer_size, 257), dilation=66),
+                nn.LayerNorm(dec_lin_sz),
+                LKATranspose1d(curr_channel_sz, kernel_sizes=(first_layer_size, 129), dilation=66),
+                nn.LayerNorm(dec_lin_sz),
+                LKATranspose1d(curr_channel_sz, kernel_sizes=(first_layer_size, 65), dilation=126),
+                nn.LayerNorm(dec_lin_sz),
+
             ))
             decoder_attention.append(nn.Sequential(
                 LKATranspose1d(next_channel_sz, kernel_sizes=(first_layer_size, 65), dilation=120),
@@ -161,7 +162,15 @@ class Encoder(FlatModule):
         return self.decode(z)
 
     def loss_function(self, y, y_pred):
-        return tf.mse_loss(y, y_pred)
+        target_spectrum = torch.complex(y[:, 0, :], y[:, 1, :])
+        tspec_mag = torch.sqrt(torch.sum(target_spectrum * torch.conj(target_spectrum),
+                                                                 dim=1))[:, None]
+        target_spectrum = target_spectrum / tspec_mag
+        enc_spectrum = torch.complex(y_pred[:, 0, :], y_pred[:, 1, :])
+        enc_mag = torch.sqrt(torch.sum(enc_spectrum * torch.conj(enc_spectrum),
+                                                                 dim=1))[:, None]
+        enc_spectrum = enc_spectrum / enc_mag
+        return tf.mse_loss(torch.view_as_real(target_spectrum), torch.view_as_real(enc_spectrum))
 
     def on_fit_start(self) -> None:
         if self.trainer.is_global_zero and self.logger:
