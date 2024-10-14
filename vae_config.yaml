@@ -126,7 +126,7 @@ wave_exp_params:
   channel_sz: 64
   bandwidth: 400000000.
   max_epochs: 500
-  init_task: True
+  init_task: False
   exp_name: wavemodel-6x6-goodsidelobes
   dataset_params:
     data_path: ./data

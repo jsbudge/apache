@@ -111,7 +111,7 @@ if __name__ == '__main__':
                                exp_params['max_epochs'] * exp_params['swa_start'])),
                       1e-9)
     trainer = Trainer(logger=logger, max_epochs=config['wave_exp_params']['max_epochs'],
-                      log_every_n_steps=exp_params['log_epoch'], devices=[0], callbacks=
+                      log_every_n_steps=exp_params['log_epoch'], devices=[1], callbacks=
                       [EarlyStopping(monitor='target_loss', patience=exp_params['patience'],
                                      check_finite=True),
                        StochasticWeightAveraging(swa_lrs=expected_lr,
