@@ -111,8 +111,8 @@ target_exp_params:
 
 # For training of wavemodel
 wave_exp_params:
-  LR: 0.00001
-  weight_decay: 0.9
+  LR: 0.001
+  weight_decay: 0.5
   scheduler_gamma: 0.5
   swa_start: .6
   warm_start: False
@@ -123,7 +123,7 @@ wave_exp_params:
   save_model: True
   loss_landscape: False
   patience: 5
-  channel_sz: 64
+  channel_sz: 128
   bandwidth: 400000000.
   max_epochs: 500
   init_task: False

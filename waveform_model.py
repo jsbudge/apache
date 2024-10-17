@@ -85,7 +85,7 @@ class GeneratorModel(FlatModule):
         self.channel_sz = channel_sz
         de_ch_sz = channel_sz // 8
 
-        self.predict_decoder = nn.Transformer(clutter_latent_size, num_decoder_layers=6, num_encoder_layers=6, nhead=6,
+        self.predict_decoder = nn.Transformer(clutter_latent_size, num_decoder_layers=7, num_encoder_layers=7, nhead=6,
                                               batch_first=True, activation='gelu')
         self.predict_decoder.apply(init_weights)
 
@@ -101,12 +101,12 @@ class GeneratorModel(FlatModule):
             nn.GELU(),
             nn.Conv1d(1, channel_sz, 1, 1, 0),
             nn.GELU(),
-            LKA1d(channel_sz, kernel_sizes=(95, 95), dilation=12),
-            LKA1d(channel_sz, kernel_sizes=(95, 125), dilation=6),
+            LKA1d(channel_sz, kernel_sizes=(155, 95), dilation=12),
+            LKA1d(channel_sz, kernel_sizes=(125, 125), dilation=6),
             LKA1d(channel_sz, kernel_sizes=(95, 155), dilation=3),
             nn.LayerNorm(clutter_latent_size),
-            LKA1d(channel_sz, kernel_sizes=(95, 95), dilation=12),
-            LKA1d(channel_sz, kernel_sizes=(95, 125), dilation=6),
+            LKA1d(channel_sz, kernel_sizes=(155, 95), dilation=12),
+            LKA1d(channel_sz, kernel_sizes=(125, 125), dilation=6),
             LKA1d(channel_sz, kernel_sizes=(95, 155), dilation=3),
             nn.LayerNorm(clutter_latent_size),
             nn.Conv1d(channel_sz, self.n_ants, 1, 1, 0),
@@ -140,9 +140,9 @@ class GeneratorModel(FlatModule):
 
         self.window_context = nn.Sequential(
             nn.Conv1d(self.n_ants * 2, de_ch_sz, 1, 1, 0),
-            LKA1d(de_ch_sz, kernel_sizes=(255, 255), dilation=12),
+            LKA1d(de_ch_sz, kernel_sizes=(255, 513), dilation=12),
             nn.LayerNorm(fft_sz),
-            LKA1d(de_ch_sz, kernel_sizes=(255, 255), dilation=6),
+            LKA1d(de_ch_sz, kernel_sizes=(255, 513), dilation=6),
             nn.LayerNorm(fft_sz),
             LKA1d(de_ch_sz, kernel_sizes=(255, 513), dilation=3),
             nn.LayerNorm(fft_sz),

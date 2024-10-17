@@ -14,6 +14,17 @@ inch_to_m = .0254
 m_to_ft = 3.2808
 
 
+def validateData(filepath, fft_len):
+    data_files = glob.glob(f'{filepath}/*.spec')
+    for f in tqdm(data_files):
+        with open(f, 'rb') as fn:
+            data = np.fromfile(fn, dtype=np.float32).reshape((-1, 2, fft_len + 2))
+            check = np.where(data[:, :, :fft_len] != 0)
+            if abs((check[2].max() + check[2].min()) / 2 - fft_len / 2) > 1:
+                print(f'{f} is invalid.')
+    
+    
+
 def formatTargetClutterData(data: np.ndarray, bin_bandwidth: int):
     split = np.zeros((data.shape[0], 2, bin_bandwidth), dtype=np.float32)
     split[:, 0, :bin_bandwidth // 2] = data[:, -bin_bandwidth // 2:].real
