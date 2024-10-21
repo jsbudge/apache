@@ -457,3 +457,182 @@ class TargetEncoder(FlatModule):
                       prog_bar=True, rank_zero_only=True)
         return train_loss
 
+
+class TargetEmbedding(FlatModule):
+    def __init__(self,
+                 in_channels: int,
+                 latent_dim: int,
+                 params: dict,
+                 channel_sz: int = 32,
+                 mu: float = .01,
+                 var: float = 4.9,
+                 fft_len: int = 4096,
+                 **kwargs) -> None:
+        super(TargetEmbedding, self).__init__()
+
+        self.latent_dim = latent_dim
+        self.params = params
+        self.channel_sz = channel_sz
+        self.in_channels = in_channels
+        self.automatic_optimization = False
+        self.temperature = 1.0
+
+        # Parameters for normalizing data correctly
+        self.mu = mu
+        self.var = var
+        levels = 3
+        out_sz = fft_len // (2 ** levels)
+
+        # Encoder
+        self.encoder_inflate = nn.Conv1d(in_channels, channel_sz, 1, 1, 0)
+        prev_lev_enc = channel_sz
+        self.encoder_reduce = nn.ModuleList()
+        self.encoder_pool = nn.ModuleList()
+        self.encoder_conv = nn.ModuleList()
+        for l in range(levels):
+            ch_lev_enc = prev_lev_enc * 2
+            layer_sz = [fft_len // (2 ** (l + 1))]
+            self.encoder_reduce.append(nn.Sequential(
+                nn.Conv1d(prev_lev_enc, ch_lev_enc, 4, 2, 1),
+                nn.GELU(),
+            ))
+            self.encoder_pool.append(nn.Sequential(nn.Conv1d(prev_lev_enc, ch_lev_enc, 1, 1, 0),
+                                                   nn.MaxPool1d(2)))
+            self.encoder_conv.append(nn.Sequential(
+                LKA1d(ch_lev_enc, kernel_sizes=(255, 255), dilation=6),
+                nn.LayerNorm(layer_sz),
+                nn.Conv1d(ch_lev_enc, ch_lev_enc, 3, 1, 1),
+                nn.GELU(),
+                nn.Conv1d(ch_lev_enc, ch_lev_enc, 3, 1, 1),
+                nn.GELU(),
+                nn.Conv1d(ch_lev_enc, ch_lev_enc, 3, 1, 1),
+                nn.GELU(),
+                nn.LayerNorm(layer_sz),
+            ))
+            prev_lev_enc = ch_lev_enc + 0
+
+        prev_lev_dec = prev_lev_enc
+        self.encoder_flatten = nn.Sequential(
+            nn.Conv1d(prev_lev_dec, 1, 1, 1, 0),
+            nn.GELU(),
+        )
+        self.fc_z = nn.Sequential(
+            nn.Linear(out_sz, latent_dim),
+            nn.GELU(),
+            nn.Linear(latent_dim, latent_dim),
+            nn.Softshrink()
+        )
+
+        self.contrast_g = nn.Sequential(
+            nn.Linear(latent_dim, latent_dim * 4),
+            nn.GELU(),
+            nn.Linear(latent_dim * 4, latent_dim)
+        )
+
+        self.latent_dim = latent_dim
+        self.out_sz = out_sz
+        self.example_input_array = torch.randn((1, 2, fft_len))
+
+    def forward(self, inp: Tensor, **kwargs) -> Tensor:
+        """
+                Encodes the input by passing through the encoder network
+                and returns the latent codes.
+                :param inp: (Tensor) Input tensor to encoder [N x C x H x W]
+                :return: (Tensor) List of latent codes
+                """
+        inp = self.encoder_inflate(inp)
+        for conv, red, pool in zip(self.encoder_conv, self.encoder_reduce, self.encoder_pool):
+            inp = conv(red(inp) * pool(inp))
+        inp = self.encoder_flatten(inp).view(-1, self.out_sz)
+        return self.fc_z(inp)
+
+    def contrast_map(self, inp: Tensor, **kwargs):
+        return self.contrast_g(self.forward(inp))
+
+    # def loss_function(self, y, y_pred):
+    #     return tf.cosine_similarity(y, y_pred)
+
+    def on_fit_start(self) -> None:
+        if self.trainer.is_global_zero and self.logger:
+            self.logger.log_graph(self, self.example_input_array)
+
+    def training_step(self, batch, batch_idx):
+        opt = self.optimizers()
+        train_loss = self.train_val_get(batch, batch_idx)
+        opt.zero_grad()
+        self.manual_backward(train_loss)
+        opt.step()
+
+    def validation_step(self, batch, batch_idx):
+        self.train_val_get(batch, batch_idx, 'val')
+
+    def on_after_backward(self) -> None:
+        if self.trainer.is_global_zero and self.global_step % 100 == 0 and self.logger:
+            for name, params in self.named_parameters():
+                self.logger.experiment.add_histogram(name, params, self.global_step)
+
+    def on_validation_end(self) -> None:
+        if self.trainer.is_global_zero and not self.params['is_tuning']:
+            torch.save(self.state_dict(), './model/target_model.state')
+            print('Model saved to disk.')
+
+            if self.current_epoch % 5 == 0:
+                pass
+
+    def on_train_epoch_end(self) -> None:
+        if self.trainer.is_global_zero and not self.params['is_tuning'] and self.params['loss_landscape']:
+            self.optim_path.append(self.model.get_flat_params())
+
+    def on_validation_epoch_end(self) -> None:
+        sch = self.lr_schedulers()
+
+        # If the selected scheduler is a ReduceLROnPlateau scheduler.
+        if isinstance(sch, torch.optim.lr_scheduler.ReduceLROnPlateau):
+            sch.step(self.trainer.callback_metrics["val_loss"])
+            self.log('LR', sch.get_last_lr()[0], rank_zero_only=True)
+
+    def configure_optimizers(self):
+        optimizer = optim.AdamW(self.parameters(),
+                                lr=self.params['LR'],
+                                weight_decay=self.params['weight_decay'],
+                                betas=self.params['betas'],
+                                eps=1e-7)
+        optims = [optimizer]
+        if self.params['scheduler_gamma'] is None:
+            return optims
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optims[0], cooldown=self.params['step_size'],
+                                                         factor=self.params['scheduler_gamma'], threshold=1e-5)
+        scheds = [scheduler]
+
+        return optims, scheds
+
+    def train_val_get(self, batch, batch_idx, kind='train'):
+        img, idx = batch
+
+        feats = self.contrast_map(img)
+        cos_sim = tf.cosine_similarity(feats[:, None, :], feats[None, :, :], dim=-1)
+        # Mask out cosine similarity to itself
+        self_mask = torch.eye(cos_sim.shape[0], dtype=torch.bool, device=cos_sim.device)
+        cos_sim.masked_fill_(self_mask, -9e15)
+        # Find positive example -> batch_size//2 away from the original example
+        pos_mask = self_mask.roll(shifts=cos_sim.shape[0] // 2, dims=0)
+        # InfoNCE loss
+        cos_sim = cos_sim / self.temperature
+        nll = -cos_sim[pos_mask] + torch.logsumexp(cos_sim, dim=-1)
+        nll = nll.mean()
+
+        
+        # Get ranking position of positive example
+        comb_sim = torch.cat(
+            [cos_sim[pos_mask][:, None], cos_sim.masked_fill(pos_mask, -9e15)],  # First position positive example
+            dim=-1,
+        )
+        sim_argsort = comb_sim.argsort(dim=-1, descending=True).argmin(dim=-1)
+        
+        # Logging ranking metrics
+        self.log_dict({f'{kind}_loss': nll, f"{kind}_acc_top1": (sim_argsort == 0).float().mean(),
+                       f"{kind}_acc_top5": (sim_argsort < 5).float().mean(),
+                       f"{kind}_acc_mean_pos": 1 + sim_argsort.float().mean()}, on_epoch=True,
+                      prog_bar=True, rank_zero_only=True)
+        return nll
+

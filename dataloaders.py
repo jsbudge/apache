@@ -1,14 +1,76 @@
 from glob import glob
-from typing import List, Optional, Union
+from typing import List, Optional, Union, Iterator
 import os
 import yaml
+from click.core import batch
 from pytorch_lightning import LightningDataModule
-from torch.utils.data import DataLoader, Dataset, ConcatDataset
+from torch.utils.data import DataLoader, Dataset, ConcatDataset, BatchSampler, SubsetRandomSampler, Sampler
 import torch
+from itertools import chain
 from pathlib import Path
 import numpy as np
 from multiprocessing import cpu_count
 from sklearn.model_selection import train_test_split
+
+
+class BatchListSampler(Sampler[List[int]]):
+    r"""Wraps another sampler to yield a mini-batch of indices.
+
+    Args:
+        sampler (Sampler or Iterable): Base sampler. Can be any iterable object
+        batch_size (int): Size of mini-batch.
+        drop_last (bool): If ``True``, the sampler will drop the last batch if
+            its size would be less than ``batch_size``
+
+    Example:
+        >>> list(BatchSampler(SequentialSampler(range(10)), batch_size=3, drop_last=False))
+        [[0, 1, 2], [3, 4, 5], [6, 7, 8], [9]]
+        >>> list(BatchSampler(SequentialSampler(range(10)), batch_size=3, drop_last=True))
+        [[0, 1, 2], [3, 4, 5], [6, 7, 8]]
+    """
+
+    def __init__(
+        self,
+        draw_lists: List[List[int]],
+        batch_size: int,
+        drop_last: bool,
+    ) -> None:
+        # Since collections.abc.Iterable does not check for `__getitem__`, which
+        # is one way for an object to be an iterable, we don't do an `isinstance`
+        # check here.
+        if (
+            not isinstance(batch_size, int)
+            or isinstance(batch_size, bool)
+            or batch_size <= 0
+        ):
+            raise ValueError(
+                f"batch_size should be a positive integer value, but got batch_size={batch_size}"
+            )
+        if not isinstance(drop_last, bool):
+            raise ValueError(
+                f"drop_last should be a boolean value, but got drop_last={drop_last}"
+            )
+        self.samplers = [SubsetRandomSampler(l) for l in draw_lists]
+        self.batch_size = batch_size
+        self.drop_last = drop_last
+
+    def __iter__(self) -> Iterator[List[int]]:
+        # Implemented based on the benchmarking in https://github.com/pytorch/pytorch/pull/76951
+        sampler_iters = [iter(s) for s in self.samplers]
+        while True:
+            try:
+                yield list(chain(*[[(next(s), idx) for idx, s in enumerate(sampler_iters)] for _ in range(self.batch_size // len(sampler_iters))]))[:self.batch_size]
+            except StopIteration:
+                break
+
+    def __len__(self) -> int:
+        # Can only be called if self.sampler has __len__ implemented
+        # We cannot enforce this condition, so we turn off typechecking for the
+        # implementation below.
+        # Somewhat related: see NOTE [ Lack of Default `__len__` in Python Abstract Base Classes ]
+        return (
+            sum(len(s) for s in self.samplers) + self.batch_size - 1
+        ) // self.batch_size
 
 
 class PulseDataset(Dataset):
@@ -42,30 +104,75 @@ class PulseDataset(Dataset):
         return clutter_files, np.concatenate(dt) if concat else dt
     
     
-class TargetDataset(Dataset):
+'''class TargetDataset(Dataset):
     def __init__(self, datapath: str = './data', split: float = 1., is_val: bool = False, mu: float = .01,
                  var: float = 4.9, seed: int = 7):
         # Load in data
-        optical_data = np.fromfile(f'{datapath}/targetprofiles.dat',
-                                   dtype=np.float32).reshape((-1, 2, 256, 256))
-        optical_data[optical_data != 0] = (optical_data[optical_data != 0] - mu) / var
-        self.data = torch.tensor(optical_data)
+        self.datapath = datapath
+        solo_data = glob(f'{datapath}/target_*_solo.dat')
+        solo_load = [np.fromfile(s, dtype=np.float32).reshape((-1, 2, 8192)) for s in solo_data]
+        self.data = torch.tensor(np.concatenate(solo_load, axis=0))
+        file_idx = np.concatenate([np.ones(s.shape[0]) * i for i, s in enumerate(solo_load)])
+        # file_sizes = [s.shape[0] for s in solo_load]
 
         if split < 1:
-            Xs, Xt, _, _ = train_test_split(np.arange(optical_data.shape[0]),
-                                            np.arange(optical_data.shape[0]),
+            Xs, Xt, _, _ = train_test_split(np.arange(self.data.shape[0]),
+                                            np.arange(self.data.shape[0]),
                                             test_size=split, random_state=seed)
         else:
-            Xt = np.arange(optical_data.shape[0])
-            Xs = np.arange(optical_data.shape[0])
-        self.data = torch.tensor(optical_data[Xs], dtype=torch.float32) if is_val else (
-            torch.tensor(optical_data[Xt], dtype=torch.float32))
+            Xt = np.arange(self.data.shape[0])
+            Xs = np.arange(self.data.shape[0])
+        self.data = self.data[Xs] if is_val else self.data[Xt]
+        self.file_idx = file_idx[Xs] if is_val else file_idx[Xt]
+        self.file_list = [list(np.where(self.file_idx == n)[0].astype(int)) for n in range(len(solo_load))]
 
     def __getitem__(self, idx):
-        return self.data[idx], self.data[idx]
+        return self.data[idx], self.file_idx[idx]
 
     def __len__(self):
         return self.data.shape[0]
+    
+    def get_data(self):
+        solo_data = glob(f'{self.datapath}/target_*_solo.dat')
+        return [torch.tensor(np.fromfile(s, dtype=np.float32).reshape((-1, 2, 8192))) for s in solo_data]'''
+
+
+class TargetDataset(Dataset):
+    def __init__(self, datapath: str = './data/target_tensors', split: float = 1., is_val: bool = False, mu: float = .01,
+                 var: float = 4.9, seed: int = 7):
+        # Load in data
+        self.datapath = datapath
+        targets = os.listdir(datapath)
+        file_sizes = [0 for _ in targets]
+        for d in targets:
+            ntarg = int(d[7:])
+            nfiles = glob(f'{datapath}/{d}/target_*_*.pt')
+            file_sizes[ntarg] = len(nfiles)
+        file_idx = np.concatenate([np.ones(s) * i for i, s in enumerate(file_sizes)])
+        sz = len(file_idx)
+        # file_sizes = [s.shape[0] for s in solo_load]
+
+        if split < 1:
+            Xs, Xt, _, _ = train_test_split(np.arange(sz),
+                                            np.arange(sz),
+                                            test_size=split, random_state=seed)
+        else:
+            Xt = np.arange(sz)
+            Xs = np.arange(sz)
+        valids = Xs if is_val else Xt
+        self.file_idx = file_idx[valids]
+        self.file_list = [list(valids[np.where(self.file_idx == n)[0]].astype(int)) for n in range(len(file_sizes))]
+
+    def __getitem__(self, idx):
+        sample, label = torch.load(f'{self.datapath}/target_{idx[1]}/target_{idx[1]}_{idx[0]}.pt')
+        return sample, label
+
+    def __len__(self):
+        return self.file_idx.shape[0]
+
+    def get_data(self):
+        solo_data = glob(f'{self.datapath}/target_*_solo.dat')
+        return [torch.tensor(np.fromfile(s, dtype=np.float32).reshape((-1, 2, 8192))) for s in solo_data]
 
 
 class WaveDataset(ConcatDataset):
@@ -189,6 +296,8 @@ class BaseModule(LightningDataModule):
         self.single_example = single_example
         self.device = device
         self.collate = collate
+        self.train_sampler = None
+        self.val_sampler = None
 
     def setup(self, stage: Optional[str] = None) -> None:
         pass
@@ -197,18 +306,18 @@ class BaseModule(LightningDataModule):
         if self.collate:
             return DataLoader(
                 self.train_dataset,
-                batch_size=self.train_batch_size,
+                batch_size=self.train_batch_size if self.train_sampler is None else 1,
                 num_workers=self.num_workers,
-                shuffle=True,
+                batch_sampler=self.train_sampler,
                 pin_memory=self.pin_memory,
                 collate_fn=collate_fun,
             )
         else:
             return DataLoader(
                 self.train_dataset,
-                batch_size=self.train_batch_size,
+                batch_size=self.train_batch_size if self.train_sampler is None else 1,
                 num_workers=self.num_workers,
-                shuffle=True,
+                batch_sampler=self.train_sampler,
                 pin_memory=self.pin_memory,
             )
 
@@ -216,27 +325,27 @@ class BaseModule(LightningDataModule):
         if self.collate:
             return DataLoader(
                 self.val_dataset,
-                batch_size=self.val_batch_size,
+                batch_size=self.val_batch_size if self.val_sampler is None else 1,
                 num_workers=self.num_workers,
-                shuffle=False,
+                batch_sampler=self.val_sampler,
                 pin_memory=self.pin_memory,
                 collate_fn=collate_fun,
             )
         else:
             return DataLoader(
                 self.val_dataset,
-                batch_size=self.val_batch_size,
+                batch_size=self.val_batch_size if self.val_sampler is None else 1,
                 num_workers=self.num_workers,
-                shuffle=False,
+                batch_sampler=self.val_sampler,
                 pin_memory=self.pin_memory,
             )
 
     def test_dataloader(self) -> Union[DataLoader, List[DataLoader]]:
         return DataLoader(
             self.val_dataset,
-            batch_size=self.val_batch_size,
+            batch_size=self.val_batch_size if self.val_sampler is None else 1,
             num_workers=self.num_workers,
-            shuffle=True,
+            batch_sampler=self.val_sampler,
             pin_memory=self.pin_memory,
             collate_fn=collate_fun,
         )
@@ -345,6 +454,8 @@ class TargetEncoderModule(BaseModule):
                                           var=self.var)
         self.val_dataset = TargetDataset(self.data_path, split=1 - self.split if self.split < 1 else 1.,
                                          is_val=True, mu=self.mu, var=self.var)
+        self.train_sampler = BatchListSampler(self.train_dataset.file_list, batch_size=self.train_batch_size, drop_last=False)
+        self.val_sampler = BatchListSampler(self.val_dataset.file_list, batch_size=self.val_batch_size, drop_last=False)
 
 
 if __name__ == '__main__':
@@ -354,3 +465,5 @@ if __name__ == '__main__':
             param_dict = yaml.safe_load(file)
         except yaml.YAMLError as exc:
             print(exc)
+
+    

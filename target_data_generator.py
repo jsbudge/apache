@@ -2,16 +2,18 @@ from glob import glob
 import os
 import numpy as np
 from pathlib import Path
-from simulib.simulation_functions import db, azelToVec
-from simulib.cuda_mesh_kernels import readCombineMeshFile, genRangeProfileFromMesh
+from simulib.simulation_functions import db, azelToVec, genChirp, getElevation
+from simulib.cuda_mesh_kernels import readCombineMeshFile, getBoxesSamplesFromMesh, getRangeProfileFromMesh
 from simulib.platform_helper import SDRPlatform
 from simulib.cuda_kernels import cpudiff, getMaxThreads
 from generate_trainingdata import formatTargetClutterData
+from scipy.signal.windows import taylor
 import matplotlib.pyplot as plt
 import plotly.io as pio
 from tqdm import tqdm
 import yaml
 from data_converter.SDRParsing import load
+import torch
 import cupy
 
 # pio.renderers.default = 'svg'
@@ -22,6 +24,73 @@ TAC = 125e6
 DTR = np.pi / 180
 inch_to_m = .0254
 TARGET_PROFILE_MIN_BEAMWIDTH = 0.19634954
+fs = 2e9
+
+
+def readVCS(filepath):
+    # Load in the VCS file using the format reader
+    with open(filepath, 'r') as f:
+        # Total azimuths, elevations, scatterers
+        header = [int(k) for k in f.readline().strip().split(' ')]
+        scatterers = np.zeros((header[2], 5))
+        nblock = 0
+        scat_data = []
+        angles = []
+        while nblock < header[2]:
+            subhead = [int(k) for k in f.readline().strip().split(' ')]
+            angles.append(subhead[:2])
+            for scat in range(subhead[2]):
+                scatdata = np.array([float(k) for k in f.readline().strip().split(' ')])
+                scatterers[nblock + scat, :] = scatdata[:5]
+            blockdata = scatterers[nblock:nblock + scat, :]
+            scat_data.append(blockdata[blockdata[:, 3] + blockdata[:, 4] > 1e-1])
+            nblock += subhead[2]
+    return scat_data, np.array(angles) * DTR
+
+
+def genProfileFromMesh(obj_path, niters, mf_chirp, nboxes, points_to_sample, scaling, n_tris=10000):
+    try:
+        mesh = readCombineMeshFile(obj_path, n_tris)
+    except IndexError:
+        print(f'{tobj} not found.')
+    mesh.scale(1 / scaling, center=(0, 0, 0))
+
+    box_tree, sample_points = getBoxesSamplesFromMesh(mesh, num_boxes=nboxes, sample_points=points_to_sample,
+                                                      material_sigmas=[2.])
+
+    # Apply random rotations and scalings for augmenting of training data
+    for i in range(niters):
+        chirp_idx = np.random.randint(0, len(mf_chirp))
+        near_range_s, poses, boresights = calcPosBoresight(standoff + np.random.rand() * 100)
+
+        single_rp = getRangeProfileFromMesh(*box_tree, sample_points, poses, boresights, radar_coeff, 30 * DTR,
+                                            30 * DTR,
+                                            nsam, fc, near_range_s,
+                                            num_bounces=num_bounces,
+                                            bounce_rays=nbounce_ray)
+        yield np.fft.fft(single_rp, fft_len, axis=1) * mf_chirp[chirp_idx], i
+
+
+def genProfileFromVCS(obj_path, niters, mf_chirp):
+    # Load in the VCS file using the format reader
+    scat_data, angles = readVCS(obj_path)
+
+    # Generate target profile on CPU
+    for i in range(niters):
+        chirp_idx = np.random.randint(0, len(mf_chirp))
+        near_range_s, poses, boresights = calcPosBoresight(standoff)
+        bore_az = np.arctan2(boresights[:, 0], boresights[:, 1])
+        bore_el = -np.arcsin(boresights[:, 2])
+        bore_ang = np.array([bore_az, bore_el]).T
+        pd = np.zeros((poses.shape[0], nsam), dtype=np.complex128)
+        for n in range(poses.shape[0]):
+            bl = scat_data[np.argmin(np.linalg.norm(angles - bore_ang[n], axis=1))]
+            rvec = bl[:, :3] - poses[n]
+            ranges = np.linalg.norm(rvec, axis=1)
+            rng_bin = (ranges * 2 / c0 - 2 * near_range_s) * fs
+            but = rng_bin.astype(int)
+            pd[n, but] += np.exp(-1j * wavenumber * ranges * 2) * np.max(bl[:, 3:], axis=1)
+        yield np.fft.fft(pd, fft_len, axis=1) * mf_chirp[chirp_idx], i
 
 
 def getSpectrumFromTargetProfile(sdr, rp, ts, tcdata, fft_len):
@@ -58,14 +127,41 @@ def getSpectrumFromTargetProfile(sdr, rp, ts, tcdata, fft_len):
     return tpsd
 
 
+def calcPosBoresight(standoff, pan=None, tilt=None):
+    if pan is None:
+        # Generate angles for block
+        pans, tilts = np.meshgrid(np.linspace(0, 2 * np.pi, 16, endpoint=False),
+                                  np.linspace(np.pi / 2 - .1, -np.pi / 2 + .1, 16))
+        pan = pans.flatten()
+        tilt = tilts.flatten()
+    boresights = -azelToVec(pan, tilt).T
+    poses = -boresights * standoff
+    near_range_s = (standoff - 100.) / c0
+    return near_range_s, poses, boresights
+
+
 if __name__ == '__main__':
+
+    ant_gain = 22  # dB
+    ant_transmit_power = 100  # watts
+    ant_eff_aperture = 10. * 10.  # m**2
+    fc = 9.6e9
+    nboxes = 25
+    points_to_sample = 2000
+    num_bounces = 0
+    nbounce_ray = 5
+    standoff = 500.
+    nsam = 5678
+    niters = 10
 
     with open('./vae_config.yaml', 'r') as file:
         try:
             config = yaml.safe_load(file)
         except yaml.YAMLError as exc:
             print(exc)
-    standoff = 500.
+            
+    wavenumber = 2 * np.pi * fc / c0
+    
 
     save_path = config['generate_data_settings']['local_path'] if (
         config)['generate_data_settings']['use_local_storage'] else config['dataset_params']['data_path']
@@ -75,7 +171,8 @@ if __name__ == '__main__':
                         'Humvee.obj': 60, 'Intergalactic_Spaceships_Version_2.obj': 1., 'piper_pa18.obj': 1.,
                         'Porsche_911_GT2.obj': .8, 'Seahawk.obj': 12., 't-90a(Elements_of_war).obj': 1.,
                         'Tiger.obj': 156.25, 'G7_1200.obj': 1., 'x-wing.obj': 1., 'tacoma_VTC.dat': -1.,
-                        }
+                        'NissanSkylineGT-R(R32).obj': .8, 'ram1500trx2021.gltf': 300., 'spider_tank.gltf': 1.,
+                        'stug3aufs.gltf': 1.}
     target_obj_files = list(target_obj_files.items())
     target_id_list = []
 
@@ -83,140 +180,63 @@ if __name__ == '__main__':
 
     # Standardize the FFT length for training purposes (this may cause data loss)
     fft_len = config['settings']['fft_len']
-    near_range_s = (standoff - 10) / c0
-    wavelength = c0 / 9.6e9
-    wavenumber = 2 * np.pi / wavelength
 
-    # Generate angles for block
-    pans, tilts = np.meshgrid(np.linspace(0, 2 * np.pi, 16, endpoint=False),
-                              np.linspace(np.pi / 2 - .1, -np.pi / 2 + .1, 16))
-    pan = pans.flatten()
-    tilt = tilts.flatten()
-    poses = azelToVec(pan, tilt).T * standoff
-    pan[pan == 0] = 1e-9
-    pan[pan == 2 * np.pi] = 1e-9
-    tilt[tilt == 0] = 1e-9
-    tilt[tilt == 2 * np.pi] = 1e-9
+    # This is all the constants in the radar equation for this simulation
+    radar_coeff = ant_transmit_power * 10 ** (ant_gain / 10) * ant_eff_aperture / (4 * np.pi) ** 2
 
-    pan_deg = pan / DTR
-    tilt_deg = tilt / DTR
-
-    poses_gpu = cupy.array(poses, dtype=np.float32)
-    pan_gpu = cupy.array(pan, dtype=np.float32)
-    tilt_gpu = cupy.array(tilt, dtype=np.float32)
+    near_range_s, poses, boresights = calcPosBoresight(standoff)
     plt.ion()
+    
+    bws = 150e6 + np.random.rand(10) * 1e9
+    plens = (1e-7 + np.random.rand(10) * (nsam / 2) / fs) * fs
+    chirps = []
+    mf_chirp = []
+    for bw, plen in zip(bws, plens):
+        twin = taylor(int(np.round(bw / fs * fft_len)))
+        taytay = np.zeros(fft_len, dtype=np.complex128)
+        winloc = int((fc % fs) * fft_len / fs) - len(twin) // 2
+        if winloc + len(twin) > fft_len:
+            taytay[winloc:fft_len] += twin[:fft_len - winloc]
+            taytay[:len(twin) - (fft_len - winloc)] += twin[fft_len - winloc:]
+        else:
+            taytay[winloc:winloc + len(twin)] += twin
+        chirps.append(genChirp(int(plen), fs, fc, bw))
+        mf_chirp.append(np.fft.fft(chirps[-1], fft_len) * np.fft.fft(chirps[-1], fft_len).conj() * taytay)
 
     pt_sample = []
+    abs_idx = 0
 
     for tidx, (tobj, scaling) in tqdm(enumerate(target_obj_files)):
+        tensor_path = f"{config['target_exp_params']['dataset_params']['data_path']}/target_{tidx}"
+        obj_path = f'{config["generate_data_settings"]["obj_path"]}/{tobj}'
+        if not Path(tensor_path).exists():
+            os.mkdir(tensor_path)
         if scaling > 0:
-            try:
-                mesh = readCombineMeshFile(f'{config["generate_data_settings"]["obj_path"]}/{tobj}')
-            except IndexError:
-                print(f'{tobj} not found.')
-                continue
-            mesh.scale(1 / scaling, center=(0, 0, 0))
-
-            # Apply random rotations and scalings for augmenting of training data
-            for i in range(200):
-                if i != 0:
-                    mesh.rotate(
-                        mesh.get_rotation_matrix_from_xyz((np.random.rand() * 2 * np.pi, np.random.rand() * 2 * np.pi,
-                                                           np.random.rand() * 2 * np.pi)), center=(0, 0, 0))
-                # sample_points = nmesh.sample_points_poisson_disk(30000)
-                face_centers = np.asarray(mesh.vertices)
-                face_normals = np.asarray(mesh.vertex_normals)
-
-                pd_r = cupy.zeros((256, len(pan)), dtype=np.float32)
-                pd_i = cupy.zeros((256, len(pan)), dtype=np.float32)
-
-                face_centers_gpu = cupy.array(face_centers, dtype=np.float32)
-                face_normals_gpu = cupy.array(face_normals, dtype=np.float32)
-                reflectivity_gpu = cupy.array(np.ones(face_centers.shape[0]) * 150. / face_centers.shape[0], dtype=np.float32)
-
-                threads_per_block = getMaxThreads()
-                bpg_bpj = (
-                    max(1, face_centers.shape[0] // threads_per_block[0] + 1), len(pan) // threads_per_block[1] + 1)
-                genRangeProfileFromMesh[bpg_bpj, threads_per_block](face_centers_gpu, face_normals_gpu,
-                                                                    reflectivity_gpu,
-                                                                    poses_gpu,
-                                                                    poses_gpu,
-                                                                    pan_gpu, tilt_gpu, pan_gpu, tilt_gpu, pd_r, pd_i,
-                                                                    wavelength,
-                                                                    near_range_s, 2e9, 10 * DTR,
-                                                                    10 * DTR, 1., False, False)
-
-                pd = pd_r.get() + 1j * pd_i.get()
-                if i == 0:
-                    pt_sample = np.concatenate((pt_sample, pd[pd != 0]))
-                pd[pd != 0] = ((pd[pd != 0] - config['target_exp_params']['dataset_params']['mu']) /
-                               config['target_exp_params']['dataset_params']['var'])
-                plt.gca().cla()
-                plt.imshow(db(pd))
-                plt.draw()
-                plt.pause(.1)
-                pd_cat = np.stack([pd.real, pd.imag]).astype(np.float32)
-
-                if config['settings']['save_as_target']:
-                    if i == 0:
-                        with open(f'{save_path}/targetpatterns.dat', 'ab') as w:
-                            pd_cat.tofile(w)
-                        target_id_list.append(tobj)
-                    with open(f'{save_path}/targetprofiles.dat', 'ab') as w:
-                        pd_cat.tofile(w)
+            gen_iter = iter(genProfileFromMesh(obj_path, niters, mf_chirp, nboxes, points_to_sample, scaling))
         else:
-            # Load in the VCS file using the format reader
-            with open(f'{config["generate_data_settings"]["obj_path"]}/{tobj}', 'r') as f:
-                # Total azimuths, elevations, scatterers
-                header = [int(k) for k in f.readline().strip().split(' ')]
-                scatterers = np.zeros((header[2], 5))
-                nblock = 0
-                scat_data = []
-                angles = []
-                while nblock < header[2]:
-                    subhead = [int(k) for k in f.readline().strip().split(' ')]
-                    angles.append(subhead[:2])
-                    for scat in range(subhead[2]):
-                        scatdata = np.array([float(k) for k in f.readline().strip().split(' ')])
-                        scatterers[nblock + scat, :] = scatdata[:5]
-                    blockdata = scatterers[nblock:nblock + scat, :]
-                    scat_data.append(blockdata[blockdata[:, 3] + blockdata[:, 4] > 1e-1])
-                    nblock += subhead[2]
+            gen_iter = iter(genProfileFromVCS(obj_path, niters, mf_chirp))
 
-            # Generate target profile on CPU
-            for i in range(200):
-                rotmat = mesh.get_rotation_matrix_from_xyz((np.random.rand() * 2 * np.pi, np.random.rand() * 2 * np.pi,
-                                                   np.random.rand() * 2 * np.pi))
-                pd = np.zeros((256, 256), dtype=np.complex128)
-                for n in range(256):
-                    bl = scat_data[
-                        np.argmin([np.sqrt((a[0] - pan_deg[n]) ** 2 + (a[1] - tilt_deg[n]) ** 2) for a in angles])]
-                    target_pos = bl[:, :3] if i == 0 else bl[:, :3].dot(rotmat)
-                    rvec = bl[:, :3] - poses[n]
-                    ranges = np.linalg.norm(rvec, axis=1)
-                    rng_bin = (ranges * 2 / c0 - 2 * near_range_s) * 2e9
-                    but = rng_bin.astype(int)
-                    pd[but, n] += np.exp(-1j * wavenumber * ranges * 2) * np.max(bl[:, 3:], axis=1)
+        for pd, i in gen_iter:
+            if i == 0:
+                pt_sample = np.concatenate((pt_sample, pd[pd != 0]))
+            pd[pd != 0] = ((pd[pd != 0] - config['target_exp_params']['dataset_params']['mu']) /
+                           config['target_exp_params']['dataset_params']['var'])
+            plt.gca().cla()
+            plt.title(f'Iteration {i}')
+            plt.imshow(db(pd))
+            plt.draw()
+            plt.pause(.1)
+            pd_cat = np.stack([pd.real, pd.imag]).astype(np.float32).swapaxes(0, 1)
 
+            if config['generate_data_settings']['save_as_target']:
                 if i == 0:
-                    pt_sample = np.concatenate((pt_sample, pd[pd != 0]))
-                pd[pd != 0] = ((pd[pd != 0] - config['target_exp_params']['dataset_params']['mu']) /
-                               config['target_exp_params']['dataset_params']['var'])
-                plt.gca().cla()
-                plt.imshow(db(pd))
-                plt.draw()
-                plt.pause(.1)
-                pd_cat = np.stack([pd.real, pd.imag]).astype(np.float32)
+                    target_id_list.append(tobj)
+                for p in pd_cat:
+                    torch.save([torch.tensor(p, dtype=torch.float32), tidx],
+                               f"{tensor_path}/target_{tidx}_{abs_idx}.pt")
+                    abs_idx += 1
 
-                if config['settings']['save_as_target']:
-                    if i == 0:
-                        with open(f'{save_path}/targetpatterns.dat', 'ab') as w:
-                            pd_cat.tofile(w)
-                        target_id_list.append(tobj)
-                    with open(f'{save_path}/targetprofiles.dat', 'ab') as w:
-                        pd_cat.tofile(w)
-
-        if config['settings']['save_as_target']:
+        if config['generate_data_settings']['save_as_clutter']:
             print(f'Saving clutter spec for target {tobj}')
             for clut in clutter_files:
                 # Load the sar file that the clutter came from
@@ -226,6 +246,22 @@ if __name__ == '__main__':
                     f'/data6/SAR_DATA/{cfnme_parts[1][4:]}/{cfnme_parts[1]}/SAR_{cfnme_parts[1]}_{cfnme_parts[2][:-5]}.sar',
                     use_jump_correction=False)
                 rp = SDRPlatform(sdr_ch)
+                nsam, nr, ranges, ranges_sampled, near_range_s, granges, fft_len, up_fft_len = (
+                    rp.getRadarParams(0., .5, 1))
+
+                bore = rp.boresight(rp.gpst).mean(axis=0)
+                heading = np.arctan2(bore[0], bore[1])
+                mrange = ranges.mean() * np.cos(sdr_ch.ant[0].dep_ang)
+
+                mpos = np.array([mrange * np.cos(heading), mrange * np.sin(heading), 0.])
+
+                # Locate the extrema to speed up the optimization
+                flight_path = rp.txpos(sdr_ch[0].pulse_time)
+                vecs = np.array([mpos[0] - flight_path[:, 0], mpos[1] - flight_path[:, 1],
+                                 mpos[2] - flight_path[:, 2]]).T
+                pt_az = np.arctan2(vecs[:, 0], vecs[:, 1])
+                max_pts = sdr_ch[0].frame_num[abs(pt_az - heading) < rp.az_half_bw * 2]
+                pulse_lims = [min(max_pts), max(max_pts)]
 
                 # Get pulse data and modify accordingly
                 pulse = np.fft.fft(sdr_ch[0].cal_chirp, fft_len)
@@ -235,14 +271,40 @@ if __name__ == '__main__':
                 # CHeck to see we're writing to a fresh file
                 if Path(f'{save_path}/target_{tidx}_{clut_name}.spec').exists():
                     os.remove(f'{save_path}/target_{tidx}_{clut_name}.spec')
-                for n in range(0, config['generate_data_settings']['iterations'] * config['settings']['cpi_len'], config['settings']['cpi_len']):
+                for n in range(pulse_lims[0], pulse_lims[1], config['settings']['cpi_len']):
                     if n + config['settings']['cpi_len'] > sdr_ch[0].nframes:
                         break
                     ts = sdr_ch[0].pulse_time[n:n + config['settings']['cpi_len']]
-                    # Get the appropriate pan and tilt values from the profile
-                    tpsd = getSpectrumFromTargetProfile(sdr_ch, rp, ts, pd, fft_len)
-                    tmp_mu = abs(tpsd[:, valids].mean(axis=0)).max()
-                    tmp_std = abs(tpsd[:, valids].std(axis=0)).max()
+                    if scaling > 0:
+                        single_rp = getRangeProfileFromMesh(*box_tree, sample_points,
+                                                            rp.txpos(ts),
+                                                            rp.boresight(ts),
+                                                            radar_coeff,
+                                                            rp.az_half_bw * 2,
+                                                            rp.el_half_bw * 2,
+                                                            nsam, fc, near_range_s,
+                                                            num_bounces=num_bounces,
+                                                            bounce_rays=nbounce_ray)
+                        tpsd = np.fft.fft(single_rp, fft_len, axis=1) * mfilt
+                    else:
+                        # Load in the VCS file using the format reader
+                        scat_data, angles = readVCS(obj_path)
+
+                        # Generate target profile on CPU
+                        poses = rp.txpos(ts)
+                        boresights = rp.boresight(ts)
+                        bore_az = np.arctan2(boresights[:, 0], boresights[:, 1])
+                        bore_el = -np.arcsin(boresights[:, 2])
+                        bore_ang = np.array([bore_az, bore_el]).T
+                        pd = np.zeros((poses.shape[0], nsam), dtype=np.complex128)
+                        for n in range(poses.shape[0]):
+                            bl = scat_data[np.argmin(np.linalg.norm(angles - bore_ang[n], axis=1))]
+                            rvec = bl[:, :3] - poses[n]
+                            ranges = np.linalg.norm(rvec, axis=1)
+                            rng_bin = (ranges * 2 / c0 - 2 * near_range_s) * fs
+                            but = rng_bin.astype(int)
+                            pd[n, but] += np.exp(-1j * wavenumber * ranges * 2) * np.max(bl[:, 3:], axis=1)
+                        tpsd = np.fft.fft(pd, fft_len, axis=1) * mfilt * pulse
                     p_muscale = np.repeat(
                         config['exp_params']['dataset_params']['mu'] / abs(tpsd[:, valids].mean(axis=1)),
                         2).astype(
