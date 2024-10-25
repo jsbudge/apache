@@ -520,14 +520,17 @@ class TargetEmbedding(FlatModule):
             nn.Linear(out_sz, latent_dim),
             nn.GELU(),
             nn.Linear(latent_dim, latent_dim),
-            nn.Softshrink()
+            nn.GELU(),
+            nn.Linear(latent_dim, latent_dim),
         )
 
+        '''self.classifier = PulseClassifier(latent_dim, 19, channel_sz)
+
         self.contrast_g = nn.Sequential(
-            nn.Linear(latent_dim, latent_dim * 4),
+            nn.Linear(latent_dim, latent_dim),
             nn.GELU(),
-            nn.Linear(latent_dim * 4, latent_dim)
-        )
+            nn.Linear(latent_dim, latent_dim)
+        )'''
 
         self.latent_dim = latent_dim
         self.out_sz = out_sz
@@ -547,7 +550,8 @@ class TargetEmbedding(FlatModule):
         return self.fc_z(inp)
 
     def contrast_map(self, inp: Tensor, **kwargs):
-        return self.contrast_g(self.forward(inp))
+        # return self.contrast_g(self.forward(inp))
+        return self.forward(inp)
 
     # def loss_function(self, y, y_pred):
     #     return tf.cosine_similarity(y, y_pred)
@@ -636,3 +640,99 @@ class TargetEmbedding(FlatModule):
                       prog_bar=True, rank_zero_only=True)
         return nll
 
+
+class PulseClassifier(FlatModule):
+    def __init__(self,
+                 in_dim: int,
+                 label_sz: int,
+                 params: dict,
+                 channel_sz: int = 32,
+                 **kwargs) -> None:
+        super(PulseClassifier, self).__init__()
+
+        self.channel_sz = channel_sz
+        self.params = params
+        self.in_channels = in_dim
+        self.label_sz = label_sz
+        self.automatic_optimization = False
+        self.first_layer = nn.Sequential(
+            nn.Linear(in_dim, in_dim),
+            nn.GELU(),
+        )
+        self.feedthrough = nn.Sequential(
+            nn.Conv1d(1, channel_sz, 1, 1, 0),
+            nn.GELU(),
+            nn.Conv1d(channel_sz, channel_sz, 15, 1, 7),
+            nn.GELU(),
+            nn.MaxPool1d(2),
+            nn.Conv1d(channel_sz, channel_sz, 33, 1, 16),
+            nn.GELU(),
+            nn.Conv1d(channel_sz, 1, 1, 1, 0),
+            nn.GELU(),
+        )
+        self.final_layer = nn.Sequential(
+            nn.Linear(in_dim // 2, label_sz),
+            nn.Sigmoid()
+        )
+
+    def forward(self, inp: Tensor, **kwargs) -> Tensor:
+        inp = self.first_layer(inp)
+        inp = inp.view(-1, 1, self.in_channels)
+        inp = self.feedthrough(inp)
+        inp = inp.view(-1, self.in_channels // 2)
+        inp = self.final_layer(inp)
+        return inp
+
+    def on_fit_start(self) -> None:
+        if self.trainer.is_global_zero and self.logger:
+            self.logger.log_graph(self, self.example_input_array)
+
+    def training_step(self, batch, batch_idx):
+        opt = self.optimizers()
+        train_loss = self.train_val_get(batch, batch_idx)
+        opt.zero_grad()
+        self.manual_backward(train_loss)
+        opt.step()
+
+    def validation_step(self, batch, batch_idx):
+        self.train_val_get(batch, batch_idx, 'val')
+
+    def on_after_backward(self) -> None:
+        if self.trainer.is_global_zero and self.global_step % 100 == 0 and self.logger:
+            for name, params in self.named_parameters():
+                self.logger.experiment.add_histogram(name, params, self.global_step)
+
+    def on_validation_end(self) -> None:
+        if self.trainer.is_global_zero and not self.params['is_tuning']:
+            torch.save(self.state_dict(), './model/inference_model.state')
+            print('Model saved to disk.')
+
+            if self.current_epoch % 5 == 0:
+                pass
+
+    def on_train_epoch_end(self) -> None:
+        if self.trainer.is_global_zero and not self.params['is_tuning'] and self.params['loss_landscape']:
+            self.optim_path.append(self.model.get_flat_params())
+
+    def on_validation_epoch_end(self) -> None:
+        sch = self.lr_schedulers()
+
+        # If the selected scheduler is a ReduceLROnPlateau scheduler.
+        if isinstance(sch, torch.optim.lr_scheduler.ReduceLROnPlateau):
+            sch.step(self.trainer.callback_metrics["val_loss"])
+            self.log('LR', sch.get_last_lr()[0], rank_zero_only=True)
+
+    def configure_optimizers(self):
+        optimizer = optim.AdamW(self.parameters(),
+                                lr=self.params['LR'],
+                                weight_decay=self.params['weight_decay'],
+                                betas=self.params['betas'],
+                                eps=1e-7)
+        optims = [optimizer]
+        if self.params['scheduler_gamma'] is None:
+            return optims
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optims[0], cooldown=self.params['step_size'],
+                                                         factor=self.params['scheduler_gamma'], threshold=1e-5)
+        scheds = [scheduler]
+
+        return optims, scheds

@@ -48,12 +48,11 @@ def readVCS(filepath):
     return scat_data, np.array(angles) * DTR
 
 
-def genProfileFromMesh(obj_path, niters, mf_chirp, nboxes, points_to_sample, scaling, n_tris=10000):
+def genProfileFromMesh(obj_path, niters, mf_chirp, nboxes, points_to_sample, scaling, n_tris=20000):
     try:
-        mesh = readCombineMeshFile(obj_path, n_tris)
+        mesh = readCombineMeshFile(obj_path, n_tris, scale=1 / scaling)
     except IndexError:
         print(f'{tobj} not found.')
-    mesh.scale(1 / scaling, center=(0, 0, 0))
 
     box_tree, sample_points = getBoxesSamplesFromMesh(mesh, num_boxes=nboxes, sample_points=points_to_sample,
                                                       material_sigmas=[2.])
@@ -171,8 +170,8 @@ if __name__ == '__main__':
                         'Humvee.obj': 60, 'Intergalactic_Spaceships_Version_2.obj': 1., 'piper_pa18.obj': 1.,
                         'Porsche_911_GT2.obj': .8, 'Seahawk.obj': 12., 't-90a(Elements_of_war).obj': 1.,
                         'Tiger.obj': 156.25, 'G7_1200.obj': 1., 'x-wing.obj': 1., 'tacoma_VTC.dat': -1.,
-                        'NissanSkylineGT-R(R32).obj': .8, 'ram1500trx2021.gltf': 300., 'spider_tank.gltf': 1.,
-                        'stug3aufs.gltf': 1.}
+                        'NissanSkylineGT-R(R32).obj': 1.25, 'ram1500trx2021.gltf': .0033, 'spider_tank.gltf': 1.,
+                        'stug3aufs.gltf': 1., 'b2spirit.gltf': 1.}
     target_obj_files = list(target_obj_files.items())
     target_id_list = []
 
@@ -195,13 +194,14 @@ if __name__ == '__main__':
         twin = taylor(int(np.round(bw / fs * fft_len)))
         taytay = np.zeros(fft_len, dtype=np.complex128)
         winloc = int((fc % fs) * fft_len / fs) - len(twin) // 2
+        chirps.append(genChirp(int(plen), fs, fc, bw))
         if winloc + len(twin) > fft_len:
             taytay[winloc:fft_len] += twin[:fft_len - winloc]
             taytay[:len(twin) - (fft_len - winloc)] += twin[fft_len - winloc:]
         else:
             taytay[winloc:winloc + len(twin)] += twin
-        chirps.append(genChirp(int(plen), fs, fc, bw))
-        mf_chirp.append(np.fft.fft(chirps[-1], fft_len) * np.fft.fft(chirps[-1], fft_len).conj() * taytay)
+        mf = np.fft.fft(chirps[-1], fft_len) * np.fft.fft(chirps[-1], fft_len).conj() * taytay
+        mf_chirp.append(np.roll(mf, fft_len - (winloc + len(twin) // 2)))
 
     pt_sample = []
     abs_idx = 0
@@ -212,20 +212,28 @@ if __name__ == '__main__':
         if not Path(tensor_path).exists():
             os.mkdir(tensor_path)
         if scaling > 0:
-            gen_iter = iter(genProfileFromMesh(obj_path, niters, mf_chirp, nboxes, points_to_sample, scaling))
+            gen_iter = iter(genProfileFromMesh(obj_path, niters, mf_chirp, nboxes, points_to_sample, scaling, n_tris=10000))
         else:
             gen_iter = iter(genProfileFromVCS(obj_path, niters, mf_chirp))
-
+            
+            
+        pt_sample = []
         for pd, i in gen_iter:
+            if np.all(pd == 0):
+                print(f'Skipping on target {tidx}, pd {i}')
+                continue
+            pd = pd[np.any(pd, axis=1)]
             if i == 0:
                 pt_sample = np.concatenate((pt_sample, pd[pd != 0]))
-            pd[pd != 0] = ((pd[pd != 0] - config['target_exp_params']['dataset_params']['mu']) /
-                           config['target_exp_params']['dataset_params']['var'])
-            plt.gca().cla()
+            pd = pd / np.sqrt(np.sum(pd * pd.conj(), axis=1))[:, None]
+            # pd[pd != 0] = ((pd[pd != 0] - config['target_exp_params']['dataset_params']['mu']) /
+            #                config['target_exp_params']['dataset_params']['var'])
+            pd[pd != 0] *= 1 / pd[pd != 0].std()
+            '''plt.gca().cla()
             plt.title(f'Iteration {i}')
             plt.imshow(db(pd))
             plt.draw()
-            plt.pause(.1)
+            plt.pause(.1)'''
             pd_cat = np.stack([pd.real, pd.imag]).astype(np.float32).swapaxes(0, 1)
 
             if config['generate_data_settings']['save_as_target']:
@@ -235,6 +243,7 @@ if __name__ == '__main__':
                     torch.save([torch.tensor(p, dtype=torch.float32), tidx],
                                f"{tensor_path}/target_{tidx}_{abs_idx}.pt")
                     abs_idx += 1
+        print(f'Target {tidx} mean of {pt_sample.mean()} and std of {pt_sample.std()}')
 
         if config['generate_data_settings']['save_as_clutter']:
             print(f'Saving clutter spec for target {tobj}')

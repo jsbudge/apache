@@ -149,7 +149,7 @@ class TargetDataset(Dataset):
             nfiles = glob(f'{datapath}/{d}/target_*_*.pt')
             file_sizes[ntarg] = len(nfiles)
         file_idx = np.concatenate([np.ones(s) * i for i, s in enumerate(file_sizes)])
-        sz = len(file_idx)
+        sz = min(file_sizes)
         # file_sizes = [s.shape[0] for s in solo_load]
 
         if split < 1:
@@ -159,7 +159,7 @@ class TargetDataset(Dataset):
         else:
             Xt = np.arange(sz)
             Xs = np.arange(sz)
-        valids = Xs if is_val else Xt
+        valids = np.concatenate([(Xs if is_val else Xt) + sum(file_sizes[:f]) for f in range(len(file_sizes))])
         self.file_idx = file_idx[valids]
         self.file_list = [list(valids[np.where(self.file_idx == n)[0]].astype(int)) for n in range(len(file_sizes))]
 

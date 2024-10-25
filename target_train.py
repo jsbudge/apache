@@ -6,7 +6,7 @@ from simulib.simulation_functions import db
 import yaml
 from dataloaders import TargetEncoderModule
 from models import init_weights, TargetEmbedding
-from sklearn.decomposition import TruncatedSVD
+from sklearn.decomposition import KernelPCA
 import matplotlib.pyplot as plt
 import numpy as np
 from tqdm import tqdm
@@ -67,7 +67,7 @@ if __name__ == '__main__':
                 print('adios!')
                 exit(0)
 
-        # model.to('cpu')
+        model.to(device)
         model.eval()
         sample = next(iter(data.val_dataloader()))
         embedding = model(sample[0].to(device))[0].cpu().data.numpy()
@@ -99,7 +99,7 @@ if __name__ == '__main__':
                 file_idx[i * batch_sz:(i + 1) * batch_sz] = sam[1]
                 if i >= 49:
                     break
-            svd_t = TruncatedSVD(n_components=3).fit_transform(embeddings)
+            svd_t = KernelPCA(kernel='rbf', n_components=3).fit_transform(embeddings)
 
             ax = plt.figure('Embedding Distances').add_subplot(projection='3d')
             ax.scatter(svd_t[:, 0], svd_t[:, 1], svd_t[:, 2], c=file_idx / file_idx.max())

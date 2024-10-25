@@ -72,14 +72,14 @@ exp_params:
     
 # This is for setting up training of target autoencoder
 target_exp_params:
-  LR: 0.0000014
-  weight_decay: 0.0
+  LR: 0.000000014
+  weight_decay: 0.4
   scheduler_gamma: 0.7
   betas: [ .9, .99 ]
   step_size: 1
   swa_start: .7
   log_epoch: 10
-  save_model: False
+  save_model: True
   transform_data: False
   warm_start: True
   loss_landscape: False
@@ -87,29 +87,29 @@ target_exp_params:
   model_type: TargetEncoder
   patience: 550
   is_tuning: False
-  max_epochs: 1000
+  max_epochs: 100
   init_task: False
   exp_name: train-targetencoder-lka-attention-normalized
   is_training: True
   dataset_params:
     data_path: ./data/target_tensors
-    train_batch_size: 28
-    val_batch_size: 28
+    train_batch_size: 38
+    val_batch_size: 38
     num_workers: 0
     pin_memory: False
     split: .7
     single_example: False
     # These values are taken from a sampling of data
-    mu: 0.13710163081625043
-    var: 4014.6355947947404
+    mu: 0.
+    var: 1.
     noise_level: 0.
   model_params:
     in_channels: 2
-    latent_dim: 612
+    latent_dim: 1024
     channel_sz: 32
     # These values are taken from a sampling of data, should be the same as the dataset params
-    mu: 0.13710163081625043
-    var: 4014.6355947947404
+    mu: 0.
+    var: 1.
 
 # For training of wavemodel
 wave_exp_params:
