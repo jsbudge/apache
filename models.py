@@ -647,6 +647,7 @@ class PulseClassifier(FlatModule):
                  label_sz: int,
                  params: dict,
                  channel_sz: int = 32,
+                 embedding_model: FlatModule = None,
                  **kwargs) -> None:
         super(PulseClassifier, self).__init__()
 
@@ -655,6 +656,10 @@ class PulseClassifier(FlatModule):
         self.in_channels = in_dim
         self.label_sz = label_sz
         self.automatic_optimization = False
+        self.embedding_model = embedding_model
+        self.embedding_model.requires_grad = False
+        self.embedding_model.to(self.device)
+        self.embedding_model.eval()
         self.first_layer = nn.Sequential(
             nn.Linear(in_dim, in_dim),
             nn.GELU(),
@@ -676,6 +681,9 @@ class PulseClassifier(FlatModule):
         )
 
     def forward(self, inp: Tensor, **kwargs) -> Tensor:
+        with torch.no_grad():
+            self.embedding_model.eval()
+            inp = self.embedding_model(inp)
         inp = self.first_layer(inp)
         inp = inp.view(-1, 1, self.in_channels)
         inp = self.feedthrough(inp)
@@ -736,3 +744,13 @@ class PulseClassifier(FlatModule):
         scheds = [scheduler]
 
         return optims, scheds
+
+    def train_val_get(self, batch, batch_idx, kind='train'):
+        img, idx = batch
+        feats = self.forward(img)
+        nll = tf.binary_cross_entropy(feats, tf.one_hot(idx).float())
+
+        # Logging ranking metrics
+        self.log_dict({f'{kind}_loss': nll}, on_epoch=True,
+                      prog_bar=True, rank_zero_only=True)
+        return nll
