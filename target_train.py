@@ -13,7 +13,7 @@ from tqdm import tqdm
 import itertools
 
 
-def loadModel(exp_params, fft_len=8192, load_data=True, model_type='target', input_model=None):
+def loadModel(exp_params, gpu_num=1, fft_len=8192, load_data=True, model_type='target', input_model=None):
     if load_data:
         data = TargetEncoderModule(**exp_params["dataset_params"])
         data.setup()
@@ -51,7 +51,7 @@ def loadModel(exp_params, fft_len=8192, load_data=True, model_type='target', inp
                            exp_params['scheduler_gamma'] ** (exp_params['max_epochs'] *
                                                              exp_params['swa_start'])), 1e-9)
         trainer = Trainer(logger=logger, max_epochs=exp_params['max_epochs'],
-                          log_every_n_steps=exp_params['log_epoch'], devices=[1], callbacks=
+                          log_every_n_steps=exp_params['log_epoch'], devices=[gpu_num], callbacks=
                           [EarlyStopping(monitor='train_loss', patience=exp_params['patience'],
                                          check_finite=True),
                            StochasticWeightAveraging(swa_lrs=expected_lr, swa_epoch_start=exp_params['swa_start'])])
@@ -62,7 +62,8 @@ def loadModel(exp_params, fft_len=8192, load_data=True, model_type='target', inp
 
 if __name__ == '__main__':
     torch.set_float32_matmul_precision('medium')
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    gpu_num = 1
+    device = f'cuda:{gpu_num}' if torch.cuda.is_available() else 'cpu'
     seed_everything(np.random.randint(1, 2048), workers=True)
     # seed_everything(43, workers=True)
 
@@ -71,8 +72,8 @@ if __name__ == '__main__':
 
     exp_params = param_dict['target_exp_params']
 
-    trainer, model, data, task = loadModel(exp_params, param_dict['settings']['fft_len'], True,'target')
-    ptrainer, pmodel, _, _ = loadModel(param_dict['pulse_exp_params'], param_dict['settings']['fft_len'], False, 'pulse', input_model=model)
+    trainer, model, data, task = loadModel(exp_params, gpu_num, param_dict['settings']['fft_len'], True,'target')
+    ptrainer, pmodel, _, _ = loadModel(param_dict['pulse_exp_params'], gpu_num, param_dict['settings']['fft_len'], False, 'pulse', input_model=model)
 
     if exp_params['is_training']:
         print("======= Training =======")
@@ -135,11 +136,14 @@ if __name__ == '__main__':
         ax.scatter(svd_t[:, 0], svd_t[:, 1], svd_t[:, 2], c=file_idx / file_idx.max())
         model.to('cpu')
 
-        classified_pulses = pmodel(torch.Tensor(samples).to(pmodel.device)).cpu().data.numpy()
+        shuffle_idxes = np.random.permutation(np.arange(len(file_idx)))
+        pmodel.to(device)
+
+        classified_pulses = pmodel(torch.Tensor(samples[shuffle_idxes]).to(pmodel.device)).cpu().data.numpy()
         file_pred = np.argmax(classified_pulses, axis=1)
         conf_sz = np.zeros((19, 19))
         for n, m in itertools.product(range(19), range(19)):
-            conf_sz[n, m] = sum(np.logical_and(file_pred == n, file_idx == m))
+            conf_sz[n, m] = sum(np.logical_and(file_pred == n, file_idx[shuffle_idxes] == m))
         plt.figure('Pulse Confusion Matrix')
         plt.imshow(conf_sz)
 

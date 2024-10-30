@@ -90,7 +90,7 @@ target_exp_params:
   max_epochs: 100
   init_task: False
   exp_name: train-targetencoder-lka-attention-normalized
-  is_training: False
+  is_training: True
   dataset_params:
     data_path: ./data/target_tensors
     train_batch_size: 38

@@ -487,7 +487,6 @@ class TargetEmbedding(FlatModule):
         self.encoder_inflate = nn.Conv1d(in_channels, channel_sz, 1, 1, 0)
         prev_lev_enc = channel_sz
         self.encoder_reduce = nn.ModuleList()
-        self.encoder_pool = nn.ModuleList()
         self.encoder_conv = nn.ModuleList()
         for l in range(levels):
             ch_lev_enc = prev_lev_enc * 2
@@ -496,18 +495,11 @@ class TargetEmbedding(FlatModule):
                 nn.Conv1d(prev_lev_enc, ch_lev_enc, 4, 2, 1),
                 nn.GELU(),
             ))
-            self.encoder_pool.append(nn.Sequential(nn.Conv1d(prev_lev_enc, ch_lev_enc, 1, 1, 0),
-                                                   nn.MaxPool1d(2)))
             self.encoder_conv.append(nn.Sequential(
-                LKA1d(ch_lev_enc, kernel_sizes=(255, 255), dilation=6),
+                LKA1d(ch_lev_enc, kernel_sizes=(513, 255), dilation=10),
                 nn.LayerNorm(layer_sz),
                 nn.Conv1d(ch_lev_enc, ch_lev_enc, 3, 1, 1),
                 nn.GELU(),
-                nn.Conv1d(ch_lev_enc, ch_lev_enc, 3, 1, 1),
-                nn.GELU(),
-                nn.Conv1d(ch_lev_enc, ch_lev_enc, 3, 1, 1),
-                nn.GELU(),
-                nn.LayerNorm(layer_sz),
             ))
             prev_lev_enc = ch_lev_enc + 0
 
@@ -524,13 +516,11 @@ class TargetEmbedding(FlatModule):
             nn.Linear(latent_dim, latent_dim),
         )
 
-        '''self.classifier = PulseClassifier(latent_dim, 19, channel_sz)
-
         self.contrast_g = nn.Sequential(
             nn.Linear(latent_dim, latent_dim),
             nn.GELU(),
             nn.Linear(latent_dim, latent_dim)
-        )'''
+        )
 
         self.latent_dim = latent_dim
         self.out_sz = out_sz
@@ -544,14 +534,14 @@ class TargetEmbedding(FlatModule):
                 :return: (Tensor) List of latent codes
                 """
         inp = self.encoder_inflate(inp)
-        for conv, red, pool in zip(self.encoder_conv, self.encoder_reduce, self.encoder_pool):
-            inp = conv(red(inp) * pool(inp))
+        for conv, red in zip(self.encoder_conv, self.encoder_reduce):
+            inp = conv(red(inp))
         inp = self.encoder_flatten(inp).view(-1, self.out_sz)
         return self.fc_z(inp)
 
     def contrast_map(self, inp: Tensor, **kwargs):
-        # return self.contrast_g(self.forward(inp))
-        return self.forward(inp)
+        return self.contrast_g(self.forward(inp))
+        # return self.forward(inp)
 
     # def loss_function(self, y, y_pred):
     #     return tf.cosine_similarity(y, y_pred)
@@ -747,8 +737,9 @@ class PulseClassifier(FlatModule):
 
     def train_val_get(self, batch, batch_idx, kind='train'):
         img, idx = batch
-        feats = self.forward(img)
-        nll = tf.binary_cross_entropy(feats, tf.one_hot(idx).float())
+        randidxes = torch.randperm(img.shape[0])
+        feats = self.forward(img[randidxes])
+        nll = tf.binary_cross_entropy(feats, tf.one_hot(idx[randidxes]).float())
 
         # Logging ranking metrics
         self.log_dict({f'{kind}_loss': nll}, on_epoch=True,
