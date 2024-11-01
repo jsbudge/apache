@@ -13,7 +13,7 @@ from tqdm import tqdm
 import itertools
 
 
-def loadModel(exp_params, gpu_num=1, fft_len=8192, load_data=True, model_type='target', input_model=None):
+def loadModel(exp_params, gpu_num=1, fft_len=8192, load_data=True, model_type='target', log_dir=None, input_model=None):
     if load_data:
         data = TargetEncoderModule(**exp_params["dataset_params"])
         data.setup()
@@ -46,7 +46,7 @@ def loadModel(exp_params, gpu_num=1, fft_len=8192, load_data=True, model_type='t
         task = None
 
     if exp_params['is_training']:
-        logger = loggers.TensorBoardLogger(param_dict['train_params']['log_dir'], name=name)
+        logger = loggers.TensorBoardLogger(log_dir, name=name)
         expected_lr = max((exp_params['LR'] *
                            exp_params['scheduler_gamma'] ** (exp_params['max_epochs'] *
                                                              exp_params['swa_start'])), 1e-9)
@@ -72,8 +72,8 @@ if __name__ == '__main__':
 
     exp_params = param_dict['target_exp_params']
 
-    trainer, model, data, task = loadModel(exp_params, gpu_num, param_dict['settings']['fft_len'], True,'target')
-    ptrainer, pmodel, _, _ = loadModel(param_dict['pulse_exp_params'], gpu_num, param_dict['settings']['fft_len'], False, 'pulse', input_model=model)
+    trainer, model, data, task = loadModel(exp_params, gpu_num, param_dict['settings']['fft_len'], True,'target', param_dict['train_params']['log_dir'])
+    ptrainer, pmodel, _, _ = loadModel(param_dict['pulse_exp_params'], gpu_num, param_dict['settings']['fft_len'], False, 'pulse', param_dict['train_params']['log_dir'], input_model=model)
 
     if exp_params['is_training']:
         print("======= Training =======")
@@ -146,6 +146,7 @@ if __name__ == '__main__':
             conf_sz[n, m] = sum(np.logical_and(file_pred == n, file_idx[shuffle_idxes] == m))
         plt.figure('Pulse Confusion Matrix')
         plt.imshow(conf_sz)
+        plt.colorbar()
 
         plt.show()
 

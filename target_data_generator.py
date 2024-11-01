@@ -54,7 +54,7 @@ def genProfileFromMesh(obj_path, niters, mf_chirp, nboxes, points_to_sample, sca
     except IndexError:
         print(f'{tobj} not found.')
 
-    box_tree, sample_points = getBoxesSamplesFromMesh(mesh, num_boxes=nboxes, sample_points=points_to_sample,
+    box_tree, sample_points = getBoxesSamplesFromMesh(mesh, num_box_levels=nboxes, sample_points=points_to_sample,
                                                       material_sigmas=[2.])
 
     # Apply random rotations and scalings for augmenting of training data
@@ -145,7 +145,7 @@ if __name__ == '__main__':
     ant_transmit_power = 100  # watts
     ant_eff_aperture = 10. * 10.  # m**2
     fc = 9.6e9
-    nboxes = 25
+    nbox_levels = 4
     points_to_sample = 2000
     num_bounces = 0
     nbounce_ray = 5
@@ -212,7 +212,7 @@ if __name__ == '__main__':
         if not Path(tensor_path).exists():
             os.mkdir(tensor_path)
         if scaling > 0:
-            gen_iter = iter(genProfileFromMesh(obj_path, niters, mf_chirp, nboxes, points_to_sample, scaling, n_tris=10000))
+            gen_iter = iter(genProfileFromMesh(obj_path, niters, mf_chirp, nbox_levels, points_to_sample, scaling, n_tris=10000))
         else:
             gen_iter = iter(genProfileFromVCS(obj_path, niters, mf_chirp))
             
@@ -234,7 +234,8 @@ if __name__ == '__main__':
             plt.imshow(db(pd))
             plt.draw()
             plt.pause(.1)'''
-            pd_cat = np.stack([pd.real, pd.imag]).astype(np.float32).swapaxes(0, 1)
+            pd_cat = formatTargetClutterData(pd, fft_len)
+            # pd_cat = np.stack([pd.real, pd.imag]).astype(np.float32).swapaxes(0, 1)
 
             if config['generate_data_settings']['save_as_target']:
                 if i == 0:
@@ -280,6 +281,12 @@ if __name__ == '__main__':
                 # CHeck to see we're writing to a fresh file
                 if Path(f'{save_path}/target_{tidx}_{clut_name}.spec').exists():
                     os.remove(f'{save_path}/target_{tidx}_{clut_name}.spec')
+
+                if scaling > 0:
+                    mesh = readCombineMeshFile(obj_path, 10000, scale=1 / scaling)
+                    box_tree, sample_points = getBoxesSamplesFromMesh(mesh, num_box_levels=nbox_levels,
+                                                                      sample_points=points_to_sample,
+                                                                      material_sigmas=[2.])
                 for n in range(pulse_lims[0], pulse_lims[1], config['settings']['cpi_len']):
                     if n + config['settings']['cpi_len'] > sdr_ch[0].nframes:
                         break
@@ -289,9 +296,9 @@ if __name__ == '__main__':
                                                             rp.txpos(ts),
                                                             rp.boresight(ts),
                                                             radar_coeff,
-                                                            rp.az_half_bw * 2,
-                                                            rp.el_half_bw * 2,
-                                                            nsam, fc, near_range_s,
+                                                            rp.az_half_bw,
+                                                            rp.el_half_bw,
+                                                            nsam, sdr_ch[0].fc, near_range_s,
                                                             num_bounces=num_bounces,
                                                             bounce_rays=nbounce_ray)
                         tpsd = np.fft.fft(single_rp, fft_len, axis=1) * mfilt

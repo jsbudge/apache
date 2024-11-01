@@ -199,7 +199,7 @@ class GeneratorExperiment(pl.LightningModule):
     def train_val_get(self, batch, batch_idx):
         clutter_enc, target_enc, clutter_spec, target_spec, pulse_length, bandwidth = batch
 
-        results = self.forward([clutter_enc, target_enc, pulse_length, bandwidth])
+        results = self.forward([clutter_spec, target_spec, pulse_length, bandwidth])
         train_loss = self.model.loss_function(results, clutter_spec, target_spec, bandwidth)
 
         train_loss['loss'] = torch.sqrt(torch.abs(

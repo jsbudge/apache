@@ -102,39 +102,6 @@ class PulseDataset(Dataset):
         clutter_files = glob(f'{self.root_dir}/clutter_*.spec')
         dt = [np.fromfile(c, dtype=np.float32).reshape((-1, 2, self.fft_len + 2)) for c in clutter_files]
         return clutter_files, np.concatenate(dt) if concat else dt
-    
-    
-'''class TargetDataset(Dataset):
-    def __init__(self, datapath: str = './data', split: float = 1., is_val: bool = False, mu: float = .01,
-                 var: float = 4.9, seed: int = 7):
-        # Load in data
-        self.datapath = datapath
-        solo_data = glob(f'{datapath}/target_*_solo.dat')
-        solo_load = [np.fromfile(s, dtype=np.float32).reshape((-1, 2, 8192)) for s in solo_data]
-        self.data = torch.tensor(np.concatenate(solo_load, axis=0))
-        file_idx = np.concatenate([np.ones(s.shape[0]) * i for i, s in enumerate(solo_load)])
-        # file_sizes = [s.shape[0] for s in solo_load]
-
-        if split < 1:
-            Xs, Xt, _, _ = train_test_split(np.arange(self.data.shape[0]),
-                                            np.arange(self.data.shape[0]),
-                                            test_size=split, random_state=seed)
-        else:
-            Xt = np.arange(self.data.shape[0])
-            Xs = np.arange(self.data.shape[0])
-        self.data = self.data[Xs] if is_val else self.data[Xt]
-        self.file_idx = file_idx[Xs] if is_val else file_idx[Xt]
-        self.file_list = [list(np.where(self.file_idx == n)[0].astype(int)) for n in range(len(solo_load))]
-
-    def __getitem__(self, idx):
-        return self.data[idx], self.file_idx[idx]
-
-    def __len__(self):
-        return self.data.shape[0]
-    
-    def get_data(self):
-        solo_data = glob(f'{self.datapath}/target_*_solo.dat')
-        return [torch.tensor(np.fromfile(s, dtype=np.float32).reshape((-1, 2, 8192))) for s in solo_data]'''
 
 
 class TargetDataset(Dataset):
