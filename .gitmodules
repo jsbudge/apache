@@ -1,6 +1,3 @@
 [submodule "simulib"]
 	path = simulib
 	url = https://github.com/jsbudge/simulib.git
-[submodule "data_converter"]
-	path = data_converter
-	url = https://jbudge@bitbucket.org/artemisinc/data_converter.git
