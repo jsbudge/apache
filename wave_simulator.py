@@ -27,10 +27,10 @@ def reloadWaveforms(a_wave_mdl, pulse_data, a_nr, a_fft_len, tc_d, a_rps, a_bwid
     fn_waves = a_wave_mdl.full_forward(pulse_data, tc_d, a_nr, a_bwidth, mu, std)
     # Calculate out the center frequency for shifting
     wv = np.fft.fftshift(fn_waves, axes=1)
-    if a_wave_mdl.fft_sz != a_fft_len:
+    if a_wave_mdl.fft_len != a_fft_len:
         new_waves = np.zeros((fn_waves.shape[0], a_fft_len), dtype=np.complex128)
-        new_waves[:, :a_wave_mdl.fft_sz // 2] = fn_waves[:, :a_wave_mdl.fft_sz // 2]
-        new_waves[:, -a_wave_mdl.fft_sz // 2:] = fn_waves[:, -a_wave_mdl.fft_sz // 2:]
+        new_waves[:, :a_wave_mdl.fft_len // 2] = fn_waves[:, :a_wave_mdl.fft_len // 2]
+        new_waves[:, -a_wave_mdl.fft_len // 2:] = fn_waves[:, -a_wave_mdl.fft_len // 2:]
         fn_waves = new_waves
     nfc = 1e9 + (wv.shape[1] // 2 - np.arange(wv.shape[1])[db(wv[0]) > db(wv[0]).max() - 50]).mean() * fs / wv.shape[1]
     _, fn_chirps, fn_mfilts = genChirpAndMatchedFilters(fn_waves, a_rps, a_bwidth, fs, nfc, a_fft_len, use_window=False)
@@ -168,7 +168,7 @@ if __name__ == '__main__':
         print('Wavemodel loaded.')
 
         active_clutter = np.fft.fft(sdr.getPulses(sdr[0].frame_num[:wave_config['settings']['cpi_len']], 0)[1].T,
-                                    wave_mdl.fft_sz, axis=1)
+                                    wave_mdl.fft_len, axis=1)
         bandwidth_model = torch.tensor(settings['bandwidth'], device=wave_mdl.device)
         tsdata = np.fromfile('/home/jeff/repo/apache/data/targets.enc',
                              dtype=np.float32).reshape((-1, wave_config['target_exp_params']['model_params']['latent_dim'])

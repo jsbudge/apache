@@ -106,12 +106,12 @@ class GeneratorExperiment(pl.LightningModule):
         self.manual_backward(train_loss['loss'])
         self.clip_gradients(opt, gradient_clip_val=0.5, gradient_clip_algorithm="norm")
         opt.step()
-        self.log_dict({key: val.item() for key, val in train_loss.items()}, sync_dist=True,
+        self.log_dict(train_loss, sync_dist=True,
                       prog_bar=True, rank_zero_only=True, on_epoch=True)
 
     def validation_step(self, batch, batch_idx):
         losses = self.train_val_get(batch, batch_idx)
-        self.log_dict({key: val.item() for key, val in losses.items()}, sync_dist=True, prog_bar=True,
+        self.log_dict(self.train_val_get(batch, batch_idx), sync_dist=True, prog_bar=True,
                       rank_zero_only=True)
 
     def on_validation_end(self) -> None:
@@ -197,10 +197,10 @@ class GeneratorExperiment(pl.LightningModule):
         return optims, scheds
 
     def train_val_get(self, batch, batch_idx):
-        clutter_enc, target_enc, clutter_spec, target_spec, pulse_length, bandwidth = batch
+        clutter_spec, target_spec, target_enc, pulse_length = batch
 
-        results = self.forward([clutter_spec, target_spec, pulse_length, bandwidth])
-        train_loss = self.model.loss_function(results, clutter_spec, target_spec, bandwidth)
+        results = self.forward([clutter_spec, target_enc, pulse_length])
+        train_loss = self.model.loss_function(results, clutter_spec, target_spec, target_enc, pulse_length)
 
         train_loss['loss'] = torch.sqrt(torch.abs(
             train_loss['sidelobe_loss'] * (1 + train_loss['target_loss'] + train_loss['ortho_loss'])))

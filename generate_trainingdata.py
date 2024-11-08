@@ -1,5 +1,5 @@
 import numpy as np
-from data_converter.SDRParsing import SDRParse, load, loadXMLFile
+from sdrparse.SDRParsing import SDRParse, load, loadXMLFile
 from tqdm import tqdm
 from glob import glob
 from pathlib import Path
@@ -136,6 +136,7 @@ if __name__ == '__main__':
 
         print(f'File is {fn}')
         pathname = f'{save_path}/clutter_{fn.split("/")[-1].split(".")[0]}.spec'
+        # Make sure we're not appending to some random file
         if Path(pathname).exists() and config['generate_data_settings']['save_files']:
             with open(pathname, 'w') as f:
                 f.close()
@@ -155,19 +156,14 @@ if __name__ == '__main__':
             run_mu = (mu + abs_idx * run_mu) / (abs_idx + 1)
             run_std = (std + abs_idx * run_std) / (abs_idx + 1)
             # Get scaling parameters for storage
-            per_pulse_mu = abs(pulse_data[valids].mean(axis=0)) * 0
             per_pulse_std = abs(pulse_data[valids].std(axis=0))
-            p_muscale = np.repeat(per_pulse_mu, 2).astype(np.float32)
-            p_stdscale = np.repeat(per_pulse_std, 2).astype(np.float32)
             # Normalize each pulse against itself; each one has mu of zero and std of one
-            pulse_data[valids, :] = (pulse_data[valids, :] - per_pulse_mu) / per_pulse_std
+            pulse_data[valids, :] = pulse_data[valids, :] / per_pulse_std
             # Shift the data so it's centered around zero (for the autoencoder)
             if sdr_f[0].baseband_fc != 0.:
                 shift_bin = int(sdr_f[0].baseband_fc / sdr_f[0].fs * fft_len)
                 pulse_data = np.roll(pulse_data, -shift_bin, 0)
             inp_data = formatTargetClutterData(pulse_data.T, fft_len).astype(np.float32)
-            inp_data = np.concatenate((inp_data, p_muscale.reshape(-1, 2, 1),
-                                       p_stdscale.reshape(-1, 2, 1)), axis=2)
 
             if config['generate_data_settings']['save_files']:
                 with open(pathname, 'ab') as writer:

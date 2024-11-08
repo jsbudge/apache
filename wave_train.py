@@ -1,7 +1,7 @@
 import pickle
 from utils import upsample, normalize, fs
 import numpy as np
-from simulib.simulation_functions import genPulse, db
+from simulib import genPulse, db
 import matplotlib.pyplot as plt
 from scipy.signal import stft
 import torch
@@ -10,7 +10,7 @@ from pytorch_lightning.callbacks import EarlyStopping, StochasticWeightAveraging
 import yaml
 from dataloaders import WaveDataModule
 from experiment import GeneratorExperiment
-from models import Encoder
+from models import TargetEmbedding
 from waveform_model import GeneratorModel
 from os import listdir
 from clearml import Task
@@ -48,32 +48,31 @@ if __name__ == '__main__':
 
     print('Setting up wavemodel...')
     # Get the model, experiment, logger set up
-    decoder = Encoder(**config['exp_params']['model_params'], fft_len=config['settings']['fft_len'],
-                      params=config['exp_params'])
+    embedding = TargetEmbedding(**config['target_exp_params']['model_params'], fft_len=fft_len, params=config['target_exp_params'])
     print('Setting up decoder...')
     try:
-        decoder.load_state_dict(torch.load('./model/inference_model.state'))
+        embedding.load_state_dict(torch.load('./model/target_model.state'))
     except RuntimeError:
-        print('Decoder save file does not match current structure. Re-running with new structure.')
-    decoder.requires_grad = False
+        print('Model save file does not match current structure. Re-running with new structure.')
+    embedding.requires_grad = False
     warm_start = False
     if config['wave_exp_params']['warm_start']:
         print('Wavemodel loaded from save state.')
         try:
             with open('./model/current_model_params.pic', 'rb') as f:
                 generator_params = pickle.load(f)
-            wave_mdl = GeneratorModel(**generator_params, decoder=decoder)
+            wave_mdl = GeneratorModel(**generator_params, embedding=embedding)
             wave_mdl.load_state_dict(torch.load(generator_params['state_file']))
             warm_start = True
         except RuntimeError as e:
             print(f'Wavemodel save file does not match current structure. Re-running with new structure.\n{e}')
-            wave_mdl = GeneratorModel(fft_sz=fft_len, decoder=decoder, channel_sz=exp_params['channel_sz'],
+            wave_mdl = GeneratorModel(fft_len=fft_len,  embedding=embedding, channel_sz=exp_params['channel_sz'],
                                       clutter_latent_size=config['exp_params']['model_params']['latent_dim'],
                                       target_latent_size=config['target_exp_params']['model_params']['latent_dim'],
                                       n_ants=1)
     else:
         print('Initializing new wavemodel...')
-        wave_mdl = GeneratorModel(fft_sz=fft_len, decoder=decoder, channel_sz=exp_params['channel_sz'],
+        wave_mdl = GeneratorModel(fft_len=fft_len,  embedding=embedding, channel_sz=exp_params['channel_sz'],
                                   clutter_latent_size=config['exp_params']['model_params']['latent_dim'],
                                   target_latent_size=config['target_exp_params']['model_params']['latent_dim'],
                                   n_ants=1)
@@ -129,13 +128,11 @@ if __name__ == '__main__':
             wave_mdl.to(device)
             wave_mdl.eval()
 
-            cc, tc, cs, ts, plength, dset_bandwidth = next(iter(data.train_dataloader()))
+            cc, ts, plength = next(iter(data.train_dataloader()))
             cc = cc.to(device)
-            tc = tc.to(device)
-            cs = cs.to(device)
             ts = ts.to(device)
 
-            nn_output = wave_mdl([cc, tc, plength, dset_bandwidth])
+            nn_output = wave_mdl([cc, ts, plength])
             # nn_numpy = nn_output[0, 0, ...].cpu().data.numpy()
 
             waves = wave_mdl.getWaveform(nn_output=nn_output).cpu().data.numpy()
@@ -143,7 +140,7 @@ if __name__ == '__main__':
             # waves = np.fft.fft(np.fft.ifft(waves, axis=2)[:, :, :nr], fft_len, axis=2)
             print('Loaded waveforms...')
 
-            clutter = cs.cpu().data.numpy()
+            clutter = cc.cpu().data.numpy()
             clutter = normalize(clutter[:, 0, :] + 1j * clutter[:, 1, :])
             targets = ts.cpu().data.numpy()
             targets = normalize(targets[:, 0, :] + 1j * targets[:, 1, :])

@@ -141,8 +141,8 @@ if __name__ == '__main__':
 
         classified_pulses = pmodel(torch.Tensor(samples[shuffle_idxes]).to(pmodel.device)).cpu().data.numpy()
         file_pred = np.argmax(classified_pulses, axis=1)
-        conf_sz = np.zeros((19, 19))
-        for n, m in itertools.product(range(19), range(19)):
+        conf_sz = np.zeros((24, 24))
+        for n, m in itertools.product(range(24), range(24)):
             conf_sz[n, m] = sum(np.logical_and(file_pred == n, file_idx[shuffle_idxes] == m))
         plt.figure('Pulse Confusion Matrix')
         plt.imshow(conf_sz)

@@ -57,7 +57,7 @@ def objective(trial: optuna.Trial):
     config['wave_exp_params']['step_size'] = step_size
     config['wave_exp_params']['betas'] = [beta0, beta1]
 
-    wave_mdl = GeneratorModel(fft_sz=fft_len,
+    wave_mdl = GeneratorModel(fft_len=fft_len,
                               stft_win_sz=config['settings']['stft_win_sz'],
                               clutter_latent_size=config['model_params']['latent_dim'],
                               target_latent_size=config['model_params']['latent_dim'], n_ants=2)

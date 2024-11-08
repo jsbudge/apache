@@ -31,8 +31,8 @@ generate_data_settings:
   save_files: True
   local_path: ./data
   obj_path: /home/jeff/Documents/target_meshes
-  save_as_target: True
-  save_as_clutter: False
+  save_as_target: False
+  save_as_clutter: True
 
 # This is for setting up training of autoencoder
 exp_params:
@@ -90,11 +90,11 @@ target_exp_params:
   max_epochs: 100
   init_task: False
   exp_name: train-targetencoder-lka-attention-normalized
-  is_training: True
+  is_training: False
   dataset_params:
     data_path: ./data/target_tensors
-    train_batch_size: 38
-    val_batch_size: 38
+    train_batch_size: 50
+    val_batch_size: 50
     num_workers: 0
     pin_memory: False
     split: .7
@@ -106,8 +106,8 @@ target_exp_params:
   model_params:
     in_channels: 2
     latent_dim: 1024
-    channel_sz: 38
-    label_sz: 19
+    channel_sz: 32
+    label_sz: 25
     # These values are taken from a sampling of data, should be the same as the dataset params
     mu: 0.
     var: 1.
@@ -135,8 +135,8 @@ pulse_exp_params:
   is_training: True
   dataset_params:
     data_path: ./data/target_tensors
-    train_batch_size: 38
-    val_batch_size: 38
+    train_batch_size: 50
+    val_batch_size: 50
     num_workers: 0
     pin_memory: False
     split: .7
@@ -148,8 +148,8 @@ pulse_exp_params:
   model_params:
     in_channels: 2
     latent_dim: 1024
-    channel_sz: 38
-    label_sz: 19
+    channel_sz: 32
+    label_sz: 25
     # These values are taken from a sampling of data, should be the same as the dataset params
     mu: 0.
     var: 1.
@@ -168,15 +168,16 @@ wave_exp_params:
   save_model: True
   loss_landscape: False
   patience: 5
-  channel_sz: 128
+  channel_sz: 32
+  flowthrough_channels: 16
   bandwidth: 400000000.
-  max_epochs: 500
+  max_epochs: 1500
   init_task: False
   exp_name: wavemodel-6x6-goodsidelobes
   dataset_params:
     data_path: ./data
-    train_batch_size: 2
-    val_batch_size: 2
+    train_batch_size: 32
+    val_batch_size: 32
     num_workers: 0
     pin_memory: False
     split: .7

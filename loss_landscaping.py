@@ -209,13 +209,13 @@ if __name__ == '__main__':
             warm_start = True
         except RuntimeError as e:
             print(f'Wavemodel save file does not match current structure. Re-running with new structure.\n{e}')
-            wave_mdl = GeneratorModel(fft_sz=fft_len,
+            wave_mdl = GeneratorModel(fft_len=fft_len,
                                       stft_win_sz=wave_config['settings']['stft_win_sz'],
                                       clutter_latent_size=wave_config['model_params']['latent_dim'],
                                       target_latent_size=wave_config['model_params']['latent_dim'], n_ants=2)
     else:
         print('Initializing new wavemodel...')
-        wave_mdl = GeneratorModel(fft_sz=fft_len,
+        wave_mdl = GeneratorModel(fft_len=fft_len,
                                   stft_win_sz=wave_config['settings']['stft_win_sz'],
                                   clutter_latent_size=wave_config['model_params']['latent_dim'],
                                   target_latent_size=wave_config['model_params']['latent_dim'], n_ants=2)

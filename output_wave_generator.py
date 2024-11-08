@@ -86,7 +86,7 @@ pnums = np.arange(1700, 1756)
 _, raw_pulse_data = sdr.getPulses(pnums, 0)
 mfilt = sdr.genMatchedFilter(0, fft_len=fft_len)
 ts = sdr[0].pulse_time[pnums]
-pulse_data = np.fft.fft(raw_pulse_data.T, wave_mdl.fft_sz, axis=1) * mfilt
+pulse_data = np.fft.fft(raw_pulse_data.T, wave_mdl.fft_len, axis=1) * mfilt
 tsdata = np.fromfile('/home/jeff/repo/apache/data/targets.enc',
                      dtype=np.float32).reshape((-1, config['target_exp_params']['model_params']['latent_dim'])
                                                )[target_target, ...]

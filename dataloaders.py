@@ -142,45 +142,41 @@ class TargetDataset(Dataset):
         return [torch.tensor(np.fromfile(s, dtype=np.float32).reshape((-1, 2, 8192))) for s in solo_data]
 
 
-class WaveDataset(ConcatDataset):
+class WaveDataset(Dataset):
     def __init__(self, root_dir: str, target_latent_dim: int = 1024, clutter_latent_dim: int = 512, fft_sz: int = 4096,
                  split: float = 1., single_example: bool = False, min_pulse_length: int = 1, max_pulse_length: int = 2,
                  seq_len: int = 32, is_val=False, seed=42):
         assert Path(root_dir).is_dir()
+        self.datapath = f'{root_dir}/target_tensors/clutter_tensors'
 
-        clutter_spec_files = glob(f'{root_dir}/clutter_*.spec')
-        target_spec_files = glob(f'{root_dir}/target_*.spec')
-        clutter_enc_files = glob(f'{root_dir}/clutter_*.enc')
-        target_pattern_file = f'{root_dir}/targets.enc'
+        clutter_spec_files = glob(f'{self.datapath}/tc_*.pt')
+        patterns = torch.load(f'{root_dir}/target_embedding_means.pt')
 
-        # Get master pattern for files
-        patterns = np.fromfile(target_pattern_file, np.float32).reshape((-1, target_latent_dim))
+        # Clutter data
+        file_idxes = np.arange(len(clutter_spec_files) - seq_len)
+        if split < 1:
+            Xs, Xt, _, _ = train_test_split(file_idxes,
+                                            file_idxes,
+                                            test_size=split, random_state=seed)
+        else:
+            Xt = file_idxes
+            Xs = file_idxes
+        self.idxes = Xs if is_val else Xt
+        self.single = single_example
+        self.patterns = patterns[0]
 
-        # Arrange files into their pairs
-        pair_dict = {}
-        clutter_size = []
-        file_idx = 0
-        for fl, tp in [(clutter_spec_files, 'cs'), (clutter_enc_files, 'cc'), (target_spec_files, 'ts')]:
-            for cs in fl:
-                path_stem = '_'.join(Path(cs).stem.split('_')[1:]) \
-                    if tp in ['cs', 'cc'] else '_'.join(Path(cs).stem.split('_')[2:])
-                if path_stem in pair_dict:
-                    pair_dict[path_stem][tp] = cs
-                else:
-                    pair_dict[path_stem] = {tp: cs}
-                if tp == 'cc':
-                    csz = int((os.stat(cs).st_size / (4 * clutter_latent_dim) - 255) *
-                              (1 - split if is_val and split < 1 else split))
-                    clutter_size = clutter_size + [(file_idx, n) for n in range(csz)]
-                    file_idx += 1
-                    pair_dict[path_stem]['size'] = csz
-                elif tp == 'ts':
-                    pair_dict[path_stem]['tc'] = patterns[int(Path(cs).stem.split('_')[1])]
+        self.seq_len = seq_len
+        self.min_pulse_length = min_pulse_length
+        self.max_pulse_length = max_pulse_length
+        self.seed = seed
 
-        pairs = [l for _, l in pair_dict.items()]
-        datasets = [WaveFileDataset(p, clutter_latent_dim, fft_sz, split, single_example, min_pulse_length,
-                                    max_pulse_length, seq_len, is_val, seed) for p in pairs]
-        super().__init__(datasets)
+    def __getitem__(self, idx):
+        data = [torch.load(f'{self.datapath}/tc_{n}.pt') for n in range(idx, idx + self.seq_len)]
+        return (torch.cat([c.unsqueeze(0) for c, t, i in data], dim=0), data[-1][1], self.patterns[data[-1][2]].clone().detach(),
+                np.random.randint(self.min_pulse_length, self.max_pulse_length))
+
+    def __len__(self):
+        return self.idxes.shape[0]
 
 
 class WaveFileDataset(Dataset):

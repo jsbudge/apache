@@ -2,19 +2,18 @@ from glob import glob
 import os
 import numpy as np
 from pathlib import Path
-from simulib.simulation_functions import db, azelToVec, genChirp, getElevation
-from simulib.cuda_mesh_kernels import readCombineMeshFile, getBoxesSamplesFromMesh, getRangeProfileFromMesh
+from numba import cuda
+from simulib import db, azelToVec, genChirp, getElevation, enu2llh
+from simulib.mesh_functions import readCombineMeshFile, getBoxesSamplesFromMesh, getRangeProfileFromMesh
 from simulib.platform_helper import SDRPlatform
-from simulib.cuda_kernels import cpudiff, getMaxThreads
 from generate_trainingdata import formatTargetClutterData
 from scipy.signal.windows import taylor
 import matplotlib.pyplot as plt
 import plotly.io as pio
 from tqdm import tqdm
 import yaml
-from data_converter.SDRParsing import load
+from sdrparse.SDRParsing import load, loadXMLFile
 import torch
-import cupy
 
 # pio.renderers.default = 'svg'
 pio.renderers.default = 'browser'
@@ -48,14 +47,19 @@ def readVCS(filepath):
     return scat_data, np.array(angles) * DTR
 
 
-def genProfileFromMesh(obj_path, niters, mf_chirp, nboxes, points_to_sample, scaling, n_tris=20000):
+def genProfileFromMesh(obj_path, niters, mf_chirp, nboxes, points_to_sample, scaling, streams, n_tris=20000):
     try:
         mesh = readCombineMeshFile(obj_path, n_tris, scale=1 / scaling)
     except IndexError:
         print(f'{tobj} not found.')
 
-    box_tree, sample_points = getBoxesSamplesFromMesh(mesh, num_box_levels=nboxes, sample_points=points_to_sample,
-                                                      material_sigmas=[2.])
+    if np.linalg.norm(mesh.get_center()) > 2.:
+        mesh = mesh.translate(np.array([0, 0, 0.]), relative=False)
+
+    _, poses, boresights = calcPosBoresight(standoff)
+    view_pos = poses[np.linspace(0, poses.shape[0], 32).astype(int)]
+
+    box_tree, sample_points = getBoxesSamplesFromMesh(mesh, num_box_levels=nboxes, sample_points=points_to_sample, view_pos=view_pos, use_box_pts=True)
 
     # Apply random rotations and scalings for augmenting of training data
     for i in range(niters):
@@ -66,7 +70,7 @@ def genProfileFromMesh(obj_path, niters, mf_chirp, nboxes, points_to_sample, sca
                                             30 * DTR,
                                             nsam, fc, near_range_s,
                                             num_bounces=num_bounces,
-                                            bounce_rays=nbounce_ray)
+                                            bounce_rays=nbounce_ray, streams=streams)
         yield np.fft.fft(single_rp, fft_len, axis=1) * mf_chirp[chirp_idx], i
 
 
@@ -92,40 +96,6 @@ def genProfileFromVCS(obj_path, niters, mf_chirp):
         yield np.fft.fft(pd, fft_len, axis=1) * mf_chirp[chirp_idx], i
 
 
-def getSpectrumFromTargetProfile(sdr, rp, ts, tcdata, fft_len):
-    """
-    Given a target profile matrix, generates pulses for a sample set of times and a trajectory.
-    :param sdr: SDRParse object for trajectory.
-    :param rp: RadarPlatform object to interpolate correct trajectory values.
-    :param ts: Array of sample times (GPS times)
-    :param tcdata: Target profile matrix.
-    :param fft_len: Length of the FFT to return.
-    :return: Match filtered, frequency domain data for the target profile.
-    """
-    pulse = np.fft.fft(sdr[0].cal_chirp, fft_len)
-    mfilt = sdr.genMatchedFilter(0, fft_len=fft_len) / 1e4
-
-    # Generate the pans and tilts that correspond to columns in the target profile matrix.
-    pans, tilts = np.meshgrid(np.linspace(0, 2 * np.pi, 16, endpoint=False),
-                              np.linspace(np.pi / 2 - .1, -np.pi / 2 + .1, 16))
-    pan = pans.flatten()
-    tilt = tilts.flatten()
-    pan[pan == 0] = 1e-9
-    pan[pan == 2 * np.pi] = 1e-9
-    tilt[tilt == 0] = 1e-9
-    tilt[tilt == 2 * np.pi] = 1e-9
-    sdr_pan = rp.pan(ts)
-    sdr_pan = sdr_pan + 2 * np.pi
-    sdr_tilt = rp.tilt(ts)
-    sdr_tilt = sdr_tilt + 2 * np.pi
-
-    tpsd = np.array([tcdata[:, np.logical_and(abs(cpudiff(pan, sdr_pan[n])) < TARGET_PROFILE_MIN_BEAMWIDTH,
-                                              abs(cpudiff(tilt, sdr_tilt[n])) < TARGET_PROFILE_MIN_BEAMWIDTH)].flatten()
-                     for n in range(len(ts))])
-    tpsd = np.fft.fft(tpsd, fft_len, axis=1) * 1e12 * pulse * mfilt
-    return tpsd
-
-
 def calcPosBoresight(standoff, pan=None, tilt=None):
     if pan is None:
         # Generate angles for block
@@ -140,18 +110,21 @@ def calcPosBoresight(standoff, pan=None, tilt=None):
 
 
 if __name__ == '__main__':
+    cuda.select_device(1)
 
-    ant_gain = 22  # dB
+    rx_gain = 22  # dB
+    tx_gain = 22  # dB
+    rec_gain = 100  # dB
     ant_transmit_power = 100  # watts
-    ant_eff_aperture = 10. * 10.  # m**2
     fc = 9.6e9
     nbox_levels = 4
     points_to_sample = 2000
-    num_bounces = 0
-    nbounce_ray = 5
+    num_bounces = 1
+    nbounce_ray = 2
     standoff = 500.
     nsam = 5678
     niters = 10
+    nstreams = 5
 
     with open('./vae_config.yaml', 'r') as file:
         try:
@@ -160,35 +133,61 @@ if __name__ == '__main__':
             print(exc)
             
     wavenumber = 2 * np.pi * fc / c0
-    
 
     save_path = config['generate_data_settings']['local_path'] if (
         config)['generate_data_settings']['use_local_storage'] else config['dataset_params']['data_path']
 
-    target_obj_files = {'air_balloon.obj': 30., 'black_bird_sr71_obj.obj': .25, 'cessna-172-obj.obj': 41.08,
-                        'helic.obj': 1.8,
-                        'Humvee.obj': 60, 'Intergalactic_Spaceships_Version_2.obj': 1., 'piper_pa18.obj': 1.,
-                        'Porsche_911_GT2.obj': .8, 'Seahawk.obj': 12., 't-90a(Elements_of_war).obj': 1.,
-                        'Tiger.obj': 156.25, 'G7_1200.obj': 1., 'x-wing.obj': 1., 'tacoma_VTC.dat': -1.,
-                        'NissanSkylineGT-R(R32).obj': 1.25, 'ram1500trx2021.gltf': .0033, 'spider_tank.gltf': 1.,
-                        'stug3aufs.gltf': 1., 'b2spirit.gltf': 1.}
-    target_obj_files = list(target_obj_files.items())
+    with open('clutter_files.txt', 'r') as f:
+        clt = [c.strip() for c in f.readlines()]
+
+    clutter_files = []
+    for clut in clt:
+        if int(clut.split('/')[4][:2]) >= 6 and np.any([Path(clut).parts[-1][:-4] in g and
+                                                        ('png' in g or 'jpeg' in g)
+                                                        for g in glob(f'{str(Path(clut).parent)}/*')]):
+            try:
+                xml_data = loadXMLFile(f'{clut[:-4]}.xml', True)['SlimSDR_Configuration']
+                if (xml_data['SlimSDR_Info']['System_Mode'] == 'SAR'
+                        and 8e9 < xml_data['SlimSDR_Info']['Channel_0']['Center_Frequency_Hz'] < 32e9
+                        and xml_data['SlimSDR_Info']['Gimbal_Settings']['Gimbal_Depression_Angle_D'] > 20.0):
+                    clutter_files.append(clut)
+            except FileNotFoundError:
+                print(f'{clut} not found.')
+                continue
+            except Exception:
+                print(f'{clut} has broken XML.')
+                continue
+        else:
+            print(f'{clut} does not meet the requirements of the clutter parser.')
+            continue
+
+    with open('./target_files.yaml', 'r') as file:
+        try:
+            target_obj_files = list(yaml.safe_load(file).items())
+        except yaml.YAMLError as exc:
+            print(exc)
+            exit()
     target_id_list = []
 
-    clutter_files = glob(f'{save_path}/clutter_*.spec')
+    streams = [cuda.stream() for _ in range(nstreams)]
 
     # Standardize the FFT length for training purposes (this may cause data loss)
     fft_len = config['settings']['fft_len']
 
     # This is all the constants in the radar equation for this simulation
-    radar_coeff = ant_transmit_power * 10 ** (ant_gain / 10) * ant_eff_aperture / (4 * np.pi) ** 2
+    radar_coeff = (
+                c0 ** 2 / fc ** 2 * ant_transmit_power * 10 ** ((rx_gain + 2.15) / 10) * 10 ** ((tx_gain + 2.15) / 10) *
+                10 ** ((rec_gain + 2.15) / 10) / (4 * np.pi) ** 3)
 
     near_range_s, poses, boresights = calcPosBoresight(standoff)
     plt.ion()
-    
+
+    # Generate chirps with random bandwidths, pulse lengths
     bws = 150e6 + np.random.rand(10) * 1e9
     plens = (1e-7 + np.random.rand(10) * (nsam / 2) / fs) * fs
     chirps = []
+
+    # Get matched filters for the chirps
     mf_chirp = []
     for bw, plen in zip(bws, plens):
         twin = taylor(int(np.round(bw / fs * fft_len)))
@@ -205,142 +204,157 @@ if __name__ == '__main__':
 
     pt_sample = []
     abs_idx = 0
+    abs_clutter_idx = 0
 
     for tidx, (tobj, scaling) in tqdm(enumerate(target_obj_files)):
-        tensor_path = f"{config['target_exp_params']['dataset_params']['data_path']}/target_{tidx}"
         obj_path = f'{config["generate_data_settings"]["obj_path"]}/{tobj}'
-        if not Path(tensor_path).exists():
-            os.mkdir(tensor_path)
-        if scaling > 0:
-            gen_iter = iter(genProfileFromMesh(obj_path, niters, mf_chirp, nbox_levels, points_to_sample, scaling, n_tris=10000))
-        else:
-            gen_iter = iter(genProfileFromVCS(obj_path, niters, mf_chirp))
-            
-            
-        pt_sample = []
-        for pd, i in gen_iter:
-            if np.all(pd == 0):
-                print(f'Skipping on target {tidx}, pd {i}')
-                continue
-            pd = pd[np.any(pd, axis=1)]
-            if i == 0:
-                pt_sample = np.concatenate((pt_sample, pd[pd != 0]))
-            pd = pd / np.sqrt(np.sum(pd * pd.conj(), axis=1))[:, None]
-            # pd[pd != 0] = ((pd[pd != 0] - config['target_exp_params']['dataset_params']['mu']) /
-            #                config['target_exp_params']['dataset_params']['var'])
-            pd[pd != 0] *= 1 / pd[pd != 0].std()
-            '''plt.gca().cla()
-            plt.title(f'Iteration {i}')
-            plt.imshow(db(pd))
-            plt.draw()
-            plt.pause(.1)'''
-            pd_cat = formatTargetClutterData(pd, fft_len)
-            # pd_cat = np.stack([pd.real, pd.imag]).astype(np.float32).swapaxes(0, 1)
+        if config['generate_data_settings']['save_as_target']:
+            tensor_target_path = f"{config['target_exp_params']['dataset_params']['data_path']}/target_{tidx}"
+            if not Path(tensor_target_path).exists():
+                os.mkdir(tensor_target_path)
+            if scaling > 0:
+                gen_iter = iter(genProfileFromMesh(obj_path, niters, mf_chirp, nbox_levels, points_to_sample, scaling, streams, n_tris=50000))
+            else:
+                gen_iter = iter(genProfileFromVCS(obj_path, niters, mf_chirp))
 
-            if config['generate_data_settings']['save_as_target']:
+
+            pt_sample = []
+            for pd, i in gen_iter:
+                if np.all(pd == 0):
+                    print(f'Skipping on target {tidx}, pd {i}')
+                    continue
+                pd = pd[np.any(pd, axis=1)]
+                if i == 0:
+                    pt_sample = np.concatenate((pt_sample, pd[pd != 0]))
+                pd = pd / np.sqrt(np.sum(pd * pd.conj(), axis=1))[:, None]
+                pd[pd != 0] *= 1 / pd[pd != 0].std()
+                '''plt.gca().cla()
+                plt.title(f'Iteration {i}')
+                plt.imshow(db(pd))
+                plt.draw()
+                plt.pause(.1)'''
+                pd_cat = formatTargetClutterData(pd, fft_len)
+                # pd_cat = np.stack([pd.real, pd.imag]).astype(np.float32).swapaxes(0, 1)
+
                 if i == 0:
                     target_id_list.append(tobj)
                 for p in pd_cat:
                     torch.save([torch.tensor(p, dtype=torch.float32), tidx],
-                               f"{tensor_path}/target_{tidx}_{abs_idx}.pt")
+                               f"{tensor_target_path}/target_{tidx}_{abs_idx}.pt")
                     abs_idx += 1
-        print(f'Target {tidx} mean of {pt_sample.mean()} and std of {pt_sample.std()}')
+            print(f'Target {tidx} mean of {pt_sample.mean()} and std of {pt_sample.std()}')
 
         if config['generate_data_settings']['save_as_clutter']:
+            tensor_clutter_path = f"{config['target_exp_params']['dataset_params']['data_path']}/clutter_tensors"
+            if not Path(tensor_clutter_path).exists():
+                os.mkdir(tensor_clutter_path)
             print(f'Saving clutter spec for target {tobj}')
+            if scaling > 0:
+                mesh = readCombineMeshFile(obj_path, points_to_sample, scale=1 / scaling)
+                mesh = mesh.translate(mpos, relative=False)
+                box_tree, sample_points = getBoxesSamplesFromMesh(mesh, num_box_levels=nbox_levels,
+                                                                  sample_points=points_to_sample)
             for clut in clutter_files:
                 # Load the sar file that the clutter came from
-                cfnme_parts = clut.split('_')[1:4]
-                clut_name = clut.split('/')[-1][8:-5]
-                sdr_ch = load(
-                    f'/data6/SAR_DATA/{cfnme_parts[1][4:]}/{cfnme_parts[1]}/SAR_{cfnme_parts[1]}_{cfnme_parts[2][:-5]}.sar',
-                    use_jump_correction=False)
+                sdr_ch = load(clut, use_jump_correction=False)
                 rp = SDRPlatform(sdr_ch)
-                nsam, nr, ranges, ranges_sampled, near_range_s, granges, fft_len, up_fft_len = (
+                nsam, nr, ranges, ranges_sampled, near_range_s, granges, _, up_fft_len = (
                     rp.getRadarParams(0., .5, 1))
 
+                flight_path = rp.rxpos(sdr_ch[0].pulse_time)
                 bore = rp.boresight(rp.gpst).mean(axis=0)
                 heading = np.arctan2(bore[0], bore[1])
-                mrange = ranges.mean() * np.cos(sdr_ch.ant[0].dep_ang)
-
-                mpos = np.array([mrange * np.cos(heading), mrange * np.sin(heading), 0.])
+                # The XML is not guaranteed to have a flight line, so we check for that
+                try:
+                    flight_alt = sdr_ch.xml['Flight_Line']['Flight_Line_Altitude_M']
+                    gnd_exp_alt = flight_path.mean(axis=0)[2] - flight_alt
+                    mpos = flight_path.mean(axis=0) + bore * ranges.min()
+                    mpos[2] = gnd_exp_alt
+                    mrng = np.linalg.norm(mpos)
+                    mang = -np.arcsin(mpos[2] / mrng)
+                    m_it = 1
+                    while not ((ranges.max() > mrng > ranges.min()) and (rp.dep_ang + rp.el_half_bw > mang > rp.dep_ang - rp.el_half_bw)):
+                        mpos = flight_path.mean(axis=0) + bore * (ranges.min() + m_it)
+                        mpos[2] = gnd_exp_alt
+                        mrng = np.linalg.norm(mpos)
+                        mang = -np.arcsin(mpos[2] / mrng)
+                        m_it += 1
+                except KeyError:
+                    # We don't know where the ground is, let's just project it into the abyss
+                    mpos = flight_path.mean(axis=0) + bore * ranges.mean()
 
                 # Locate the extrema to speed up the optimization
-                flight_path = rp.txpos(sdr_ch[0].pulse_time)
+
                 vecs = np.array([mpos[0] - flight_path[:, 0], mpos[1] - flight_path[:, 1],
                                  mpos[2] - flight_path[:, 2]]).T
                 pt_az = np.arctan2(vecs[:, 0], vecs[:, 1])
-                max_pts = sdr_ch[0].frame_num[abs(pt_az - heading) < rp.az_half_bw * 2]
+                max_pts = sdr_ch[0].frame_num[abs(pt_az - heading) < rp.az_half_bw]
                 pulse_lims = [min(max_pts), max(max_pts)]
+                pulse_lims[1] = min(pulse_lims[1], pulse_lims[0] + config['settings']['cpi_len'] * config['generate_data_settings']['iterations'])
 
                 # Get pulse data and modify accordingly
                 pulse = np.fft.fft(sdr_ch[0].cal_chirp, fft_len)
-                mfilt = sdr_ch.genMatchedFilter(0, fft_len=fft_len) / 1e4
+                mfilt = sdr_ch.genMatchedFilter(0, fft_len=fft_len)
                 valids = mfilt != 0
 
-                # CHeck to see we're writing to a fresh file
-                if Path(f'{save_path}/target_{tidx}_{clut_name}.spec').exists():
-                    os.remove(f'{save_path}/target_{tidx}_{clut_name}.spec')
-
-                if scaling > 0:
-                    mesh = readCombineMeshFile(obj_path, 10000, scale=1 / scaling)
-                    box_tree, sample_points = getBoxesSamplesFromMesh(mesh, num_box_levels=nbox_levels,
-                                                                      sample_points=points_to_sample,
-                                                                      material_sigmas=[2.])
-                for n in range(pulse_lims[0], pulse_lims[1], config['settings']['cpi_len']):
-                    if n + config['settings']['cpi_len'] > sdr_ch[0].nframes:
-                        break
-                    ts = sdr_ch[0].pulse_time[n:n + config['settings']['cpi_len']]
+                for frame in list(zip(*(iter(range(pulse_lims[0], pulse_lims[1] - config['settings']['cpi_len'], config['settings']['cpi_len'])),) * (nstreams + 1))):
+                    txposes = [rp.txpos(sdr_ch[0].pulse_time[frame[n]:frame[n + 1]]).astype(np.float64) for n in
+                               range(nstreams)]
+                    rxposes = [rp.txpos(sdr_ch[0].pulse_time[frame[n]:frame[n + 1]]).astype(np.float64) for n in
+                               range(nstreams)]
+                    pans = [rp.pan(sdr_ch[0].pulse_time[frame[n]:frame[n + 1]]).astype(np.float64) for n in
+                            range(nstreams)]
+                    tilts = [rp.tilt(sdr_ch[0].pulse_time[frame[n]:frame[n + 1]]).astype(np.float64) for n in
+                             range(nstreams)]
+                    sdr_data = [sdr_ch.getPulses(sdr_ch[0].frame_num[frame[n]:frame[n + 1]], 0)[1] for n in range(nstreams)]
                     if scaling > 0:
-                        single_rp = getRangeProfileFromMesh(*box_tree, sample_points,
-                                                            rp.txpos(ts),
-                                                            rp.boresight(ts),
-                                                            radar_coeff,
-                                                            rp.az_half_bw,
-                                                            rp.el_half_bw,
-                                                            nsam, sdr_ch[0].fc, near_range_s,
-                                                            num_bounces=num_bounces,
-                                                            bounce_rays=nbounce_ray)
-                        tpsd = np.fft.fft(single_rp, fft_len, axis=1) * mfilt
+                        single_rp = getRangeProfileFromMesh(*box_tree, sample_points, txposes, pans, tilts,
+                                                radar_coeff, rp.az_half_bw, rp.el_half_bw, nsam, fc, near_range_s,
+                                                num_bounces=num_bounces, streams=streams)
+                        tpsds = [np.fft.fft(srp, fft_len, axis=1) * mfilt * pulse for srp in single_rp]
                     else:
                         # Load in the VCS file using the format reader
                         scat_data, angles = readVCS(obj_path)
 
                         # Generate target profile on CPU
-                        poses = rp.txpos(ts)
-                        boresights = rp.boresight(ts)
-                        bore_az = np.arctan2(boresights[:, 0], boresights[:, 1])
-                        bore_el = -np.arcsin(boresights[:, 2])
-                        bore_ang = np.array([bore_az, bore_el]).T
-                        pd = np.zeros((poses.shape[0], nsam), dtype=np.complex128)
-                        for n in range(poses.shape[0]):
-                            bl = scat_data[np.argmin(np.linalg.norm(angles - bore_ang[n], axis=1))]
-                            rvec = bl[:, :3] - poses[n]
-                            ranges = np.linalg.norm(rvec, axis=1)
-                            rng_bin = (ranges * 2 / c0 - 2 * near_range_s) * fs
-                            but = rng_bin.astype(int)
-                            pd[n, but] += np.exp(-1j * wavenumber * ranges * 2) * np.max(bl[:, 3:], axis=1)
-                        tpsd = np.fft.fft(pd, fft_len, axis=1) * mfilt * pulse
-                    p_muscale = np.repeat(
-                        config['exp_params']['dataset_params']['mu'] / abs(tpsd[:, valids].mean(axis=1)),
-                        2).astype(
-                        np.float32)
-                    p_stdscale = np.repeat(
-                        config['exp_params']['dataset_params']['var'] / abs(tpsd[:, valids].std(axis=1)),
-                        2).astype(
-                        np.float32)
-                    tpsd[:, valids] = (tpsd[:, valids] - config['exp_params']['dataset_params']['mu']) / \
-                                      config['exp_params']['dataset_params']['var']
-                    # Shift the data so it's centered around zero (for the autoencoder)
-                    if sdr_ch[0].baseband_fc != 0.:
-                        shift_bin = int(sdr_ch[0].baseband_fc / sdr_ch[0].fs * fft_len)
-                        pulse_data = np.roll(tpsd, -shift_bin, 1)
-                    inp_data = formatTargetClutterData(tpsd, fft_len).astype(np.float32)
-                    inp_data = np.concatenate((inp_data, p_muscale.reshape(-1, 2, 1), p_stdscale.reshape(-1, 2, 1)),
-                                              axis=2)
-                    with open(
-                            f'{save_path}/target_{tidx}_{clut_name}.spec', 'ab') as writer:
-                        inp_data.tofile(writer)
+                        tpsds = []
+                        for txpos, rxpos, pan, tilt in zip(txposes, rxposes, pans, tilts):
+                            bore_ang = np.array([pan, tilt]).T
+                            pd = np.zeros((txpos.shape[0], nsam), dtype=np.complex128)
+                            for n in range(txpos.shape[0]):
+                                bl = scat_data[np.argmin(np.linalg.norm(angles - bore_ang[n], axis=1))]
+                                rvec = bl[:, :3] - txpos[n]
+                                ranges = np.linalg.norm(rvec, axis=1)
+                                rng_bin = (ranges * 2 / c0 - 2 * near_range_s) * fs
+                                but = rng_bin.astype(int)
+                                pd[n, but] += np.exp(-1j * wavenumber * ranges * 2) * np.max(bl[:, 3:], axis=1)
+                            tpsds.append(np.fft.fft(pd, fft_len, axis=1) * mfilt * pulse)
+                    for sdrd, tpsd in zip(sdr_data, tpsds):
+                        sdata = np.fft.fft(sdrd, fft_len, axis=0).T * mfilt
+                        if tpsd[tpsd != 0].std() == 0 or sdata[sdata != 0].std() == 0:
+                            continue
+                        # Unit energy and scale to have std of one
+                        nt_den = np.sqrt(np.sum(tpsd * tpsd.conj(), axis=1))
+                        nt_den[nt_den == 0] = 1
+                        ntpsd = tpsd / nt_den[:, None]
+                        ntpsd[ntpsd != 0] *= 1 / ntpsd[ntpsd != 0].std()
+                        sd_den = np.sqrt(np.sum(sdata * sdata.conj(), axis=1))
+                        sd_den[sd_den == 0] = 1
+                        sdata = sdata / sd_den[:, None]
+                        sdata[sdata != 0] *= 1 / sdata[sdata != 0].std()
+                        # Shift the data so it's centered around zero (for the autoencoder)
+                        if sdr_ch[0].baseband_fc != 0.:
+                            shift_bin = int(sdr_ch[0].baseband_fc / sdr_ch[0].fs * fft_len)
+                            ntpsd = np.roll(ntpsd, -shift_bin, 1)
+                            sdata = np.roll(sdata, -shift_bin, 1)
+                        ntpsd = formatTargetClutterData(ntpsd, fft_len)
+                        sdata = formatTargetClutterData(sdata, fft_len)
+                        for nt, sd in zip(ntpsd, sdata):
+                            if not np.any(np.isnan(nt)) and not np.any(np.isnan(sd)):
+                                torch.save([torch.tensor(sd, dtype=torch.float32),
+                                            torch.tensor(nt, dtype=torch.float32), tidx],
+                                           f"{tensor_clutter_path}/tc_{abs_clutter_idx}.pt")
+                                abs_clutter_idx += 1
 
     with open(f'{save_path}/target_ids.txt', 'w') as f:
         for idx, tid in enumerate(target_id_list):
