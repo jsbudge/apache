@@ -109,7 +109,7 @@ class TargetDataset(Dataset):
                  var: float = 4.9, seed: int = 7):
         # Load in data
         self.datapath = datapath
-        targets = os.listdir(datapath)
+        targets = [o for o in os.listdir(datapath) if 'target_' in o]
         file_sizes = [0 for _ in targets]
         for d in targets:
             ntarg = int(d[7:])

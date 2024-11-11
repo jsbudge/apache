@@ -104,13 +104,12 @@ class GeneratorExperiment(pl.LightningModule):
         train_loss = self.train_val_get(batch, batch_idx)
         opt.zero_grad()
         self.manual_backward(train_loss['loss'])
-        self.clip_gradients(opt, gradient_clip_val=0.5, gradient_clip_algorithm="norm")
+        # self.clip_gradients(opt, gradient_clip_val=0.5, gradient_clip_algorithm="norm")
         opt.step()
         self.log_dict(train_loss, sync_dist=True,
                       prog_bar=True, rank_zero_only=True, on_epoch=True)
 
     def validation_step(self, batch, batch_idx):
-        losses = self.train_val_get(batch, batch_idx)
         self.log_dict(self.train_val_get(batch, batch_idx), sync_dist=True, prog_bar=True,
                       rank_zero_only=True)
 

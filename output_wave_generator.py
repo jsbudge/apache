@@ -5,10 +5,11 @@ import matplotlib.pyplot as plt
 from scipy.signal import stft
 import torch
 import yaml
-from models import Encoder
-from target_data_generator import getSpectrumFromTargetProfile
+from models import load as loadModel
+from models import PulseClassifier
 from waveform_model import GeneratorModel
-from data_converter.SDRParsing import load
+from wave_train import buildModel
+from sdrparse import load
 from simulib.platform_helper import SDRPlatform
 from utils import upsample, normalize, fs
 
@@ -59,25 +60,11 @@ fft_len = config['settings']['fft_len']
 nr = int(pulse_length * 2e9)
 
 print('Setting up wavemodel...')
-# Get the model, experiment, logger set up
-decoder = Encoder(**config['exp_params']['model_params'], fft_len=config['settings']['fft_len'],
-                  params=config['exp_params'])
-try:
-    decoder.load_state_dict(torch.load('./model/inference_model.state'))
-except RuntimeError:
-    print('Decoder save file does not match current structure.')
-    exit()
-decoder.requires_grad = False
-print('Decoder loaded from save state.')
-try:
-    with open('./model/current_model_params.pic', 'rb') as f:
-        generator_params = pickle.load(f)
-    wave_mdl = GeneratorModel(**generator_params, decoder=decoder)
-    wave_mdl.load_state_dict(torch.load(generator_params['state_file']))
-    warm_start = True
-except RuntimeError as e:
-    print('Wavemodel save file does not match current structure.')
-    exit()
+wave_mdl = loadModel(GeneratorModel, './model/current_model_params.pic')
+'''with open('./model/current_model_params.pic', 'rb') as f:
+    generator_params = pickle.load(f)
+wave_mdl = GeneratorModel(**generator_params)
+wave_mdl.load_state_dict(torch.load(generator_params['state_file']))'''
 print('Wavemodel loaded from save state.')
 
 wave_mdl.to(device)
@@ -87,22 +74,18 @@ _, raw_pulse_data = sdr.getPulses(pnums, 0)
 mfilt = sdr.genMatchedFilter(0, fft_len=fft_len)
 ts = sdr[0].pulse_time[pnums]
 pulse_data = np.fft.fft(raw_pulse_data.T, wave_mdl.fft_len, axis=1) * mfilt
-tsdata = np.fromfile('/home/jeff/repo/apache/data/targets.enc',
-                     dtype=np.float32).reshape((-1, config['target_exp_params']['model_params']['latent_dim'])
-                                               )[target_target, ...]
-tcdata = np.fromfile('/home/jeff/repo/apache/data/targetpatterns.dat',
-                     dtype=np.float32).reshape((-1, 256, 256)
-                                               )[target_target, ...]
+patterns = torch.load('/home/jeff/repo/apache/data/target_embedding_means.pt')[0]
 
-# Get pulse data and modify accordingly
-tpsd = getSpectrumFromTargetProfile(sdr, rp, ts, tcdata, fft_len)
-
-waves = wave_mdl.full_forward(pulse_data, tsdata, nr, pulse_bw, exp_params['dataset_params']['mu'],
-                              exp_params['dataset_params']['var'])
+waves = wave_mdl.full_forward(pulse_data, patterns[0], nr)
+wave_mdl.to('cpu')
 print('Waveforms generated.')
 
+'''-------PLOTS AND DEBUG------------'''
+classifier = loadModel(PulseClassifier, './model/current_pc_params.pic')
+classifier.to(device)
+
+targets_in_data = classifier(torch.tensor(pulse_data, dtype=torch.float32).to(device)).cpu().data.numpy()
 clutter = normalize(pulse_data[10, :])
-targets = normalize(tpsd[10, :])
 print('Loaded clutter and target data...')
 
 # Run some plots for an idea of what's going on
@@ -110,18 +93,15 @@ freqs = np.fft.fftshift(np.fft.fftfreq(fft_len, 1 / fs))
 plt.figure('Waveform PSD')
 for wave in range(waves.shape[0]):
     plt.plot(freqs, db(np.fft.fftshift(waves[wave])))
-plt.plot(freqs, db(np.fft.fftshift(targets)), linestyle='--', linewidth=.3)
 plt.plot(freqs, db(np.fft.fftshift(clutter)), linestyle=':', linewidth=.3)
-plt.legend([f'Waveform {w}' for w in range(waves.shape[0])] + ['Target', 'Clutter'])
+plt.legend([f'Waveform {w}' for w in range(waves.shape[0])] + ['Clutter'])
 plt.ylabel('Relative Power (dB)')
 plt.xlabel('Freq (Hz)')
 
 clutter_corr = np.fft.ifft(np.sum([clutter * waves[n] * waves[n].conj() for n in range(waves.shape[0])], axis=0))
-target_corr = np.fft.ifft(np.sum([targets * waves[n] * waves[n].conj() for n in range(waves.shape[0])], axis=0))
 plt.figure('MIMO Correlations')
 plt.plot(db(clutter_corr))
-plt.plot(db(target_corr))
-plt.legend(['Clutter', 'Target'])
+plt.legend(['Clutter'])
 
 # Save the model structure out to a PNG
 # plot_model(mdl, to_file='./mdl_plot.png', show_shapes=True)
@@ -168,6 +148,13 @@ plt.pcolormesh(t_stft, np.fft.fftshift(freq_stft), np.fft.fftshift(db(wave_stft)
 plt.ylabel('Freq')
 plt.xlabel('Time')
 plt.colorbar()
+
+# Get target IDs
+with open('./data/target_ids.txt', 'r') as f:
+    tnames = [s.strip() for s in f.readlines()]
+plt.figure('Targets in Data')
+plt.scatter(np.arange(targets_in_data.shape[1]), targets_in_data[0])
+plt.xticks(np.arange(targets_in_data.shape[1]), tnames)
 
 # Save out the waveform to a file
 print('Plots finished.')

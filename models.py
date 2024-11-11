@@ -1,4 +1,6 @@
 import contextlib
+import pickle
+
 import torch
 from torch import nn, optim, Tensor
 from torch.nn import functional as tf
@@ -468,6 +470,10 @@ class TargetEmbedding(FlatModule):
                  var: float = 4.9,
                  fft_len: int = 4096,
                  **kwargs) -> None:
+        self.param_dict = {}
+        for key, val in locals().items():
+            if val != self:
+                self.param_dict[key] = val
         super(TargetEmbedding, self).__init__()
 
         self.latent_dim = latent_dim
@@ -566,12 +572,8 @@ class TargetEmbedding(FlatModule):
                 self.logger.experiment.add_histogram(name, params, self.global_step)
 
     def on_validation_end(self) -> None:
-        if self.trainer.is_global_zero and not self.params['is_tuning']:
-            torch.save(self.state_dict(), './model/target_model.state')
-            print('Model saved to disk.')
-
-            if self.current_epoch % 5 == 0:
-                pass
+        if self.trainer.is_global_zero and not self.params['is_tuning'] and self.params['save_model']:
+            self.save('./model')
 
     def on_train_epoch_end(self) -> None:
         if self.trainer.is_global_zero and not self.params['is_tuning'] and self.params['loss_landscape']:
@@ -630,6 +632,12 @@ class TargetEmbedding(FlatModule):
                       prog_bar=True, rank_zero_only=True)
         return nll
 
+    def save(self, fpath, model_name='current'):
+        sfile = f'{fpath}/{model_name}_target_embedding.state'
+        torch.save(self.state_dict(), sfile)
+        with open(f'{fpath}/{model_name}_te_params.pic', 'wb') as f:
+            pickle.dump({**self.param_dict, 'state_file': sfile}, f)
+
 
 class PulseClassifier(FlatModule):
     def __init__(self,
@@ -639,6 +647,10 @@ class PulseClassifier(FlatModule):
                  channel_sz: int = 32,
                  embedding_model: FlatModule = None,
                  **kwargs) -> None:
+        self.param_dict = {}
+        for key, val in locals().items():
+            if val != self:
+                self.param_dict[key] = val
         super(PulseClassifier, self).__init__()
 
         self.channel_sz = channel_sz
@@ -647,9 +659,11 @@ class PulseClassifier(FlatModule):
         self.label_sz = label_sz
         self.automatic_optimization = False
         self.embedding_model = embedding_model
-        self.embedding_model.requires_grad = False
-        self.embedding_model.to(self.device)
         self.embedding_model.eval()
+        for param in self.embedding_model.parameters():
+            param.requires_grad = False
+        self.embedding_model.to(self.device)
+
         self.first_layer = nn.Sequential(
             nn.Linear(in_dim, in_dim),
             nn.GELU(),
@@ -701,12 +715,8 @@ class PulseClassifier(FlatModule):
                 self.logger.experiment.add_histogram(name, params, self.global_step)
 
     def on_validation_end(self) -> None:
-        if self.trainer.is_global_zero and not self.params['is_tuning']:
-            torch.save(self.state_dict(), './model/inference_model.state')
-            print('Model saved to disk.')
-
-            if self.current_epoch % 5 == 0:
-                pass
+        if self.trainer.is_global_zero and not self.params['is_tuning'] and self.params['save_model']:
+            self.save('./model')
 
     def on_train_epoch_end(self) -> None:
         if self.trainer.is_global_zero and not self.params['is_tuning'] and self.params['loss_landscape']:
@@ -745,3 +755,19 @@ class PulseClassifier(FlatModule):
         self.log_dict({f'{kind}_loss': nll}, on_epoch=True,
                       prog_bar=True, rank_zero_only=True)
         return nll
+
+    def save(self, fpath, model_name='current'):
+        sfile = f'{fpath}/{model_name}_pulse_classifier.state'
+        torch.save(self.state_dict(), sfile)
+        with open(f'{fpath}/{model_name}_pc_params.pic', 'wb') as f:
+            pickle.dump({**self.param_dict, 'state_file': sfile}, f)
+
+def load(mdl, param_file):
+    try:
+        with open(param_file, 'rb') as f:
+            generator_params = pickle.load(f)
+        loaded_mdl = mdl(**generator_params)
+        loaded_mdl.load_state_dict(torch.load(generator_params['state_file']))
+        return loaded_mdl
+    except RuntimeError as e:
+        return None

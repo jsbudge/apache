@@ -22,6 +22,21 @@ def force_cudnn_initialization():
     torch.nn.functional.conv2d(torch.zeros(s, s, s, s, device=dev), torch.zeros(s, s, s, s, device=dev))
 
 
+def buildModel(mdl_params, embedding_params, a_fft_len, a_n_ants, target_latent):
+    # Get the model, experiment, logger set up
+    embedding = TargetEmbedding(**embedding_params['model_params'], fft_len=a_fft_len,
+                                params=embedding_params)
+    print('Setting up decoder...')
+    try:
+        embedding.load_state_dict(torch.load('./model/target_model.state'))
+    except RuntimeError:
+        print('Model save file does not match current structure. Re-running with new structure.')
+    return GeneratorModel(fft_len=a_fft_len, embedding=embedding, **mdl_params,
+                         target_latent_size=target_latent,
+                         n_ants=a_n_ants)
+
+
+
 if __name__ == '__main__':
     torch.set_float32_matmul_precision('medium')
     torch.autograd.set_detect_anomaly(True)
@@ -47,35 +62,23 @@ if __name__ == '__main__':
     nr = 5000  # int((config['perf_params']['vehicle_slant_range_min'] * 2 / c0 - 1 / TAC) * fs)
 
     print('Setting up wavemodel...')
-    # Get the model, experiment, logger set up
-    embedding = TargetEmbedding(**config['target_exp_params']['model_params'], fft_len=fft_len, params=config['target_exp_params'])
-    print('Setting up decoder...')
-    try:
-        embedding.load_state_dict(torch.load('./model/target_model.state'))
-    except RuntimeError:
-        print('Model save file does not match current structure. Re-running with new structure.')
-    embedding.requires_grad = False
     warm_start = False
     if config['wave_exp_params']['warm_start']:
         print('Wavemodel loaded from save state.')
         try:
             with open('./model/current_model_params.pic', 'rb') as f:
                 generator_params = pickle.load(f)
-            wave_mdl = GeneratorModel(**generator_params, embedding=embedding)
+            wave_mdl = GeneratorModel(**generator_params)
             wave_mdl.load_state_dict(torch.load(generator_params['state_file']))
             warm_start = True
         except RuntimeError as e:
             print(f'Wavemodel save file does not match current structure. Re-running with new structure.\n{e}')
-            wave_mdl = GeneratorModel(fft_len=fft_len,  embedding=embedding, channel_sz=exp_params['channel_sz'],
-                                      clutter_latent_size=config['exp_params']['model_params']['latent_dim'],
-                                      target_latent_size=config['target_exp_params']['model_params']['latent_dim'],
-                                      n_ants=1)
+            wave_mdl = buildModel(exp_params, config['target_exp_params'], fft_len, 1,
+                                  config['target_exp_params']['model_params']['latent_dim'])
     else:
         print('Initializing new wavemodel...')
-        wave_mdl = GeneratorModel(fft_len=fft_len,  embedding=embedding, channel_sz=exp_params['channel_sz'],
-                                  clutter_latent_size=config['exp_params']['model_params']['latent_dim'],
-                                  target_latent_size=config['target_exp_params']['model_params']['latent_dim'],
-                                  n_ants=1)
+        wave_mdl = buildModel(exp_params, config['target_exp_params'], fft_len, 1,
+                              config['target_exp_params']['model_params']['latent_dim'])
 
     # Since these are dependent on apache params, we set them up here instead of in the yaml file
     print('Setting up data generator...')
@@ -128,7 +131,7 @@ if __name__ == '__main__':
             wave_mdl.to(device)
             wave_mdl.eval()
 
-            cc, ts, plength = next(iter(data.train_dataloader()))
+            cc, tc, ts, plength = next(iter(data.train_dataloader()))
             cc = cc.to(device)
             ts = ts.to(device)
 
@@ -141,8 +144,8 @@ if __name__ == '__main__':
             print('Loaded waveforms...')
 
             clutter = cc.cpu().data.numpy()
-            clutter = normalize(clutter[:, 0, :] + 1j * clutter[:, 1, :])
-            targets = ts.cpu().data.numpy()
+            clutter = normalize(clutter[:, 0, 0, :] + 1j * clutter[:, 0, 1, :])
+            targets = tc.cpu().data.numpy()
             targets = normalize(targets[:, 0, :] + 1j * targets[:, 1, :])
             print('Loaded clutter and target data...')
 

@@ -51,7 +51,7 @@ class FourierFeature(LightningModule):
         for f in range(self.in_features):
             for n in range(self.n_fourier):
                 out[:, f * self.n_fourier + n] = torch.sin(2 * torch.pi * (2 ** n) * x[:, f])
-                out[:, (f + 2) * self.n_fourier + n] = torch.cos(2 * torch.pi * (2 ** n) * x[:, f])
+                out[:, (f + self.in_features) * self.n_fourier + n] = torch.cos(2 * torch.pi * (2 ** n) * x[:, f])
         return out
 
 

@@ -6,7 +6,6 @@ from numba import cuda
 from simulib import db, azelToVec, genChirp, getElevation, enu2llh
 from simulib.mesh_functions import readCombineMeshFile, getBoxesSamplesFromMesh, getRangeProfileFromMesh
 from simulib.platform_helper import SDRPlatform
-from generate_trainingdata import formatTargetClutterData
 from scipy.signal.windows import taylor
 import matplotlib.pyplot as plt
 import plotly.io as pio
@@ -24,6 +23,16 @@ DTR = np.pi / 180
 inch_to_m = .0254
 TARGET_PROFILE_MIN_BEAMWIDTH = 0.19634954
 fs = 2e9
+
+
+
+def formatTargetClutterData(data: np.ndarray, bin_bandwidth: int):
+    split = np.zeros((data.shape[0], 2, bin_bandwidth), dtype=np.float32)
+    split[:, 0, :bin_bandwidth // 2] = data[:, -bin_bandwidth // 2:].real
+    split[:, 0, -bin_bandwidth // 2:] = data[:, :bin_bandwidth // 2].real
+    split[:, 1, :bin_bandwidth // 2] = data[:, -bin_bandwidth // 2:].imag
+    split[:, 1, -bin_bandwidth // 2:] = data[:, :bin_bandwidth // 2].imag
+    return split
 
 
 def readVCS(filepath):
@@ -56,22 +65,20 @@ def genProfileFromMesh(obj_path, niters, mf_chirp, nboxes, points_to_sample, sca
     if np.linalg.norm(mesh.get_center()) > 2.:
         mesh = mesh.translate(np.array([0, 0, 0.]), relative=False)
 
-    _, poses, boresights = calcPosBoresight(standoff)
-    view_pos = poses[np.linspace(0, poses.shape[0], 32).astype(int)]
+    _, poses, _, _ = calcPosBoresight(standoff)
+    view_pos = poses[np.linspace(0, poses.shape[0] - 1, 32).astype(int)]
 
-    box_tree, sample_points = getBoxesSamplesFromMesh(mesh, num_box_levels=nboxes, sample_points=points_to_sample, view_pos=view_pos, use_box_pts=True)
+    box_tree, sample_points = getBoxesSamplesFromMesh(mesh, num_box_levels=nboxes, sample_points=points_to_sample,
+                                                      view_pos=view_pos, use_box_pts=True)
 
     # Apply random rotations and scalings for augmenting of training data
     for i in range(niters):
         chirp_idx = np.random.randint(0, len(mf_chirp))
-        near_range_s, poses, boresights = calcPosBoresight(standoff + np.random.rand() * 100)
+        near_range_s, poses, pan, tilt = calcPosBoresight(standoff + np.random.rand() * 100)
 
-        single_rp = getRangeProfileFromMesh(*box_tree, sample_points, poses, boresights, radar_coeff, 30 * DTR,
-                                            30 * DTR,
-                                            nsam, fc, near_range_s,
-                                            num_bounces=num_bounces,
-                                            bounce_rays=nbounce_ray, streams=streams)
-        yield np.fft.fft(single_rp, fft_len, axis=1) * mf_chirp[chirp_idx], i
+        single_rp = getRangeProfileFromMesh(*box_tree, sample_points, [poses], [pan], [tilt], radar_coeff, 30 * DTR,
+                                            30 * DTR, nsam, fc, near_range_s, num_bounces=num_bounces, streams=streams)
+        yield np.fft.fft(single_rp[0], fft_len, axis=1) * mf_chirp[chirp_idx], i
 
 
 def genProfileFromVCS(obj_path, niters, mf_chirp):
@@ -81,9 +88,7 @@ def genProfileFromVCS(obj_path, niters, mf_chirp):
     # Generate target profile on CPU
     for i in range(niters):
         chirp_idx = np.random.randint(0, len(mf_chirp))
-        near_range_s, poses, boresights = calcPosBoresight(standoff)
-        bore_az = np.arctan2(boresights[:, 0], boresights[:, 1])
-        bore_el = -np.arcsin(boresights[:, 2])
+        near_range_s, poses, bore_az, bore_el = calcPosBoresight(standoff)
         bore_ang = np.array([bore_az, bore_el]).T
         pd = np.zeros((poses.shape[0], nsam), dtype=np.complex128)
         for n in range(poses.shape[0]):
@@ -106,7 +111,7 @@ def calcPosBoresight(standoff, pan=None, tilt=None):
     boresights = -azelToVec(pan, tilt).T
     poses = -boresights * standoff
     near_range_s = (standoff - 100.) / c0
-    return near_range_s, poses, boresights
+    return near_range_s, poses, pan, tilt
 
 
 if __name__ == '__main__':
@@ -124,7 +129,7 @@ if __name__ == '__main__':
     standoff = 500.
     nsam = 5678
     niters = 10
-    nstreams = 5
+    nstreams = 1
 
     with open('./vae_config.yaml', 'r') as file:
         try:
@@ -179,7 +184,7 @@ if __name__ == '__main__':
                 c0 ** 2 / fc ** 2 * ant_transmit_power * 10 ** ((rx_gain + 2.15) / 10) * 10 ** ((tx_gain + 2.15) / 10) *
                 10 ** ((rec_gain + 2.15) / 10) / (4 * np.pi) ** 3)
 
-    near_range_s, poses, boresights = calcPosBoresight(standoff)
+    near_range_s, poses, pan, tilt = calcPosBoresight(standoff)
     plt.ion()
 
     # Generate chirps with random bandwidths, pulse lengths
@@ -202,7 +207,6 @@ if __name__ == '__main__':
         mf = np.fft.fft(chirps[-1], fft_len) * np.fft.fft(chirps[-1], fft_len).conj() * taytay
         mf_chirp.append(np.roll(mf, fft_len - (winloc + len(twin) // 2)))
 
-    pt_sample = []
     abs_idx = 0
     abs_clutter_idx = 0
 
@@ -218,23 +222,14 @@ if __name__ == '__main__':
                 gen_iter = iter(genProfileFromVCS(obj_path, niters, mf_chirp))
 
 
-            pt_sample = []
             for pd, i in gen_iter:
                 if np.all(pd == 0):
                     print(f'Skipping on target {tidx}, pd {i}')
                     continue
                 pd = pd[np.any(pd, axis=1)]
-                if i == 0:
-                    pt_sample = np.concatenate((pt_sample, pd[pd != 0]))
                 pd = pd / np.sqrt(np.sum(pd * pd.conj(), axis=1))[:, None]
-                pd[pd != 0] *= 1 / pd[pd != 0].std()
-                '''plt.gca().cla()
-                plt.title(f'Iteration {i}')
-                plt.imshow(db(pd))
-                plt.draw()
-                plt.pause(.1)'''
+                pd[pd != 0] = (pd[pd != 0] - pd[pd != 0].mean()) / pd[pd != 0].std()
                 pd_cat = formatTargetClutterData(pd, fft_len)
-                # pd_cat = np.stack([pd.real, pd.imag]).astype(np.float32).swapaxes(0, 1)
 
                 if i == 0:
                     target_id_list.append(tobj)
@@ -242,7 +237,6 @@ if __name__ == '__main__':
                     torch.save([torch.tensor(p, dtype=torch.float32), tidx],
                                f"{tensor_target_path}/target_{tidx}_{abs_idx}.pt")
                     abs_idx += 1
-            print(f'Target {tidx} mean of {pt_sample.mean()} and std of {pt_sample.std()}')
 
         if config['generate_data_settings']['save_as_clutter']:
             tensor_clutter_path = f"{config['target_exp_params']['dataset_params']['data_path']}/clutter_tensors"
@@ -251,9 +245,6 @@ if __name__ == '__main__':
             print(f'Saving clutter spec for target {tobj}')
             if scaling > 0:
                 mesh = readCombineMeshFile(obj_path, points_to_sample, scale=1 / scaling)
-                mesh = mesh.translate(mpos, relative=False)
-                box_tree, sample_points = getBoxesSamplesFromMesh(mesh, num_box_levels=nbox_levels,
-                                                                  sample_points=points_to_sample)
             for clut in clutter_files:
                 # Load the sar file that the clutter came from
                 sdr_ch = load(clut, use_jump_correction=False)
@@ -284,6 +275,9 @@ if __name__ == '__main__':
                     mpos = flight_path.mean(axis=0) + bore * ranges.mean()
 
                 # Locate the extrema to speed up the optimization
+                mesh = mesh.translate(mpos, relative=False)
+                box_tree, sample_points = getBoxesSamplesFromMesh(mesh, num_box_levels=nbox_levels,
+                                                                  sample_points=points_to_sample)
 
                 vecs = np.array([mpos[0] - flight_path[:, 0], mpos[1] - flight_path[:, 1],
                                  mpos[2] - flight_path[:, 2]]).T
@@ -330,6 +324,8 @@ if __name__ == '__main__':
                                 pd[n, but] += np.exp(-1j * wavenumber * ranges * 2) * np.max(bl[:, 3:], axis=1)
                             tpsds.append(np.fft.fft(pd, fft_len, axis=1) * mfilt * pulse)
                     for sdrd, tpsd in zip(sdr_data, tpsds):
+                        if len(tpsd[tpsd != 0]) == 0:
+                            continue
                         sdata = np.fft.fft(sdrd, fft_len, axis=0).T * mfilt
                         if tpsd[tpsd != 0].std() == 0 or sdata[sdata != 0].std() == 0:
                             continue
@@ -337,11 +333,11 @@ if __name__ == '__main__':
                         nt_den = np.sqrt(np.sum(tpsd * tpsd.conj(), axis=1))
                         nt_den[nt_den == 0] = 1
                         ntpsd = tpsd / nt_den[:, None]
-                        ntpsd[ntpsd != 0] *= 1 / ntpsd[ntpsd != 0].std()
+                        ntpsd[ntpsd != 0] = (ntpsd[ntpsd != 0] - ntpsd[ntpsd != 0].mean()) / ntpsd[ntpsd != 0].std()
                         sd_den = np.sqrt(np.sum(sdata * sdata.conj(), axis=1))
                         sd_den[sd_den == 0] = 1
                         sdata = sdata / sd_den[:, None]
-                        sdata[sdata != 0] *= 1 / sdata[sdata != 0].std()
+                        sdata[sdata != 0] = (sdata[sdata != 0] - sdata[sdata != 0].mean()) / sdata[sdata != 0].std()
                         # Shift the data so it's centered around zero (for the autoencoder)
                         if sdr_ch[0].baseband_fc != 0.:
                             shift_bin = int(sdr_ch[0].baseband_fc / sdr_ch[0].fs * fft_len)

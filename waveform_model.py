@@ -5,7 +5,10 @@ import torch
 from torch import nn, Tensor
 from pytorch_lightning import LightningModule
 from torch.nn import functional as nn_func
-from layers import FourierFeature, WindowGenerate, PulseLength, LKA1d, LKATranspose1d
+from layers import FourierFeature, PulseLength, LKA1d, LKATranspose1d
+import numpy as np
+
+from utils import normalize
 
 
 def init_weights(m):
@@ -76,9 +79,12 @@ class GeneratorModel(FlatModule):
                  flowthrough_channels: int = 32,
                  decoder_layers: int = 3,
                  exp_to_ant_channels: int = 32,
-                 channel_sz: int = 64,
                  **kwargs,
                  ) -> None:
+        self.param_dict = {}
+        for key, val in locals().items():
+            if val != self:
+                self.param_dict[key] = val
         super(GeneratorModel, self).__init__()
 
         self.n_ants = n_ants
@@ -88,9 +94,8 @@ class GeneratorModel(FlatModule):
         self.fs = fs
         self.embedding = embedding
         self.embedding.eval()
-        self.embedding.requires_grad = False
-        self.channel_sz = channel_sz
-        de_ch_sz = channel_sz // 8
+        for param in self.embedding.parameters():
+            param.requires_grad = False
 
         '''CLUTTER ENCODING LAYERS'''
         # Calculate out layer sizes
@@ -176,23 +181,14 @@ class GeneratorModel(FlatModule):
         decode_l.append(nn.Conv1d(encoder_start_channel_sz * 2**(n-1), self.n_ants * 2, 1, 1, 0))
         self.wave_decoder = nn.Sequential(*decode_l)
 
-        '''self.window_context = nn.Sequential(
-            nn.Conv1d(self.n_ants * 2, de_ch_sz, 1, 1, 0),
-            LKA1d(de_ch_sz, kernel_sizes=(255, 513), dilation=12),
-            nn.LayerNorm(fft_len),
-            LKA1d(de_ch_sz, kernel_sizes=(255, 513), dilation=6),
-            nn.LayerNorm(fft_len),
-            LKA1d(de_ch_sz, kernel_sizes=(255, 513), dilation=3),
-            nn.LayerNorm(fft_len),
-            nn.Linear(fft_len, fft_len),
-            nn.GELU(),
-            nn.Conv1d(de_ch_sz, self.n_ants * 2, 1, 1, 0),
-        )
-        self.window_context.apply(init_weights)'''
-
-        # self.window = WindowGenerate(self.fft_len, self.n_ants)
-
         self.window_threshold = nn.Threshold(1e-9, 0.)
+
+        ''' PULSE LENGTH INFORMATION '''
+        self.pinfo = nn.Sequential(
+            FourierFeature(1, 50),
+            nn.Linear(100, clutter_latent_size),
+            nn.GELU(),
+        )
 
         self.plength = PulseLength()
 
@@ -218,10 +214,10 @@ class GeneratorModel(FlatModule):
         y = self.target_embedding_combine(y + target.unsqueeze(1))
 
         # Combine clutter prediction with target information
-        x = self.clutter_target_combine(x + y)
+        x = self.clutter_target_combine(x * y)
 
         # Run through LKA layers to create a waveform according to spec
-        x = self.expand_to_ants(x)
+        x = self.expand_to_ants(x * self.pinfo(pulse_length.float().view(-1, 1)).unsqueeze(1))
         # final_win = self.window(self.bw_integrate(x).squeeze(1), bandwidth.view(-1, 1) / self.fs).repeat_interleave(
         #     2, dim=1)
         x = self.wave_decoder(self.clutter_decoder_start(x)) * self.window_threshold(clutter[:, -1, ...])
@@ -229,22 +225,20 @@ class GeneratorModel(FlatModule):
         x = x.view(-1, self.n_ants, 2, self.fft_len)
         return x
 
-    def full_forward(self, clutter_array, target_array, pulse_length: int, bandwidth: float, mu_scale: float,
-                     std_scale: float) -> torch.tensor:
+    def full_forward(self, clutter_array, target_array, pulse_length: int) -> torch.tensor:
         # Make everything into tensors and place on device
-        clut = (torch.stack([torch.tensor(clutter_array.real, dtype=torch.float32, device=self.device),
-                             torch.tensor(clutter_array.imag, dtype=torch.float32, device=self.device)]) -
-                mu_scale) / std_scale
-        clutter = self.embedding.encode(clut.swapaxes(0, 1))
+        clut_norm = normalize(clutter_array)
+        clut_norm = (clut_norm - clut_norm.mean()) / clut_norm.std()
+        clut = (torch.stack([torch.tensor(clut_norm.real, dtype=torch.float32, device=self.device),
+                             torch.tensor(clut_norm.imag, dtype=torch.float32, device=self.device)]))
         pl = torch.tensor([[pulse_length]], device=self.device)
-        bw = torch.tensor([[bandwidth]], device=self.device)
 
         # Now that everything is formatted, get the waveform
         unformatted_waveform = (
-            self.getWaveform(nn_output=self.forward([clutter.unsqueeze(0),
+            self.getWaveform(nn_output=self.forward([clut.unsqueeze(0),
                                                      torch.tensor(target_array, dtype=torch.float32,
                                                                   device=self.device).unsqueeze(0),
-                                                     pl, bw])).cpu().data.numpy())
+                                                     pl])).cpu().data.numpy())
 
         # Return it in complex form without the leading dimension
         return unformatted_waveform[0]
@@ -309,10 +303,7 @@ class GeneratorModel(FlatModule):
     def save(self, fpath, model_name='current'):
         torch.save(self.state_dict(), f'{fpath}/{model_name}_wave_model.state')
         with open(f'{fpath}/{model_name}_model_params.pic', 'wb') as f:
-            pickle.dump({'fft_sz': self.fft_len,
-                         'clutter_latent_size': self.clutter_latent_size,
-                         'target_latent_size': self.target_latent_size, 'n_ants': self.n_ants,
-                         'state_file': f'{fpath}/{model_name}_wave_model.state', 'channel_sz': self.channel_sz}, f)
+            pickle.dump({**self.param_dict, 'state_file': f'{fpath}/{model_name}_wave_model.state'}, f)
 
     def getWindow(self, params):
         # print(params)
