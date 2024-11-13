@@ -22,3 +22,9 @@ def normalize(data):
 
 def getRange(alt, theta_el):
     return alt * np.sin(theta_el) * 2 / c0
+
+
+def scale_normalize(data):
+    ndata = data / np.expand_dims(np.sqrt(np.sum(data * data.conj(), axis=-1).real), axis=len(data.shape) - 1)
+    ndata[ndata != 0] = (ndata[ndata != 0] - abs(ndata[ndata != 0]).mean()) / ndata[ndata != 0].std()
+    return ndata

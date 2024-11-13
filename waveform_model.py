@@ -225,20 +225,27 @@ class GeneratorModel(FlatModule):
         x = x.view(-1, self.n_ants, 2, self.fft_len)
         return x
 
-    def full_forward(self, clutter_array, target_array, pulse_length: int) -> torch.tensor:
+    def full_forward(self, clutter_array, target_array: Tensor | np.ndarray, pulse_length: int) -> torch.tensor:
+        """
+        This function is meant to simplify using the waveforms. It takes a set of frequency domain pulses and outputs a set of waveforms.
+        :param clutter_array: N x fft_len array of pulse data.
+        :param target_array: 1 x target_latent_size array of target embedding vector.
+        :param pulse_length: int giving the length of the expected pulse in TAC.
+        :return: n_ant x fft_len array of waveforms.
+        """
         # Make everything into tensors and place on device
         clut_norm = normalize(clutter_array)
         clut_norm = (clut_norm - clut_norm.mean()) / clut_norm.std()
         clut = (torch.stack([torch.tensor(clut_norm.real, dtype=torch.float32, device=self.device),
-                             torch.tensor(clut_norm.imag, dtype=torch.float32, device=self.device)]))
+                             torch.tensor(clut_norm.imag, dtype=torch.float32, device=self.device)])).swapaxes(0, 1)
         pl = torch.tensor([[pulse_length]], device=self.device)
 
         # Now that everything is formatted, get the waveform
-        unformatted_waveform = (
-            self.getWaveform(nn_output=self.forward([clut.unsqueeze(0),
-                                                     torch.tensor(target_array, dtype=torch.float32,
-                                                                  device=self.device).unsqueeze(0),
-                                                     pl])).cpu().data.numpy())
+        if isinstance(target_array, np.ndarray):
+            tt = torch.tensor(target_array, dtype=torch.float32, device=self.device).unsqueeze(0)
+        else:
+            tt = target_array.to(self.device).unsqueeze(0)
+        unformatted_waveform = self.getWaveform(nn_output=self.forward([clut.unsqueeze(0), tt, pl])).cpu().data.numpy()
 
         # Return it in complex form without the leading dimension
         return unformatted_waveform[0]
@@ -337,8 +344,7 @@ class GeneratorModel(FlatModule):
             pulse_length = [1]
 
         # Get the STFT either from the clutter, target, and pulse length or directly from the neural net
-        bandwidth = bandwidth if nn_output is None else nn_output[1]
-        dual_waveform = self.forward([cc, tc, pulse_length, bandwidth]) if nn_output is None else nn_output
+        dual_waveform = self.forward([cc, tc, pulse_length]) if nn_output is None else nn_output
         gen_waveform = torch.zeros((dual_waveform.shape[0], self.n_ants, self.fft_len), dtype=torch.complex64,
                                    device=self.device)
         for n in range(self.n_ants):

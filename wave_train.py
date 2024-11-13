@@ -10,7 +10,7 @@ from pytorch_lightning.callbacks import EarlyStopping, StochasticWeightAveraging
 import yaml
 from dataloaders import WaveDataModule
 from experiment import GeneratorExperiment
-from models import TargetEmbedding
+from models import TargetEmbedding, load
 from waveform_model import GeneratorModel
 from os import listdir
 from clearml import Task
@@ -64,15 +64,12 @@ if __name__ == '__main__':
     print('Setting up wavemodel...')
     warm_start = False
     if config['wave_exp_params']['warm_start']:
-        print('Wavemodel loaded from save state.')
-        try:
-            with open('./model/current_model_params.pic', 'rb') as f:
-                generator_params = pickle.load(f)
-            wave_mdl = GeneratorModel(**generator_params)
-            wave_mdl.load_state_dict(torch.load(generator_params['state_file']))
+        wave_mdl = load(GeneratorModel, './model/current_model_params.pic')
+        if wave_mdl:
+            print('Wavemodel loaded from save state.')
             warm_start = True
-        except RuntimeError as e:
-            print(f'Wavemodel save file does not match current structure. Re-running with new structure.\n{e}')
+        else:
+            print('Wavemodel save file does not match current structure. Re-running with new structure.')
             wave_mdl = buildModel(exp_params, config['target_exp_params'], fft_len, 1,
                                   config['target_exp_params']['model_params']['latent_dim'])
     else:
@@ -85,7 +82,7 @@ if __name__ == '__main__':
     config['wave_exp_params']['dataset_params']['max_pulse_length'] = nr
     config['wave_exp_params']['dataset_params']['min_pulse_length'] = 1000
 
-    data = WaveDataModule(clutter_latent_dim=config['exp_params']['model_params']['latent_dim'],
+    data = WaveDataModule(clutter_latent_dim=exp_params['clutter_latent_size'],
                           target_latent_dim=config['target_exp_params']['model_params']['latent_dim'], device=device,
                           fft_sz=fft_len,
                           **exp_params["dataset_params"])

@@ -14,6 +14,8 @@ import yaml
 from sdrparse.SDRParsing import load, loadXMLFile
 import torch
 
+from utils import scale_normalize
+
 # pio.renderers.default = 'svg'
 pio.renderers.default = 'browser'
 
@@ -75,8 +77,9 @@ def genProfileFromMesh(obj_path, niters, mf_chirp, nboxes, points_to_sample, sca
     for i in range(niters):
         chirp_idx = np.random.randint(0, len(mf_chirp))
         near_range_s, poses, pan, tilt = calcPosBoresight(standoff + np.random.rand() * 100)
+        rxposes = poses + 0.0
 
-        single_rp = getRangeProfileFromMesh(*box_tree, sample_points, [poses], [pan], [tilt], radar_coeff, 30 * DTR,
+        single_rp = getRangeProfileFromMesh(*box_tree, sample_points, [poses], [rxposes], [pan], [tilt], radar_coeff, 30 * DTR,
                                             30 * DTR, nsam, fc, near_range_s, num_bounces=num_bounces, streams=streams)
         yield np.fft.fft(single_rp[0], fft_len, axis=1) * mf_chirp[chirp_idx], i
 
@@ -227,8 +230,7 @@ if __name__ == '__main__':
                     print(f'Skipping on target {tidx}, pd {i}')
                     continue
                 pd = pd[np.any(pd, axis=1)]
-                pd = pd / np.sqrt(np.sum(pd * pd.conj(), axis=1))[:, None]
-                pd[pd != 0] = (pd[pd != 0] - pd[pd != 0].mean()) / pd[pd != 0].std()
+                pd = scale_normalize(pd)
                 pd_cat = formatTargetClutterData(pd, fft_len)
 
                 if i == 0:
@@ -294,7 +296,7 @@ if __name__ == '__main__':
                 for frame in list(zip(*(iter(range(pulse_lims[0], pulse_lims[1] - config['settings']['cpi_len'], config['settings']['cpi_len'])),) * (nstreams + 1))):
                     txposes = [rp.txpos(sdr_ch[0].pulse_time[frame[n]:frame[n + 1]]).astype(np.float64) for n in
                                range(nstreams)]
-                    rxposes = [rp.txpos(sdr_ch[0].pulse_time[frame[n]:frame[n + 1]]).astype(np.float64) for n in
+                    rxposes = [rp.rxpos(sdr_ch[0].pulse_time[frame[n]:frame[n + 1]]).astype(np.float64) for n in
                                range(nstreams)]
                     pans = [rp.pan(sdr_ch[0].pulse_time[frame[n]:frame[n + 1]]).astype(np.float64) for n in
                             range(nstreams)]
@@ -302,7 +304,7 @@ if __name__ == '__main__':
                              range(nstreams)]
                     sdr_data = [sdr_ch.getPulses(sdr_ch[0].frame_num[frame[n]:frame[n + 1]], 0)[1] for n in range(nstreams)]
                     if scaling > 0:
-                        single_rp = getRangeProfileFromMesh(*box_tree, sample_points, txposes, pans, tilts,
+                        single_rp = getRangeProfileFromMesh(*box_tree, sample_points, txposes, rxposes, pans, tilts,
                                                 radar_coeff, rp.az_half_bw, rp.el_half_bw, nsam, fc, near_range_s,
                                                 num_bounces=num_bounces, streams=streams)
                         tpsds = [np.fft.fft(srp, fft_len, axis=1) * mfilt * pulse for srp in single_rp]
@@ -317,7 +319,7 @@ if __name__ == '__main__':
                             pd = np.zeros((txpos.shape[0], nsam), dtype=np.complex128)
                             for n in range(txpos.shape[0]):
                                 bl = scat_data[np.argmin(np.linalg.norm(angles - bore_ang[n], axis=1))]
-                                rvec = bl[:, :3] - txpos[n]
+                                rvec = bl[:, :3] - txpos[n] + mpos
                                 ranges = np.linalg.norm(rvec, axis=1)
                                 rng_bin = (ranges * 2 / c0 - 2 * near_range_s) * fs
                                 but = rng_bin.astype(int)
@@ -330,14 +332,8 @@ if __name__ == '__main__':
                         if tpsd[tpsd != 0].std() == 0 or sdata[sdata != 0].std() == 0:
                             continue
                         # Unit energy and scale to have std of one
-                        nt_den = np.sqrt(np.sum(tpsd * tpsd.conj(), axis=1))
-                        nt_den[nt_den == 0] = 1
-                        ntpsd = tpsd / nt_den[:, None]
-                        ntpsd[ntpsd != 0] = (ntpsd[ntpsd != 0] - ntpsd[ntpsd != 0].mean()) / ntpsd[ntpsd != 0].std()
-                        sd_den = np.sqrt(np.sum(sdata * sdata.conj(), axis=1))
-                        sd_den[sd_den == 0] = 1
-                        sdata = sdata / sd_den[:, None]
-                        sdata[sdata != 0] = (sdata[sdata != 0] - sdata[sdata != 0].mean()) / sdata[sdata != 0].std()
+                        ntpsd = scale_normalize(tpsd)
+                        sdata = scale_normalize(sdata)
                         # Shift the data so it's centered around zero (for the autoencoder)
                         if sdr_ch[0].baseband_fc != 0.:
                             shift_bin = int(sdr_ch[0].baseband_fc / sdr_ch[0].fs * fft_len)

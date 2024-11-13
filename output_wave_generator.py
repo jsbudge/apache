@@ -73,7 +73,7 @@ pnums = np.arange(1700, 1756)
 _, raw_pulse_data = sdr.getPulses(pnums, 0)
 mfilt = sdr.genMatchedFilter(0, fft_len=fft_len)
 ts = sdr[0].pulse_time[pnums]
-pulse_data = np.fft.fft(raw_pulse_data.T, wave_mdl.fft_len, axis=1) * mfilt
+pulse_data = np.fft.fftshift(np.fft.fft(raw_pulse_data.T, wave_mdl.fft_len, axis=1) * mfilt, axes=1)
 patterns = torch.load('/home/jeff/repo/apache/data/target_embedding_means.pt')[0]
 
 waves = wave_mdl.full_forward(pulse_data, patterns[0], nr)
@@ -84,8 +84,9 @@ print('Waveforms generated.')
 classifier = loadModel(PulseClassifier, './model/current_pc_params.pic')
 classifier.to(device)
 
-targets_in_data = classifier(torch.tensor(pulse_data, dtype=torch.float32).to(device)).cpu().data.numpy()
-clutter = normalize(pulse_data[10, :])
+targets_in_data = classifier(torch.tensor(np.stack([pulse_data.real, pulse_data.imag]).swapaxes(0, 1)[0],
+                                          dtype=torch.float32).to(device)).cpu().data.numpy()
+clutter = normalize(np.fft.fftshift(pulse_data[10, :]))
 print('Loaded clutter and target data...')
 
 # Run some plots for an idea of what's going on
@@ -154,7 +155,7 @@ with open('./data/target_ids.txt', 'r') as f:
     tnames = [s.strip() for s in f.readlines()]
 plt.figure('Targets in Data')
 plt.scatter(np.arange(targets_in_data.shape[1]), targets_in_data[0])
-plt.xticks(np.arange(targets_in_data.shape[1]), tnames)
+plt.xticks(np.arange(targets_in_data.shape[1]), tnames, rotation=45)
 
 # Save out the waveform to a file
 print('Plots finished.')

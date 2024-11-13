@@ -1,41 +1,23 @@
-import pickle
-from glob import glob
+import open3d as o3d
 import sys
 import numpy as np
 import torch
+from numba import cuda
+from simulib.backproject_functions import backprojectPulseSet
 from apache_helper import ApachePlatform
-from models import Encoder
-from simulib.simulation_functions import llh2enu, db, azelToVec, genPulse
-from simulib.cuda_kernels import getMaxThreads, backproject, applyRadiationPatternCPU
-from simulib.cuda_mesh_kernels import genRangeProfileFromMesh
-from simulib.mimo_functions import genChirpAndMatchedFilters, genChannels, genSimPulseData
-from simulib.grid_helper import SDREnvironment
-import cupy as cupy
+from models import load as loadModel
+from simulib import llh2enu, db, azelToVec, genPulse
+from simulib.cuda_kernels import applyRadiationPatternCPU
+from simulib.mesh_functions import readCombineMeshFile, getRangeProfileFromMesh, getBoxesSamplesFromMesh
+from simulib.mimo_functions import genChirpAndMatchedFilters, genChannels
+from simulib.grid_helper import MapEnvironment
 import matplotlib.pyplot as plt
-import plotly.express as px
+import plotly.graph_objects as go
 import plotly.io as pio
-from data_converter.SDRParsing import load
 import yaml
 from scipy.signal import sawtooth
 from scipy.linalg import convolution_matrix
-from celluloid import Camera
 from waveform_model import GeneratorModel
-import contextlib
-
-
-def reloadWaveforms(a_wave_mdl, pulse_data, a_nr, a_fft_len, tc_d, a_rps, a_bwidth, mu, std):
-    fn_waves = a_wave_mdl.full_forward(pulse_data, tc_d, a_nr, a_bwidth, mu, std)
-    # Calculate out the center frequency for shifting
-    wv = np.fft.fftshift(fn_waves, axes=1)
-    if a_wave_mdl.fft_len != a_fft_len:
-        new_waves = np.zeros((fn_waves.shape[0], a_fft_len), dtype=np.complex128)
-        new_waves[:, :a_wave_mdl.fft_len // 2] = fn_waves[:, :a_wave_mdl.fft_len // 2]
-        new_waves[:, -a_wave_mdl.fft_len // 2:] = fn_waves[:, -a_wave_mdl.fft_len // 2:]
-        fn_waves = new_waves
-    nfc = 1e9 + (wv.shape[1] // 2 - np.arange(wv.shape[1])[db(wv[0]) > db(wv[0]).max() - 50]).mean() * fs / wv.shape[1]
-    _, fn_chirps, fn_mfilts = genChirpAndMatchedFilters(fn_waves, a_rps, a_bwidth, fs, nfc, a_fft_len, use_window=False)
-    return fn_chirps, fn_mfilts
-
 
 pio.renderers.default = 'browser'
 
@@ -58,19 +40,30 @@ if __name__ == '__main__':
     nbpj_pts = (
         int(settings['grid_height'] * settings['pts_per_m']), int(settings['grid_width'] * settings['pts_per_m']))
     sim_settings = settings['simulation_params']
+    grid_origin = settings['origin']
 
-    print('Loading SDR file...')
-    # This pickle should have an ASI file attached and use_jump_correction=False
-    sdr = load(settings['bg_file'], import_pickle=False, export_pickle=False, use_jump_correction=False)
-    bg = SDREnvironment(sdr)
-    ref_llh = bg.ref
+    # This is all the constants in the radar equation for this simulation
+    fc = settings['fc']
+    radar_coeff = (
+                c0 ** 2 / fc ** 2 * settings['antenna_params']['transmit_power'][0] * 10 ** ((settings['antenna_params']['gain'][0] + 2.15) / 10) * 10 ** ((settings['antenna_params']['gain'][0] + 2.15) / 10) *
+                10 ** ((settings['antenna_params']['rec_gain'][0] + 2.15) / 10) / (4 * np.pi) ** 3)
+    noise_power = 10**(sim_settings['noise_power_db'] / 10)
+
+    print('Loading mesh and settings...')
+    mesh = readCombineMeshFile('/home/jeff/Documents/roman_facade/scene.gltf', points=3000000)
+    mesh = mesh.rotate(mesh.get_rotation_matrix_from_xyz(np.array([np.pi / 2, 0, 0])))
+    mesh = mesh.translate(llh2enu(*grid_origin, grid_origin), relative=False)
+    mesh_ids = np.asarray(mesh.triangle_material_ids)
+
+    # Calculate out mesh extent
+    bg = MapEnvironment(grid_origin, (settings['grid_width'], settings['grid_height']), background=np.ones(nbpj_pts))
 
     plane_pos = llh2enu(40.138052, -111.660027, 1365, bg.ref)
 
     # Generate a platform
     print('Generating platform...', end='')
     # Run directly at the plane from the south
-    grid_origin = plane_pos  # llh2enu(*bg.origin, bg.ref)
+    grid_origin = llh2enu(*bg.origin, bg.ref)
     # full_scan = int(sim_settings['az_bw'] / sim_settings['scan_rate'] * sim_settings['prf'])
     # full_scan -= 0 if full_scan % 2 == 0 else 1
     # Get parameters for the Apache specs
@@ -86,9 +79,6 @@ if __name__ == '__main__':
     p = np.zeros_like(e)
     y = np.zeros_like(e) + np.pi / 2
     t = np.arange(ngpssam) / GPS_UPDATE_RATE_HZ
-    '''gim_pan = (sawtooth(np.pi * sim_settings['scan_rate'] / sim_settings['scan_angle'] *
-                        np.arange(ngpssam) / GPS_UPDATE_RATE_HZ, .5)
-               * sim_settings['scan_angle'] / 2 * DTR)'''
     gim_pan = (sawtooth(np.pi * sim_settings['scan_rate'] / sim_settings['scan_angle'] *
                         np.arange(ngpssam) / GPS_UPDATE_RATE_HZ, .5)
                * sim_settings['scan_angle'] / 2 * DTR)
@@ -110,7 +100,6 @@ if __name__ == '__main__':
     nsam, nr, ranges, ranges_sampled, near_range_s, granges, fft_len, up_fft_len = (
         rpref.getRadarParams(u.mean(), settings['plp'], settings['upsample']))
     print(f'Plane slant range is {np.linalg.norm(plane_pos - rpref.rxpos(rpref.gpst), axis=1).mean()}')
-    rbins_gpu = cupy.array(ranges, dtype=np.float64)
     near_range_s = np.float64(near_range_s)
 
     # Get reference data
@@ -126,93 +115,48 @@ if __name__ == '__main__':
     bpj_wavelength = np.float64(c0 / fc)
 
     # Run through loop to get data simulated
-    gap_len = 256
-    if settings['simulation_params']['use_sdr_gps']:
-        data_t = sdr[settings['channel']].pulse_time
-        idx_t = sdr[settings['channel']].frame_num
-    else:
-        data_t = rpref.getValidPulseTimings(settings['simulation_params']['prf'], nr / TAC, cpi_len, as_blocks=True)
-        gap_len = len(data_t[0])
-        data_t = np.concatenate(data_t)
+    data_t = rpref.getValidPulseTimings(settings['simulation_params']['prf'], nr / TAC, cpi_len, as_blocks=True)
+    gap_len = len(data_t[0])
+    # data_t = np.concatenate(data_t)
 
     ang_dist_traveled_over_cpi = cpi_len / sim_settings['prf'] * sim_settings['scan_rate'] * DTR
-
-    # Chirps and Mfilts for each channel
-    waves = np.array([np.fft.fft(genPulse(np.linspace(0, 1, 10),
-                                          np.linspace(0, 1, 10), nr, fs, fc - bwidth / 2, bwidth), fft_len),
-                      np.fft.fft(genPulse(np.linspace(0, 1, 10),
-                                          np.linspace(1, 0, 10), nr, fs, fc - bwidth / 2, bwidth), fft_len)]
-                     ) / 1e5
-    _, chirps, mfilts = genChirpAndMatchedFilters(waves, rps, bwidth, fs, fc, fft_len)
 
     try:
         target_target = int(sys.argv[1])
     except IndexError:
         target_target = sim_settings['target_target']
-    if not sim_settings['use_sdr_waveform']:
-        device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        mfilt = sdr.genMatchedFilter(0, fft_len=fft_len)
-        print('Setting up wavemodel...')
-        # Get the model, experiment, logger set up
-        decoder = Encoder(**wave_config['exp_params']['model_params'], fft_len=wave_config['settings']['fft_len'],
-                          params=wave_config['exp_params'])
-        print('Loading decoder...')
-        try:
-            decoder.load_state_dict(torch.load('./model/inference_model.state'))
-        except RuntimeError:
-            raise IOError('Decoder save file broken somehow.')
-        with open('./model/current_model_params.pic', 'rb') as f:
-            generator_params = pickle.load(f)
-        wave_mdl = GeneratorModel(**generator_params, decoder=decoder)
-        wave_mdl.load_state_dict(torch.load(generator_params['state_file']))
-        print('Wavemodel loaded.')
-
-        active_clutter = np.fft.fft(sdr.getPulses(sdr[0].frame_num[:wave_config['settings']['cpi_len']], 0)[1].T,
-                                    wave_mdl.fft_len, axis=1)
-        bandwidth_model = torch.tensor(settings['bandwidth'], device=wave_mdl.device)
-        tsdata = np.fromfile('/home/jeff/repo/apache/data/targets.enc',
-                             dtype=np.float32).reshape((-1, wave_config['target_exp_params']['model_params']['latent_dim'])
-                                                       )[target_target, ...]
-
-    # This replaces the ASI background with a custom image
-    bg.resampleGrid(settings['origin'], settings['grid_width'], settings['grid_height'],
-                    *nbpj_pts, bg.heading if settings['rotate_grid'] else 0)
-    '''bg_image = imageio.imread('/data6/Jeff_Backup/Pictures/josh.png').sum(axis=2)
-    bg_image = RectBivariateSpline(np.arange(bg_image.shape[0]), np.arange(bg_image.shape[1]), bg_image)(
-        np.linspace(0, bg_image.shape[0], bg.refgrid.shape[0]), np.linspace(0, bg_image.shape[1], bg.refgrid.shape[1])) / 750'''
-    '''bg_image = np.zeros(bg.refgrid.shape)
-    bg_image[125, 125] = 100
-    bg_image[150, 150] = 10
-    bg._refgrid = bg_image'''
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    chirps = [np.fft.fft(genPulse(np.linspace(0, 1, 10), np.linspace(0, 1, 10), nr, fs, fc, settings['bandwidth']), fft_len) * 1e6]
+    mfilts = [c.conj() for c in chirps]
+    pdd = np.fft.fftshift(np.fft.fft(genPulse(np.linspace(0, 1, 10), np.linspace(0, 1, 10), nr, fs, 0, settings['bandwidth']), wave_fft_len))
+    pulse_data = np.stack([pdd.real, pdd.imag])
+    mfilt = np.stack([pdd.real, -pdd.imag])
+    print('Setting up wavemodel...')
+    wave_mdl = loadModel(GeneratorModel, './model/current_model_params.pic')
+    wave_mdl.to(device)
+    print('Wavemodel loaded.')
+    patterns = torch.load('/home/jeff/repo/apache/data/target_embedding_means.pt')[0]
 
     # Calculate out points on the ground
     gx, gy, gz = bg.getGrid(settings['origin'], settings['grid_width'], settings['grid_height'], *nbpj_pts,
-                            bg.heading if settings['rotate_grid'] else 0)
-    refgrid = bg.getRefGrid(settings['origin'], settings['grid_width'], settings['grid_height'],
-                            *nbpj_pts, bg.heading if settings['rotate_grid'] else 0)
-
-    # Generate range/angle grid for a given position
-
-    imx_gpu = cupy.array(gx, dtype=np.float64)
-    imy_gpu = cupy.array(gy, dtype=np.float64)
-    imz_gpu = cupy.array(gz, dtype=np.float64)
+                            rpref.heading if settings['rotate_grid'] else 0)
+    grid_points = np.array([gx.flatten(), gy.flatten(), gz.flatten()]).T
+    flight_path = rpref.txpos(rpref.gpst)
 
     # GPU device calculations
-    threads_per_block = getMaxThreads()
-    bpg_bpj = (max(1, (nbpj_pts[0]) // threads_per_block[0] + 1), (nbpj_pts[1]) // threads_per_block[1] + 1)
+    streams = [cuda.stream() for _ in rps]
 
     # Get pointing vector for MIMO consolidation
     ublock = np.array(
         [azelToVec(n, 0) for n in
          np.linspace(-ang_dist_traveled_over_cpi / 2, ang_dist_traveled_over_cpi / 2, cpi_len)]).T
     uhat = azelToVec(np.pi / 2, 0)
-    avec = np.exp(-1j * 2 * np.pi * sdr[0].fc / c0 * vx_array.dot(uhat))
-    fine_ucavec = np.exp(-1j * 2 * np.pi * sdr[0].fc / c0 * vx_array.dot(ublock))
+    avec = np.exp(-1j * 2 * np.pi * fc / c0 * vx_array.dot(uhat))
+    fine_ucavec = np.exp(-1j * 2 * np.pi * fc / c0 * vx_array.dot(ublock))
     array_factor = fine_ucavec.conj().T.dot(np.eye(vx_array.shape[0])).dot(fine_ucavec)[:, 0] / vx_array.shape[0]
 
     test = None
     print('Running simulation...')
-    pulse_pos = 0
     # Data blocks for imaging
     rbi_image = np.zeros(gx.shape, dtype=np.complex128)
 
@@ -236,94 +180,68 @@ if __name__ == '__main__':
     det_pts = []
     ex_chirps = []
 
+    box_tree, sample_points = getBoxesSamplesFromMesh(mesh, sample_points=10000,
+                                                      view_pos=rpref.txpos(rpref.gpst[np.linspace(0, len(rpref.gpst) - 1, 3).astype(int)]))
+    bpj_grid = np.zeros_like(gx).astype(np.complex128)
+
     if settings['simulation_params']['load_targets']:
         pass
 
-    data_gen = genSimPulseData(rpref, rps, bg, u.mean(), settings['plp'], settings['upsample'],
-                               settings['grid_width'], settings['grid_height'], settings['pts_per_m'],
-                               gap_len, chirps, bpj_wavelength, data_t,
-                               settings['antenna_params']['transmit_power'][0], settings['antenna_params']['gain'][0],
-                               settings['rotate_grid'], settings['debug'], fft_len, settings['noise_level'],
-                               settings['origin'])
-    next(data_gen)  # Initialize the generator
-    if settings['live_figures']:
-        plt.ion()
-    try:
-        with contextlib.suppress(StopIteration):
-            idx = 0
-            while True:
-                pdata = data_gen.send(chirps)
-                ex_chirps.append(np.array(chirps[0].get()))
-                ts = data_t[idx * gap_len + cpi_len // 2:idx * gap_len + gap_len - cpi_len // 2]
-                # ts = data_t[idx * gap_len:idx * gap_len + gap_len]
-                ts_hat = ts.min()
-                compressed_data = np.zeros((gap_len, nsam * settings['upsample']), dtype=np.complex128)
-                for ch_idx, rp in enumerate(rps):
-                    try:
-                        tmp_data = pdata[rp.rx_num] * mfilts[ch_idx]
-                    except TypeError:
-                        tmp_data = pdata[rp.rx_num] * mfilts[ch_idx].get()
-                    tmp_exp = np.zeros((tmp_data.shape[0], up_fft_len), dtype=np.complex128)
-                    tmp_exp[:, :fft_len // 2] = tmp_data[:, :fft_len // 2]
-                    tmp_exp[:, -fft_len // 2:] = tmp_data[:, -fft_len // 2:]
-                    compressed_data += np.fft.ifft(tmp_exp, axis=1)[:, :nsam * settings['upsample']] * avec[ch_idx]
-                if not sim_settings['use_sdr_waveform'] and compressed_data.shape[0] == gap_len:
-                    chirps, mfilts = reloadWaveforms(wave_mdl, active_clutter, nr, fft_len,
-                                                     tsdata, rps, bandwidth_model,
-                                                     wave_config['wave_exp_params']['dataset_params']['mu'],
-                                                     wave_config['wave_exp_params']['dataset_params']['var'])
+    for idx, ts in enumerate(data_t):
+        # Modify the pulse
+        waves = wave_mdl.full_forward(pulse_data, patterns[0].to(device), nr)
+        waves = np.fft.fft(np.fft.ifft(waves, axis=1)[:, :nr], fft_len, axis=1) * 1e6
+        chirps = [waves for _ in rps]
+        mfilts = [w.conj() for w in chirps]
+        ex_chirps.append(chirps)
+        # _, chirps, mfilts = genChirpAndMatchedFilters(waves, rps, bwidth, fs, 0., fft_len)
+        txposes = [rp.txpos(ts).astype(np.float64) for rp in rps]
+        rxposes = [rp.rxpos(ts).astype(np.float64) for rp in rps]
+        pans = [rp.pan(ts).astype(np.float64) for rp in rps]
+        tilts = [rp.tilt(ts).astype(np.float64) for rp in rps]
+        single_rp = getRangeProfileFromMesh(*box_tree, sample_points, txposes, rxposes, pans, tilts,
+                                            radar_coeff, rpref.az_half_bw, rpref.el_half_bw, nsam, fc, near_range_s,
+                                            num_bounces=sim_settings['num_bounces'], streams=streams)
+        if sum(np.sum(abs(s)) for s in single_rp) < 1e-10:
+            continue
+        single_data = [np.ascontiguousarray(np.fft.ifft(np.fft.fft(srp, fft_len, axis=1) * mfilt * pulse, axis=1)[:, :nsam])
+                       for srp, mfilt, pulse in zip(single_rp, mfilts, chirps)]
+        compressed_data = np.stack(single_data).swapaxes(0, 1)
+        compressed_data = np.sum(compressed_data * avec[None, :, None], axis=1)
 
-                panrx = rpref.pan(ts)
-                elrx = rpref.tilt(ts)
-                if compressed_data.shape[0] == gap_len:
-                    gcv_k = np.zeros(gap_len)
-                    sig_min = abs(compressed_data.T.dot(H_hat))
-                    # sig_min = np.fft.ifft(np.fft.fft(compressed_data, axis=0) * H_w[:, None], axis=0).T
-                    '''gcv_min = np.inf
-                    for n in range(1, gap_len):
-                        eig_k = eig + 0.0
-                        eig_k[n:] = 0
-                        eig_k[:n] = 1 / eig_k[:n]
-                        Hinv = Vt.T.dot(np.diag(eig_k)).dot(U.T)
-                        sig_k = compressed_data.T.dot(Hinv)
-                        gcv_k[n] = np.linalg.norm(H.T.dot(sig_k.T) - compressed_data) / np.trace(np.eye(gap_len) - Hinv.dot(H))
-                        if gcv_k[n] < gcv_min:
-                            gcv_min = gcv_k[n]
-                            sig_min = sig_k + 0.0'''
-                    pt_dist = np.array([gx.flatten(), gy.flatten(), gz.flatten()]).T - rpref.rxpos(ts_hat)
-                    pans = np.arctan2(pt_dist[:, 0], pt_dist[:, 1])
-                    pt_ranges = np.linalg.norm(pt_dist, axis=1)
+        bpj_grid += backprojectPulseSet(compressed_data.T, pans[0], tilts[0], rxposes[0], txposes[0], gz, c0 / fc, near_range_s, fs,
+                                           rpref.az_half_bw, rpref.el_half_bw, gx=gx, gy=gy)
+        ts_hat = ts.min()
+        panrx = rpref.pan(ts[:H_hat.shape[1]])
+        elrx = rpref.tilt(ts[:H_hat.shape[1]])
+        if compressed_data.shape[0] == gap_len:
+            gcv_k = np.zeros(gap_len)
+            sig_min = abs(compressed_data.T.dot(H_hat))
+            pt_dist = grid_points - rpref.rxpos(ts_hat)
+            pans = np.arctan2(pt_dist[:, 0], pt_dist[:, 1])
+            pt_ranges = np.linalg.norm(pt_dist, axis=1)
 
-                    grads = np.sign(np.diff(panrx))
-                    if len(np.unique(grads)) == 1:
-                        valids = np.logical_and(pans < panrx.max(), pans > panrx.min())
-                        panbins_pt = np.digitize(pans[valids], panrx)
-                        rbins_pt = np.digitize(pt_ranges[valids], ranges)
-                        rbi_image[valids.reshape(rbi_image.shape)] += sig_min[rbins_pt, panbins_pt]
-                    if settings['live_figures']:
-                        pt_proj = rpref.rxpos(ts_hat)[:, None] + azelToVec(panrx,
-                                                                           elrx) * sim_settings['standoff_range']
-                        plt.clf()
-                        '''plt.subplot(2, 1, 1)
-                        plt.plot(db(np.fft.fftshift(np.fft.ifft(chirps[0].get() * mfilts[0].get()))))
-                        plt.subplot(2, 1, 2)
-                        plt.imshow(db(sig_k))
-                        plt.axis('tight')'''
-                        plt.subplot(2, 1, 1)
-                        plt.title(f'CPI {idx}')
-                        plt.imshow(db(sig_min), extent=(panrx.min(), panrx.max(), ranges[0], ranges[-1]))
-                        plt.axis('tight')
-                        plt.subplot(2, 1, 2)
-                        plt.imshow(db(bg.refgrid), extent=(gx.min(), gx.max(), gy.min(), gy.max()))
-                        plt.scatter(pt_proj[0], pt_proj[1], s=40, c='red')
-                        plt.draw()
-                        plt.pause(.1)
-                    if not sim_settings['use_sdr_waveform']:
-                        active_clutter = np.fft.fft(np.fft.ifft(compressed_data, axis=1),
-                                                    wave_config['settings']['fft_len'], axis=1)
-                idx += 1
-    except ValueError as ev:
-        print(ev)
+            grads = np.sign(np.diff(panrx))
+            if len(np.unique(grads)) == 1:
+                valids = np.logical_and(np.logical_and(pans < panrx.max(), pans > panrx.min()),
+                                        np.logical_and(pt_ranges < ranges.max(), pt_ranges > ranges.min()))
+                panbins_pt = np.digitize(pans[valids], panrx)
+                rbins_pt = np.digitize(pt_ranges[valids], ranges)
+                rbi_image[valids.reshape(rbi_image.shape)] += sig_min[rbins_pt, panbins_pt]
+            if settings['live_figures']:
+                pt_proj = rpref.rxpos(ts_hat)[:, None] + azelToVec(panrx, elrx) * sim_settings['standoff_range']
+                plt.clf()
+                plt.subplot(2, 1, 1)
+                plt.title(f'CPI {idx}')
+                plt.imshow(db(sig_min), extent=(panrx.min(), panrx.max(), ranges[0], ranges[-1]))
+                plt.axis('tight')
+                plt.subplot(2, 1, 2)
+                plt.imshow(db(bpj_grid), extent=(gx.min(), gx.max(), gy.min(), gy.max()))
+                plt.scatter(pt_proj[0], pt_proj[1], s=40, c='red')
+                plt.draw()
+                plt.pause(.1)
+            pulse_data = np.fft.fftshift(np.fft.fft(np.fft.ifft(compressed_data, axis=1),
+                                        wave_config['settings']['fft_len'], axis=1), axes=1)
 
     """
     ----------------------------PLOTS-------------------------------
@@ -331,81 +249,71 @@ if __name__ == '__main__':
 
     if settings['output_figures']:
         plt.figure(f'RBI image for {target_target}')
-        plt.imshow(db(rbi_image), clim=[-30, 10])
+        plt.imshow(db(rbi_image))
         plt.axis('tight')
         plt.savefig(f'./data/fig_{target_target}.png', bbox_inches='tight')
     else:
-        try:
-            plt.figure('IMSHOW truth data')
-            climage = db(refgrid)
-            clim_image = climage[climage > -299]
-            clims = (np.median(clim_image) - 1 * clim_image.std(),
-                     max(np.median(clim_image) + 3 * clim_image.std(), np.max(clim_image) + 2))
-            plt.imshow(np.rot90(db(refgrid)), origin='lower', clim=clims, cmap='gray')
-            plt.axis('tight')
-            plt.axis('off')
-        except Exception as e:
-            print(f'Error in generating background image: {e}')
 
         plt.figure('Waveform Info')
         plt.subplot(2, 1, 1)
         plt.title('Spectrum')
-        for n in range(len(chirps)):
-            plt.plot(db(chirps[n].get()))
+        for ch in chirps:
+            plt.plot(db(ch))
         plt.subplot(2, 1, 2)
         plt.title('Time Series')
-        for n in range(len(chirps)):
-            plt.plot(np.fft.ifft(chirps[n].get()).real)
+        for ch in chirps:
+            plt.plot(np.fft.ifft(ch).real)
 
         plt.figure('Matched Filtering')
         plt.subplot(2, 1, 1)
-        plt.plot(db(chirps[0].get()))
-        plt.plot(db(mfilts[0].get()))
+        plt.plot(db(chirps[0]))
+        plt.plot(db(mfilts[0]))
         plt.subplot(2, 1, 2)
-        plt.plot(db(np.fft.ifft(chirps[0].get() * mfilts[0].get())))
+        plt.plot(db(np.fft.ifft(chirps[0] * mfilts[0])))
 
         plt.figure('Chirp Changes')
         for n in ex_chirps:
             plt.plot(db(n))
-        plt.show()
 
         rbi_image = np.array(rbi_image)
+        plt.figure(f'RBI image for {target_target}')
+        plt.imshow(db(rbi_image))
+        plt.axis('tight')
 
-        plt.figure('Comparison')
-        plt.subplot(2, 1, 1)
-        plt.imshow(db(refgrid), extent=(gx.min(), gx.max(), gy.min(), gy.max()), clim=clims, cmap='gray')
-        # plt.scatter(gx.flatten(), gy.flatten(), c=db(refgrid).flatten(), clim=clims)
-        plt.scatter([plane_pos[0]], [plane_pos[1]], s=40)
-        plt.subplot(2, 1, 2)
-        plt.imshow(db(rbi_image), extent=(gx.min(), gx.max(), gy.min(), gy.max()), clim=[-30, 10], cmap='gray')
-        plt.scatter([plane_pos[0]], [plane_pos[1]], s=40)
 
-        '''plane_vec = plane_pos - rpref.pos(rpref.gpst).mean(axis=0)
-        climage = db(rbi_image)
-        clim_image = climage[climage > -299]
-        clims = (np.median(clim_image) - 3 * clim_image.std(),
-                 max(np.median(clim_image) + 3 * clim_image.std(), np.max(clim_image) + 2))
-        fig = plt.figure('RBI image')
-        ax = fig.add_subplot(111, projection='polar')
-        ax.pcolormesh(az_spread, np.flip(im_ranges), climage.T,
-                      clim=clims, edgecolors='face')
-        ax.scatter(np.arctan2(plane_vec[0], plane_vec[1]), np.linalg.norm(plane_vec))
-        ax.set_ylim(0, ranges[-1])
-        ax.set_xlim(az_spread.min(), az_spread.max())
-        ax.grid(False)
-        plt.axis('tight')'''
+        def getMeshFig(title='Title Goes Here', zrange=100):
+            fig = go.Figure(data=[
+                go.Mesh3d(
+                    x=box_tree[4][:, 0],
+                    y=box_tree[4][:, 1],
+                    z=box_tree[4][:, 2],
+                    colorscale=[[0, 'gold'],
+                                [0.5, 'mediumturquoise'],
+                                [1, 'magenta']],
+                    # Intensity of each vertex, which will be interpolated and color-coded
+                    # intensity=point_rng / point_rng.max(),
+                    # i, j and k give the vertices of triangles
+                    # here we represent the 4 triangles of the tetrahedron surface
+                    i=box_tree[3][:, 0],
+                    j=box_tree[3][:, 1],
+                    k=box_tree[3][:, 2],
+                    name='y',
+                    showscale=True
+                )
+            ])
+            fig.update_layout(
+                title=title,
+                scene=dict(zaxis=dict(range=[-70, zrange])),
+            )
+            return fig
 
-        pfig = px.imshow(db(refgrid), x=np.linspace(gx.min(), gx.max(), refgrid.shape[0]),
-                         y=np.linspace(gy.min(), gy.max(), refgrid.shape[1]),
-                         color_continuous_scale=px.colors.sequential.gray, zmin=130, zmax=180)
-        pfig.show()
 
+        fig = getMeshFig('Full Mesh', flight_path[:, 2].mean() + 10)
+        fig.add_trace(
+            go.Scatter3d(x=flight_path[::100, 0], y=flight_path[::100, 1], z=flight_path[::100, 2], mode='lines'))
+        mean_bore = rpref.boresight(rpref.gpst).mean(axis=0)
+        fig.add_trace(
+            go.Cone(x=[flight_path[:, 0].mean()], y=[flight_path[:, 1].mean()], z=[flight_path[:, 2].mean()], u=[mean_bore[0]], v=[mean_bore[1]], w=[mean_bore[2]], sizeref=40, anchor='tail')
+        )
+        fig.show()
         plt.show()
-
-        '''pfig = px.scatter_3d(x=gx.flatten(), y=gy.flatten(), z=gz.flatten())
-        pfig.add_scatter3d(x=im_x.flatten(), y=im_y.flatten(), z=im_z.flatten())
-        pfig.show()'''
-
-        '''plt.figure('Target Angles')
-        plt.plot(az_spread / DTR, db(np.sum(bg_image, axis=1)))
-        plt.plot(az_spread / DTR, db(np.sum(rbi_image, axis=0)))'''
