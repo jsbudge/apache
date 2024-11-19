@@ -1,6 +1,5 @@
 import contextlib
 import pickle
-
 import torch
 from torch import nn, optim, Tensor
 from torch.nn import functional as tf
@@ -486,7 +485,7 @@ class TargetEmbedding(FlatModule):
         # Parameters for normalizing data correctly
         self.mu = mu
         self.var = var
-        levels = 3
+        levels = 2
         out_sz = fft_len // (2 ** levels)
 
         # Encoder
@@ -496,15 +495,15 @@ class TargetEmbedding(FlatModule):
         self.encoder_conv = nn.ModuleList()
         for l in range(levels):
             ch_lev_enc = prev_lev_enc * 2
-            layer_sz = [fft_len // (2 ** (l + 1))]
+            layer_sz = fft_len // (2 ** (l + 1))
             self.encoder_reduce.append(nn.Sequential(
                 nn.Conv1d(prev_lev_enc, ch_lev_enc, 4, 2, 1),
                 nn.GELU(),
             ))
             self.encoder_conv.append(nn.Sequential(
-                LKA1d(ch_lev_enc, kernel_sizes=(513, 255), dilation=10),
+                LKA1d(ch_lev_enc, kernel_sizes=(513, 513), dilation=20),
                 nn.LayerNorm(layer_sz),
-                nn.Conv1d(ch_lev_enc, ch_lev_enc, 3, 1, 1),
+                nn.Conv1d(ch_lev_enc, ch_lev_enc, 257, 1, 128),
                 nn.GELU(),
             ))
             prev_lev_enc = ch_lev_enc + 0
@@ -520,13 +519,15 @@ class TargetEmbedding(FlatModule):
             nn.Linear(latent_dim, latent_dim),
             nn.GELU(),
             nn.Linear(latent_dim, latent_dim),
+            nn.GELU(),
+            nn.Linear(latent_dim, latent_dim),
         )
 
-        self.contrast_g = nn.Sequential(
+        '''self.contrast_g = nn.Sequential(
             nn.Linear(latent_dim, latent_dim),
             nn.GELU(),
             nn.Linear(latent_dim, latent_dim)
-        )
+        )'''
 
         self.latent_dim = latent_dim
         self.out_sz = out_sz
@@ -546,8 +547,8 @@ class TargetEmbedding(FlatModule):
         return self.fc_z(inp)
 
     def contrast_map(self, inp: Tensor, **kwargs):
-        return self.contrast_g(self.forward(inp))
-        # return self.forward(inp)
+        # return self.contrast_g(self.forward(inp))
+        return self.forward(inp)
 
     # def loss_function(self, y, y_pred):
     #     return tf.cosine_similarity(y, y_pred)

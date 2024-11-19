@@ -1,4 +1,3 @@
-from clearml import Task
 import torch
 from pytorch_lightning import Trainer, loggers, seed_everything
 from pytorch_lightning.callbacks import EarlyStopping, StochasticWeightAveraging
@@ -94,9 +93,12 @@ if __name__ == '__main__':
         plt.figure('Samples')
         plt.subplot(2, 1, 1)
         plt.title('Sample')
-        plt.plot(db(sample[0] + 1j * sample[1]))
+        plt.plot(np.fft.fftshift(np.fft.fftfreq(8192, 1 / 2e9) / 1e6), db(sample[0] + 1j * sample[1]))
+        plt.xlabel('Freq (MHz)')
+        plt.ylabel('Power (dB)')
         plt.subplot(2, 1, 2)
         plt.title('Vector')
+        plt.xlabel('Element')
         plt.plot(embedding)
 
         # Snag the first 50 batches
@@ -120,11 +122,12 @@ if __name__ == '__main__':
         shuffle_idxes = np.random.permutation(np.arange(len(file_idx)))
         pmodel.to(device)
 
-        classified_pulses = pmodel(torch.Tensor(samples[shuffle_idxes]).to(pmodel.device)).cpu().data.numpy()
-        file_pred = np.argmax(classified_pulses, axis=1)
+        classifications = np.zeros(samples.shape[0])
+        for block in tqdm(range(0, samples.shape[0], 256)):
+            classifications[block:block + 256] = np.argmax(pmodel(torch.Tensor(samples[shuffle_idxes[block:block + 256]]).to(pmodel.device)).cpu().data.numpy(), axis=1)
         conf_sz = np.zeros((batch_sz // 2, batch_sz // 2))
         for n, m in itertools.product(range(batch_sz // 2), range(batch_sz // 2)):
-            conf_sz[n, m] = sum(np.logical_and(file_pred == n, file_idx[shuffle_idxes] == m))
+            conf_sz[n, m] = sum(np.logical_and(classifications == n, file_idx[shuffle_idxes] == m))
         plt.figure('Pulse Confusion Matrix')
         plt.imshow(conf_sz)
         plt.colorbar()

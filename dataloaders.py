@@ -2,9 +2,8 @@ from glob import glob
 from typing import List, Optional, Union, Iterator
 import os
 import yaml
-from click.core import batch
 from pytorch_lightning import LightningDataModule
-from torch.utils.data import DataLoader, Dataset, ConcatDataset, BatchSampler, SubsetRandomSampler, Sampler
+from torch.utils.data import DataLoader, Dataset, BatchSampler, SubsetRandomSampler, Sampler
 import torch
 from itertools import chain
 from pathlib import Path
@@ -17,27 +16,23 @@ class BatchListSampler(Sampler[List[int]]):
     r"""Wraps another sampler to yield a mini-batch of indices.
 
     Args:
-        sampler (Sampler or Iterable): Base sampler. Can be any iterable object
+        draw_lists (list): List of lists of sample indexes.
         batch_size (int): Size of mini-batch.
         drop_last (bool): If ``True``, the sampler will drop the last batch if
             its size would be less than ``batch_size``
 
     Example:
-        >>> list(BatchSampler(SequentialSampler(range(10)), batch_size=3, drop_last=False))
+        list(BatchSampler(SequentialSampler(range(10)), batch_size=3, drop_last=False))
         [[0, 1, 2], [3, 4, 5], [6, 7, 8], [9]]
-        >>> list(BatchSampler(SequentialSampler(range(10)), batch_size=3, drop_last=True))
+        list(BatchSampler(SequentialSampler(range(10)), batch_size=3, drop_last=True))
         [[0, 1, 2], [3, 4, 5], [6, 7, 8]]
     """
 
-    def __init__(
-        self,
-        draw_lists: List[List[int]],
-        batch_size: int,
-        drop_last: bool,
-    ) -> None:
+    def __init__(self, draw_lists: List[List[int]], batch_size: int, drop_last: bool) -> None:
         # Since collections.abc.Iterable does not check for `__getitem__`, which
         # is one way for an object to be an iterable, we don't do an `isinstance`
         # check here.
+        super().__init__()
         if (
             not isinstance(batch_size, int)
             or isinstance(batch_size, bool)

@@ -36,7 +36,7 @@ generate_data_settings:
     
 # This is for setting up training of target embedding
 target_exp_params:
-  LR: 0.00000014
+  LR: 0.0000014
   weight_decay: 0.01
   scheduler_gamma: 0.7
   betas: [ .9, .99 ]
@@ -45,7 +45,7 @@ target_exp_params:
   log_epoch: 10
   save_model: True
   transform_data: False
-  warm_start: False
+  warm_start: True
   loss_landscape: False
   output_images: False
   model_type: TargetEncoder
@@ -68,7 +68,7 @@ target_exp_params:
   model_params:
     in_channels: 2
     latent_dim: 1024
-    channel_sz: 32
+    channel_sz: 64
     label_sz: 25
     # These values are taken from a sampling of data, should be the same as the dataset params
     mu: 0.
@@ -91,7 +91,7 @@ pulse_exp_params:
   model_type: PulseClassifier
   patience: 550
   is_tuning: False
-  max_epochs: 10
+  max_epochs: 5
   is_training: True
   dataset_params:
     data_path: ./data/target_tensors
