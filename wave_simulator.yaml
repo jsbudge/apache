@@ -23,6 +23,7 @@ bandwidth: 400000000.
 fc: 9600000000.
 live_figures: True
 output_figures: False
+nbox_levels: 5
 
 simulation_params:
   use_sdr_gps: False

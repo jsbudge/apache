@@ -1,14 +1,14 @@
-import open3d as o3d
 import sys
 import numpy as np
 import torch
 from numba import cuda
 from simulib.backproject_functions import backprojectPulseSet
+from simulib.mesh_objects import Mesh
 from apache_helper import ApachePlatform
 from models import load as loadModel
 from simulib import llh2enu, db, azelToVec, genPulse
 from simulib.cuda_kernels import applyRadiationPatternCPU
-from simulib.mesh_functions import readCombineMeshFile, getRangeProfileFromMesh, getBoxesSamplesFromMesh
+from simulib.mesh_functions import readCombineMeshFile, getRangeProfileFromMesh
 from simulib.mimo_functions import genChirpAndMatchedFilters, genChannels
 from simulib.grid_helper import MapEnvironment
 import matplotlib.pyplot as plt
@@ -48,12 +48,6 @@ if __name__ == '__main__':
                 c0 ** 2 / fc ** 2 * settings['antenna_params']['transmit_power'][0] * 10 ** ((settings['antenna_params']['gain'][0] + 2.15) / 10) * 10 ** ((settings['antenna_params']['gain'][0] + 2.15) / 10) *
                 10 ** ((settings['antenna_params']['rec_gain'][0] + 2.15) / 10) / (4 * np.pi) ** 3)
     noise_power = 10**(sim_settings['noise_power_db'] / 10)
-
-    print('Loading mesh and settings...')
-    mesh = readCombineMeshFile('/home/jeff/Documents/roman_facade/scene.gltf', points=3000000)
-    mesh = mesh.rotate(mesh.get_rotation_matrix_from_xyz(np.array([np.pi / 2, 0, 0])))
-    mesh = mesh.translate(llh2enu(*grid_origin, grid_origin), relative=False)
-    mesh_ids = np.asarray(mesh.triangle_material_ids)
 
     # Calculate out mesh extent
     bg = MapEnvironment(grid_origin, (settings['grid_width'], settings['grid_height']), background=np.ones(nbpj_pts))
@@ -155,6 +149,14 @@ if __name__ == '__main__':
     fine_ucavec = np.exp(-1j * 2 * np.pi * fc / c0 * vx_array.dot(ublock))
     array_factor = fine_ucavec.conj().T.dot(np.eye(vx_array.shape[0])).dot(fine_ucavec)[:, 0] / vx_array.shape[0]
 
+    print('Loading mesh and settings...')
+    mesh = readCombineMeshFile('/home/jeff/Documents/roman_facade/scene.gltf', points=3000000)
+    mesh = mesh.rotate(mesh.get_rotation_matrix_from_xyz(np.array([np.pi / 2, 0, 0])))
+    mesh = mesh.translate(llh2enu(*grid_origin, grid_origin), relative=False)
+    mesh_ids = np.asarray(mesh.triangle_material_ids)
+
+    mesh = Mesh(mesh, num_box_levels=settings['nbox_levels'], octree_perspective=flight_path.mean(axis=0))
+
     test = None
     print('Running simulation...')
     # Data blocks for imaging
@@ -180,8 +182,7 @@ if __name__ == '__main__':
     det_pts = []
     ex_chirps = []
 
-    box_tree, sample_points = getBoxesSamplesFromMesh(mesh, sample_points=10000,
-                                                      view_pos=rpref.txpos(rpref.gpst[np.linspace(0, len(rpref.gpst) - 1, 3).astype(int)]))
+    sample_points = mesh.sample(10000, view_pos=rpref.txpos(rpref.gpst[np.linspace(0, len(rpref.gpst) - 1, 3).astype(int)]))
     bpj_grid = np.zeros_like(gx).astype(np.complex128)
 
     if settings['simulation_params']['load_targets']:
@@ -199,9 +200,9 @@ if __name__ == '__main__':
         rxposes = [rp.rxpos(ts).astype(np.float64) for rp in rps]
         pans = [rp.pan(ts).astype(np.float64) for rp in rps]
         tilts = [rp.tilt(ts).astype(np.float64) for rp in rps]
-        single_rp = getRangeProfileFromMesh(*box_tree, sample_points, txposes, rxposes, pans, tilts,
-                                            radar_coeff, rpref.az_half_bw, rpref.el_half_bw, nsam, fc, near_range_s,
-                                            num_bounces=sim_settings['num_bounces'], streams=streams)
+        single_rp = getRangeProfileFromMesh(mesh, sample_points, txposes, rxposes, pans, tilts,
+                                      radar_coeff, rpref.az_half_bw, rpref.el_half_bw, nsam, fc, near_range_s,
+                                      num_bounces=1, streams=streams)
         if sum(np.sum(abs(s)) for s in single_rp) < 1e-10:
             continue
         single_data = [np.ascontiguousarray(np.fft.ifft(np.fft.fft(srp, fft_len, axis=1) * mfilt * pulse, axis=1)[:, :nsam])
@@ -236,7 +237,7 @@ if __name__ == '__main__':
                 plt.imshow(db(sig_min), extent=(panrx.min(), panrx.max(), ranges[0], ranges[-1]))
                 plt.axis('tight')
                 plt.subplot(2, 1, 2)
-                plt.imshow(db(bpj_grid), extent=(gx.min(), gx.max(), gy.min(), gy.max()))
+                plt.imshow(db(bpj_grid), extent=(gx.min(), gx.max(), gy.min(), gy.max()), origin='lower')
                 plt.scatter(pt_proj[0], pt_proj[1], s=40, c='red')
                 plt.draw()
                 plt.pause(.1)
@@ -273,7 +274,7 @@ if __name__ == '__main__':
 
         plt.figure('Chirp Changes')
         for n in ex_chirps:
-            plt.plot(db(n))
+            plt.plot(db(n[0]))
 
         rbi_image = np.array(rbi_image)
         plt.figure(f'RBI image for {target_target}')
@@ -284,26 +285,20 @@ if __name__ == '__main__':
         def getMeshFig(title='Title Goes Here', zrange=100):
             fig = go.Figure(data=[
                 go.Mesh3d(
-                    x=box_tree[4][:, 0],
-                    y=box_tree[4][:, 1],
-                    z=box_tree[4][:, 2],
-                    colorscale=[[0, 'gold'],
-                                [0.5, 'mediumturquoise'],
-                                [1, 'magenta']],
-                    # Intensity of each vertex, which will be interpolated and color-coded
-                    # intensity=point_rng / point_rng.max(),
+                    x=mesh.vertices[:, 0],
+                    y=mesh.vertices[:, 1],
+                    z=mesh.vertices[:, 2],
                     # i, j and k give the vertices of triangles
-                    # here we represent the 4 triangles of the tetrahedron surface
-                    i=box_tree[3][:, 0],
-                    j=box_tree[3][:, 1],
-                    k=box_tree[3][:, 2],
-                    name='y',
+                    i=mesh.tri_idx[:, 0],
+                    j=mesh.tri_idx[:, 1],
+                    k=mesh.tri_idx[:, 2],
+                    # facecolor=triangle_colors,
                     showscale=True
                 )
             ])
             fig.update_layout(
                 title=title,
-                scene=dict(zaxis=dict(range=[-70, zrange])),
+                scene=dict(zaxis=dict(range=[-30, zrange])),
             )
             return fig
 

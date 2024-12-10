@@ -294,15 +294,15 @@ if __name__ == '__main__':
                 valids = mfilt != 0
 
                 for frame in list(zip(*(iter(range(pulse_lims[0], pulse_lims[1] - config['settings']['cpi_len'], config['settings']['cpi_len'])),) * (nstreams + 1))):
-                    txposes = [rp.txpos(sdr_ch[0].pulse_time[frame[n]:frame[n + 1]]).astype(np.float64) for n in
+                    txposes = [rp.txpos(sdr_ch[0].pulse_time[frame[n]:frame[n] + config['settings']['cpi_len']]).astype(np.float64) for n in
                                range(nstreams)]
-                    rxposes = [rp.rxpos(sdr_ch[0].pulse_time[frame[n]:frame[n + 1]]).astype(np.float64) for n in
+                    rxposes = [rp.rxpos(sdr_ch[0].pulse_time[frame[n]:frame[n] + config['settings']['cpi_len']]).astype(np.float64) for n in
                                range(nstreams)]
-                    pans = [rp.pan(sdr_ch[0].pulse_time[frame[n]:frame[n + 1]]).astype(np.float64) for n in
+                    pans = [rp.pan(sdr_ch[0].pulse_time[frame[n]:frame[n] + config['settings']['cpi_len']]).astype(np.float64) for n in
                             range(nstreams)]
-                    tilts = [rp.tilt(sdr_ch[0].pulse_time[frame[n]:frame[n + 1]]).astype(np.float64) for n in
+                    tilts = [rp.tilt(sdr_ch[0].pulse_time[frame[n]:frame[n] + config['settings']['cpi_len']]).astype(np.float64) for n in
                              range(nstreams)]
-                    sdr_data = [sdr_ch.getPulses(sdr_ch[0].frame_num[frame[n]:frame[n + 1]], 0)[1] for n in range(nstreams)]
+                    sdr_data = [sdr_ch.getPulses(sdr_ch[0].frame_num[frame[n]:frame[n] + config['settings']['cpi_len']], 0)[1] for n in range(nstreams)]
                     if scaling > 0:
                         single_rp = getRangeProfileFromMesh(*box_tree, sample_points, txposes, rxposes, pans, tilts,
                                                 radar_coeff, rp.az_half_bw, rp.el_half_bw, nsam, fc, near_range_s,

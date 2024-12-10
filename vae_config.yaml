@@ -51,7 +51,7 @@ target_exp_params:
   model_type: TargetEncoder
   patience: 550
   is_tuning: False
-  max_epochs: 100
+  max_epochs: 200
   is_training: True
   dataset_params:
     data_path: ./data/target_tensors
@@ -116,8 +116,8 @@ pulse_exp_params:
 
 # For training of wavemodel
 wave_exp_params:
-  LR: 0.0000001
-  weight_decay: 0.5
+  LR: 0.0000000001
+  weight_decay: 0.25
   scheduler_gamma: 0.5
   swa_start: .6
   warm_start: False
@@ -129,21 +129,21 @@ wave_exp_params:
   loss_landscape: False
   patience: 5
   encoder_start_channel_sz: 2
-  encoder_layers: 3
-  embedding_concatenation_channels: 64
-  clutter_target_channels: 64
-  flowthrough_channels: 64
-  decoder_layers: 3
-  exp_to_ant_channels: 64
-  clutter_latent_size: 768
+  encoder_layers: 2
+  embedding_concatenation_channels: 80
+  clutter_target_channels: 80
+  flowthrough_channels: 80
+  decoder_layers: 2
+  exp_to_ant_channels: 80
+  clutter_latent_size: 1024
   bandwidth: 400000000.
-  max_epochs: 1
+  max_epochs: 89
   init_task: False
   exp_name: wavemodel-6x6-goodsidelobes
   dataset_params:
     data_path: ./data
-    train_batch_size: 2
-    val_batch_size: 2
+    train_batch_size: 64
+    val_batch_size: 64
     num_workers: 0
     pin_memory: False
     split: .7

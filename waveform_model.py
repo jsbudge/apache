@@ -107,7 +107,7 @@ class GeneratorModel(FlatModule):
             encoder_l.append(nn.Sequential(
                 nn.Conv1d(encoder_start_channel_sz * 2**n, encoder_start_channel_sz * 2**(n + 1), 4, 2, 1),
                 nn.GELU(),
-                LKA1d(encoder_start_channel_sz * 2**(n + 1), kernel_sizes=(155, 95), dilation=12),
+                LKA1d(encoder_start_channel_sz * 2**(n + 1), kernel_sizes=(513, 95), dilation=12),
                 nn.LayerNorm(fft_len // 2**(n + 1)),
             ))
         encoder_l.append(nn.Conv1d(encoder_start_channel_sz * 2**encoder_layers, 1, 1, 1, 0))
@@ -118,7 +118,7 @@ class GeneratorModel(FlatModule):
         )
 
         '''TRANSFORMER'''
-        self.predict_decoder = nn.Transformer(clutter_latent_size, num_decoder_layers=7, num_encoder_layers=7, nhead=6,
+        self.predict_decoder = nn.Transformer(clutter_latent_size, num_decoder_layers=7, num_encoder_layers=7, nhead=8,
                                               batch_first=True, activation='gelu')
         self.predict_decoder.apply(init_weights)
 
@@ -126,7 +126,7 @@ class GeneratorModel(FlatModule):
         self.target_embedding_combine = nn.Sequential(
             nn.Conv1d(1, embedding_concatenation_channels, 1, 1, 0),
             nn.GELU(),
-            LKA1d(embedding_concatenation_channels, kernel_sizes=(155, 95), dilation=12),
+            LKA1d(embedding_concatenation_channels, kernel_sizes=(513, 513), dilation=12),
             nn.LayerNorm(target_latent_size),
             nn.Conv1d(embedding_concatenation_channels, flowthrough_channels, 1, 1, 0),
             nn.GELU(),
@@ -138,9 +138,9 @@ class GeneratorModel(FlatModule):
         self.clutter_target_combine = nn.Sequential(
             nn.Conv1d(flowthrough_channels, clutter_target_channels, 1, 1, 0),
             nn.GELU(),
-            LKA1d(clutter_target_channels, kernel_sizes=(155, 95), dilation=12),
-            LKA1d(clutter_target_channels, kernel_sizes=(125, 125), dilation=6),
-            LKA1d(clutter_target_channels, kernel_sizes=(95, 155), dilation=3),
+            LKA1d(clutter_target_channels, kernel_sizes=(255, 255), dilation=12),
+            nn.LayerNorm(clutter_latent_size),
+            LKA1d(clutter_target_channels, kernel_sizes=(255, 255), dilation=6),
             nn.LayerNorm(clutter_latent_size),
             nn.Conv1d(clutter_target_channels, flowthrough_channels, 1, 1, 0),
         )
@@ -149,13 +149,9 @@ class GeneratorModel(FlatModule):
         self.expand_to_ants = nn.Sequential(
             nn.Conv1d(flowthrough_channels, exp_to_ant_channels, 1, 1, 0),
             nn.GELU(),
-            LKA1d(exp_to_ant_channels, kernel_sizes=(155, 95), dilation=12),
-            LKA1d(exp_to_ant_channels, kernel_sizes=(125, 125), dilation=6),
-            LKA1d(exp_to_ant_channels, kernel_sizes=(95, 155), dilation=3),
+            LKA1d(exp_to_ant_channels, kernel_sizes=(513, 513), dilation=12),
             nn.LayerNorm(clutter_latent_size),
-            LKA1d(exp_to_ant_channels, kernel_sizes=(155, 95), dilation=12),
-            LKA1d(exp_to_ant_channels, kernel_sizes=(125, 125), dilation=6),
-            LKA1d(exp_to_ant_channels, kernel_sizes=(95, 155), dilation=3),
+            LKA1d(exp_to_ant_channels, kernel_sizes=(513, 513), dilation=12),
             nn.LayerNorm(clutter_latent_size),
             nn.Conv1d(exp_to_ant_channels, flowthrough_channels, 1, 1, 0),
             nn.GELU(),
@@ -175,7 +171,7 @@ class GeneratorModel(FlatModule):
             decode_l.append(nn.Sequential(
                 nn.ConvTranspose1d(encoder_start_channel_sz * 2**n, encoder_start_channel_sz * 2**(n - 1), 4, 2, 1),
                 nn.GELU(),
-                LKATranspose1d(encoder_start_channel_sz * 2**(n - 1), kernel_sizes=(155, 95), dilation=12),
+                LKATranspose1d(encoder_start_channel_sz * 2**(n - 1), kernel_sizes=(513, 513), dilation=12),
                 nn.LayerNorm(fft_len // 2**(n - 1)),
             ))
         decode_l.append(nn.Conv1d(encoder_start_channel_sz * 2**(n-1), self.n_ants * 2, 1, 1, 0))
