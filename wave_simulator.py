@@ -2,11 +2,11 @@ import sys
 import numpy as np
 import torch
 from numba import cuda
-from simulib.backproject_functions import backprojectPulseSet
+from simulib.backproject_functions import backprojectPulseSet, backprojectPulseStream
 from simulib.mesh_objects import Mesh
 from apache_helper import ApachePlatform
 from models import load as loadModel
-from simulib import llh2enu, db, azelToVec, genPulse
+from simulib.simulation_functions import llh2enu, db, azelToVec, genPulse
 from simulib.cuda_kernels import applyRadiationPatternCPU
 from simulib.mesh_functions import readCombineMeshFile, getRangeProfileFromMesh
 from simulib.mimo_functions import genChirpAndMatchedFilters, genChannels
@@ -127,7 +127,7 @@ if __name__ == '__main__':
     mfilt = np.stack([pdd.real, -pdd.imag])
     print('Setting up wavemodel...')
     wave_mdl = loadModel(GeneratorModel, './model/current_model_params.pic')
-    wave_mdl.to(device)
+    # wave_mdl.to(device)
     print('Wavemodel loaded.')
     patterns = torch.load('/home/jeff/repo/apache/data/target_embedding_means.pt')[0]
 
@@ -190,16 +190,18 @@ if __name__ == '__main__':
 
     for idx, ts in enumerate(data_t):
         # Modify the pulse
+        wave_mdl.to(device)
         waves = wave_mdl.full_forward(pulse_data, patterns[0].to(device), nr)
+        wave_mdl.to('cpu')
         waves = np.fft.fft(np.fft.ifft(waves, axis=1)[:, :nr], fft_len, axis=1) * 1e6
         chirps = [waves for _ in rps]
         mfilts = [w.conj() for w in chirps]
         ex_chirps.append(chirps)
         # _, chirps, mfilts = genChirpAndMatchedFilters(waves, rps, bwidth, fs, 0., fft_len)
-        txposes = [rp.txpos(ts).astype(np.float64) for rp in rps]
-        rxposes = [rp.rxpos(ts).astype(np.float64) for rp in rps]
-        pans = [rp.pan(ts).astype(np.float64) for rp in rps]
-        tilts = [rp.tilt(ts).astype(np.float64) for rp in rps]
+        txposes = [rp.txpos(ts).astype(np.float32) for rp in rps]
+        rxposes = [rp.rxpos(ts).astype(np.float32) for rp in rps]
+        pans = [rp.pan(ts).astype(np.float32) for rp in rps]
+        tilts = [rp.tilt(ts).astype(np.float32) for rp in rps]
         single_rp = getRangeProfileFromMesh(mesh, sample_points, txposes, rxposes, pans, tilts,
                                       radar_coeff, rpref.az_half_bw, rpref.el_half_bw, nsam, fc, near_range_s,
                                       num_bounces=1, streams=streams)
@@ -210,8 +212,8 @@ if __name__ == '__main__':
         compressed_data = np.stack(single_data).swapaxes(0, 1)
         compressed_data = np.sum(compressed_data * avec[None, :, None], axis=1)
 
-        bpj_grid += backprojectPulseSet(compressed_data.T, pans[0], tilts[0], rxposes[0], txposes[0], gz, c0 / fc, near_range_s, fs,
-                                           rpref.az_half_bw, rpref.el_half_bw, gx=gx, gy=gy)
+        bpj_grid += backprojectPulseStream([compressed_data.T], pans, tilts, rxposes, txposes, gz.astype(np.float32), c0 / fc, near_range_s, fs * settings['upsample'],
+                                           rpref.az_half_bw, rpref.el_half_bw, gx=gx.astype(np.float32), gy=gy.astype(np.float32), streams=streams)
         ts_hat = ts.min()
         panrx = rpref.pan(ts[:H_hat.shape[1]])
         elrx = rpref.tilt(ts[:H_hat.shape[1]])

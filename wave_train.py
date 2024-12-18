@@ -1,7 +1,7 @@
 import pickle
 from utils import upsample, normalize, fs
 import numpy as np
-from simulib import genPulse, db
+from simulib.simulation_functions import genPulse, db
 import matplotlib.pyplot as plt
 from scipy.signal import stft
 import torch
@@ -44,8 +44,8 @@ if __name__ == '__main__':
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     # torch.cuda.empty_cache()
 
-    # seed_everything(np.random.randint(1, 2048), workers=True)
-    seed_everything(17, workers=True)
+    seed_everything(np.random.randint(1, 2048), workers=True)
+    # seed_everything(17, workers=True)
 
     with open('./vae_config.yaml', 'r') as file:
         try:
@@ -110,7 +110,7 @@ if __name__ == '__main__':
                                exp_params['max_epochs'] * exp_params['swa_start'])),
                       1e-9)
     trainer = Trainer(logger=logger, max_epochs=config['wave_exp_params']['max_epochs'],
-                      log_every_n_steps=exp_params['log_epoch'], devices=[1], callbacks=
+                      log_every_n_steps=exp_params['log_epoch'], devices=[0], callbacks=
                       [EarlyStopping(monitor='target_loss', patience=exp_params['patience'],
                                      check_finite=True),
                        StochasticWeightAveraging(swa_lrs=expected_lr,

@@ -10,8 +10,8 @@ partial_pulse_percent: .2
 debug: 1
 ngrids: 1
 pts_per_m: 1
-grid_width: 600
-grid_height: 300
+grid_width: 512
+grid_height: 512
 channel: 0
 fdelay: 1.5
 origin: [40.138044, -111.660027, 1365.8849123907273]

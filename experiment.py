@@ -170,30 +170,34 @@ class GeneratorExperiment(pl.LightningModule):
             plt.xlabel('Freq (Hz)')
             self.logger.experiment.add_figure('Waveforms', fig, self.current_epoch)'''
 
-    def on_train_epoch_end(self) -> None:
+    def on_validation_epoch_end(self) -> None:
         sch = self.lr_schedulers()
 
         # If the selected scheduler is a ReduceLROnPlateau scheduler.
         if isinstance(sch, torch.optim.lr_scheduler.ReduceLROnPlateau):
-            sch.step(self.trainer.callback_metrics["loss_epoch"])
-            self.log('LR', sch.get_last_lr()[0], rank_zero_only=True)
+            sch.step(self.trainer.callback_metrics["val_loss"])
+        else:
+            sch.step()
+        self.log('LR', sch.get_last_lr()[0], prog_bar=True, rank_zero_only=True)
+
+    def on_train_epoch_end(self) -> None:
         if self.trainer.is_global_zero and not self.params['is_tuning'] and self.params['loss_landscape']:
             self.optim_path.append(self.model.get_flat_params())
 
     def configure_optimizers(self):
-        optimizer = optim.AdamW(self.model.parameters(),
-                                lr=self.params['LR'],
-                                weight_decay=self.params['weight_decay'],
-                                betas=self.params['betas'],
-                                eps=1e-7)
-        optims = [optimizer]
+        optimizer = torch.optim.AdamW(self.parameters(),
+                                      lr=self.params['LR'],
+                                      weight_decay=self.params['weight_decay'],
+                                      betas=self.params['betas'],
+                                      eps=1e-7)
         if self.params['scheduler_gamma'] is None:
-            return optims
-        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optims[0], cooldown=self.params['step_size'],
-                                                         factor=self.params['scheduler_gamma'])
-        scheds = [scheduler]
+            return optimizer
+        scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=self.params['scheduler_gamma'],
+                                                           verbose=True)
+        '''scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, cooldown=self.params['step_size'],
+                                                         factor=self.params['scheduler_gamma'], threshold=1e-5)'''
 
-        return optims, scheds
+        return {'optimizer': optimizer, 'lr_scheduler': scheduler}
 
     def train_val_get(self, batch, batch_idx):
         clutter_spec, target_spec, target_enc, pulse_length = batch
