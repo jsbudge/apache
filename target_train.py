@@ -1,10 +1,10 @@
 import torch
 from pytorch_lightning import Trainer, loggers, seed_everything
-from pytorch_lightning.callbacks import EarlyStopping, StochasticWeightAveraging
+from pytorch_lightning.callbacks import EarlyStopping, StochasticWeightAveraging, ModelCheckpoint
 from simulib.simulation_functions import db
-import yaml
+from config import get_config
 from dataloaders import TargetEncoderModule
-from models import TargetEmbedding, PulseClassifier, load
+from models import TargetEmbedding, PulseClassifier
 from sklearn.decomposition import KernelPCA
 import matplotlib.pyplot as plt
 import numpy as np
@@ -19,71 +19,76 @@ if __name__ == '__main__':
     seed_everything(np.random.randint(1, 2048), workers=True)
     # seed_everything(43, workers=True)
 
-    with open('./vae_config.yaml') as y:
-        param_dict = yaml.safe_load(y.read())
+    target_config = get_config('target_exp', './vae_config.yaml')
+    classifier_config = get_config('pulse_exp', './vae_config.yaml')
 
-    target_exp_params = param_dict['target_exp_params']
-    pulse_exp_params = param_dict['pulse_exp_params']
-    fft_len = param_dict['settings']['fft_len']
-
-    data = TargetEncoderModule(**target_exp_params["dataset_params"])
+    data = TargetEncoderModule(**target_config.dataset_params)
     data.setup()
 
     # Get the model, experiment, logger set up
-    if target_exp_params['warm_start']:
-        model = load(TargetEmbedding, './model/current_te_params.pic')
-    else:
-        model = TargetEmbedding(**target_exp_params['model_params'], fft_len=fft_len, params=target_exp_params)
-    name = 'TargetEncoder'
-
-    if target_exp_params['is_training']:
-        logger = loggers.TensorBoardLogger(param_dict['train_params']['log_dir'], name=name)
-        expected_lr = max((target_exp_params['LR'] *
-                           target_exp_params['scheduler_gamma'] ** (target_exp_params['max_epochs'] *
-                                                             target_exp_params['swa_start'])), 1e-9)
-        trainer = Trainer(logger=logger, max_epochs=target_exp_params['max_epochs'],
-                          log_every_n_steps=target_exp_params['log_epoch'], devices=[gpu_num], callbacks=
-                          [EarlyStopping(monitor='train_loss', patience=target_exp_params['patience'],
+    if target_config.is_training:
+        model = TargetEmbedding(target_config)
+        logger = loggers.TensorBoardLogger(target_config.log_dir, name=target_config.model_name)
+        expected_lr = max((target_config.lr * target_config.scheduler_gamma ** (target_config.max_epochs *
+                                                                    target_config.swa_start)), 1e-9)
+        trainer = Trainer(logger=logger, max_epochs=target_config.max_epochs, default_root_dir=target_config.weights_path,
+                          log_every_n_steps=target_config.log_epoch, devices=[gpu_num], callbacks=
+                          [EarlyStopping(monitor='train_loss', patience=target_config.patience,
                                          check_finite=True),
-                           StochasticWeightAveraging(swa_lrs=expected_lr, swa_epoch_start=target_exp_params['swa_start'])])
+                           StochasticWeightAveraging(swa_lrs=expected_lr,
+                                                     swa_epoch_start=target_config.swa_start),
+                           ModelCheckpoint(monitor='train_loss')])
+
         print("======= Training =======")
         try:
-            trainer.fit(model, datamodule=data)
+            if target_config.warm_start:
+                trainer.fit(model, ckpt_path=f'{target_config.weights_path}/{target_config.model_name}.ckpt',
+                            datamodule=data)
+            else:
+                trainer.fit(model, datamodule=data)
         except KeyboardInterrupt:
             if trainer.is_global_zero:
                 print('Training interrupted.')
             else:
                 print('adios!')
                 exit(0)
-
-    if pulse_exp_params['warm_start']:
-        pmodel = load(PulseClassifier, './model/current_pc_params.pic')
+        if target_config.save_model:
+            trainer.save_checkpoint(f'{target_config.weights_path}/{target_config.model_name}.ckpt')
     else:
-        pmodel = PulseClassifier(pulse_exp_params['model_params']['latent_dim'], pulse_exp_params['model_params']['label_sz'],
-                        params=pulse_exp_params, embedding_model=model)
-    name = 'PulseClassifier'
-    if param_dict['pulse_exp_params']['is_training']:
-        logger = loggers.TensorBoardLogger(param_dict['train_params']['log_dir'], name=name)
-        expected_lr = max((pulse_exp_params['LR'] *
-                           pulse_exp_params['scheduler_gamma'] ** (pulse_exp_params['max_epochs'] *
-                                                                    pulse_exp_params['swa_start'])), 1e-9)
-        ptrainer = Trainer(logger=logger, max_epochs=pulse_exp_params['max_epochs'],
-                          log_every_n_steps=pulse_exp_params['log_epoch'], devices=[gpu_num], callbacks=
-                          [EarlyStopping(monitor='train_loss', patience=pulse_exp_params['patience'],
+        model = TargetEmbedding.load_from_checkpoint(f'{target_config.weights_path}/{target_config.model_name}.ckpt')
+
+
+    if classifier_config.is_training:
+        pmodel = PulseClassifier(classifier_config, embedding_model=model)
+        logger = loggers.TensorBoardLogger(classifier_config.log_dir, name=classifier_config.model_name)
+        expected_lr = max((classifier_config.lr * classifier_config.scheduler_gamma ** (classifier_config.max_epochs *
+                                                                                classifier_config.swa_start)), 1e-9)
+        ptrainer = Trainer(logger=logger, max_epochs=classifier_config.max_epochs, default_root_dir=classifier_config.weights_path,
+                          log_every_n_steps=classifier_config.log_epoch, devices=[gpu_num], callbacks=
+                          [EarlyStopping(monitor='train_loss', patience=classifier_config.patience,
                                          check_finite=True),
                            StochasticWeightAveraging(swa_lrs=expected_lr,
-                                                     swa_epoch_start=pulse_exp_params['swa_start'])])
+                                                     swa_epoch_start=classifier_config.swa_start),
+                           ModelCheckpoint(monitor='train_loss')])
         print("======= Training Pulse Classifier =======")
         try:
-            ptrainer.fit(pmodel, datamodule=data)
+            if classifier_config.warm_start:
+                ptrainer.fit(pmodel, ckpt_path=f'{classifier_config.weights_path}/{classifier_config.model_name}.ckpt',
+                            datamodule=data)
+            else:
+                ptrainer.fit(pmodel, datamodule=data)
         except KeyboardInterrupt:
             if ptrainer.is_global_zero:
                 print('Training interrupted.')
             else:
                 print('adios!')
                 exit(0)
+        if classifier_config.save_model:
+            ptrainer.save_checkpoint(f'{classifier_config.weights_path}/{classifier_config.model_name}.ckpt')
+    else:
+        pmodel = PulseClassifier.load_from_checkpoint(f'{classifier_config.weights_path}/{classifier_config.model_name}.ckpt')
 
-    if ptrainer.is_global_zero:
+    if ptrainer.is_global_zero or not target_config.is_training:
         model.to(device)
         model.eval()
         sample = next(iter(data.val_dataloader()))
@@ -102,8 +107,8 @@ if __name__ == '__main__':
         plt.plot(embedding)
 
         # Snag the first 50 batches
-        batch_sz = target_exp_params['dataset_params']['val_batch_size']
-        embeddings = np.zeros((min(50, len(data.val_dataloader())) * batch_sz, target_exp_params['model_params']['latent_dim']))
+        batch_sz = target_config.val_batch_size
+        embeddings = np.zeros((min(50, len(data.val_dataloader())) * batch_sz, target_config.latent_dim))
         samples = np.zeros((min(50, len(data.val_dataloader())) * batch_sz, 2, 8192))
         file_idx = np.zeros(min(50, len(data.val_dataloader())) * batch_sz)
         val_gen = iter(data.val_dataloader())

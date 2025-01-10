@@ -3,8 +3,9 @@ import os
 import numpy as np
 from pathlib import Path
 from numba import cuda
-from simulib import db, azelToVec, genChirp, getElevation, enu2llh
-from simulib.mesh_functions import readCombineMeshFile, getBoxesSamplesFromMesh, getRangeProfileFromMesh
+from simulib.mesh_objects import Scene, Mesh
+from simulib.simulation_functions import db, azelToVec, genChirp, getElevation, enu2llh
+from simulib.mesh_functions import readCombineMeshFile, getRangeProfileFromScene, _float
 from simulib.platform_helper import SDRPlatform
 from scipy.signal.windows import taylor
 import matplotlib.pyplot as plt
@@ -58,7 +59,7 @@ def readVCS(filepath):
     return scat_data, np.array(angles) * DTR
 
 
-def genProfileFromMesh(obj_path, niters, mf_chirp, nboxes, points_to_sample, scaling, streams, n_tris=20000):
+def genProfileFromMesh(obj_path, niters, mf_chirp, nbox_levels, points_to_sample, scaling, streams, n_tris=2000000):
     try:
         mesh = readCombineMeshFile(obj_path, n_tris, scale=1 / scaling)
     except IndexError:
@@ -70,17 +71,24 @@ def genProfileFromMesh(obj_path, niters, mf_chirp, nboxes, points_to_sample, sca
     _, poses, _, _ = calcPosBoresight(standoff)
     view_pos = poses[np.linspace(0, poses.shape[0] - 1, 32).astype(int)]
 
-    box_tree, sample_points = getBoxesSamplesFromMesh(mesh, num_box_levels=nboxes, sample_points=points_to_sample,
-                                                      view_pos=view_pos, use_box_pts=True)
+    scene = Scene()
+
+    scene.add(Mesh(mesh, num_box_levels=nbox_levels))
+
+    sample_points = scene.sample(points_to_sample, view_pos=view_pos[::4])
 
     # Apply random rotations and scalings for augmenting of training data
     for i in range(niters):
         chirp_idx = np.random.randint(0, len(mf_chirp))
         near_range_s, poses, pan, tilt = calcPosBoresight(standoff + np.random.rand() * 100)
         rxposes = poses + 0.0
-
-        single_rp = getRangeProfileFromMesh(*box_tree, sample_points, [poses], [rxposes], [pan], [tilt], radar_coeff, 30 * DTR,
-                                            30 * DTR, nsam, fc, near_range_s, num_bounces=num_bounces, streams=streams)
+        single_rp = getRangeProfileFromScene(scene, sample_points, [poses.astype(_float)], [rxposes.astype(_float)],
+                                                                                      [pan.astype(_float)],
+                                                                                      [tilt.astype(_float)],
+                                                                                      radar_coeff,
+                                                                                      12 * DTR, 12 * DTR,
+                                                                                      nsam, fc, near_range_s,
+                                                                                      num_bounces=num_bounces, streams=streams)
         yield np.fft.fft(single_rp[0], fft_len, axis=1) * mf_chirp[chirp_idx], i
 
 
@@ -126,9 +134,8 @@ if __name__ == '__main__':
     ant_transmit_power = 100  # watts
     fc = 9.6e9
     nbox_levels = 4
-    points_to_sample = 2000
+    points_to_sample = 2**15
     num_bounces = 1
-    nbounce_ray = 2
     standoff = 500.
     nsam = 5678
     niters = 10
@@ -220,7 +227,7 @@ if __name__ == '__main__':
             if not Path(tensor_target_path).exists():
                 os.mkdir(tensor_target_path)
             if scaling > 0:
-                gen_iter = iter(genProfileFromMesh(obj_path, niters, mf_chirp, nbox_levels, points_to_sample, scaling, streams, n_tris=50000))
+                gen_iter = iter(genProfileFromMesh(obj_path, niters, mf_chirp, nbox_levels, points_to_sample, scaling, streams))
             else:
                 gen_iter = iter(genProfileFromVCS(obj_path, niters, mf_chirp))
 
@@ -277,9 +284,9 @@ if __name__ == '__main__':
                     mpos = flight_path.mean(axis=0) + bore * ranges.mean()
 
                 # Locate the extrema to speed up the optimization
+                scene = Scene()
                 mesh = mesh.translate(mpos, relative=False)
-                box_tree, sample_points = getBoxesSamplesFromMesh(mesh, num_box_levels=nbox_levels,
-                                                                  sample_points=points_to_sample)
+                scene.add(Mesh(mesh))
 
                 vecs = np.array([mpos[0] - flight_path[:, 0], mpos[1] - flight_path[:, 1],
                                  mpos[2] - flight_path[:, 2]]).T
@@ -292,6 +299,7 @@ if __name__ == '__main__':
                 pulse = np.fft.fft(sdr_ch[0].cal_chirp, fft_len)
                 mfilt = sdr_ch.genMatchedFilter(0, fft_len=fft_len)
                 valids = mfilt != 0
+                sample_points = scene.sample(points_to_sample, vecs[::10])
 
                 for frame in list(zip(*(iter(range(pulse_lims[0], pulse_lims[1] - config['settings']['cpi_len'], config['settings']['cpi_len'])),) * (nstreams + 1))):
                     txposes = [rp.txpos(sdr_ch[0].pulse_time[frame[n]:frame[n] + config['settings']['cpi_len']]).astype(np.float64) for n in
@@ -304,9 +312,13 @@ if __name__ == '__main__':
                              range(nstreams)]
                     sdr_data = [sdr_ch.getPulses(sdr_ch[0].frame_num[frame[n]:frame[n] + config['settings']['cpi_len']], 0)[1] for n in range(nstreams)]
                     if scaling > 0:
-                        single_rp = getRangeProfileFromMesh(*box_tree, sample_points, txposes, rxposes, pans, tilts,
-                                                radar_coeff, rp.az_half_bw, rp.el_half_bw, nsam, fc, near_range_s,
-                                                num_bounces=num_bounces, streams=streams)
+                        single_rp = getRangeProfileFromScene(scene, sample_points, txposes, rxposes,
+                                                                                      pans,
+                                                                                      tilts,
+                                                                                      radar_coeff,
+                                                                                      rp.az_half_bw, rp.el_half_bw,
+                                                                                      nsam, fc, near_range_s,
+                                                                                      num_bounces=num_bounces, streams=streams)
                         tpsds = [np.fft.fft(srp, fft_len, axis=1) * mfilt * pulse for srp in single_rp]
                     else:
                         # Load in the VCS file using the format reader

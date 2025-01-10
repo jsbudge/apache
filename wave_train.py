@@ -1,4 +1,7 @@
 import pickle
+from pathlib import Path
+
+from config import get_config
 from utils import upsample, normalize, fs
 import numpy as np
 from simulib.simulation_functions import genPulse, db
@@ -6,7 +9,7 @@ import matplotlib.pyplot as plt
 from scipy.signal import stft
 import torch
 from pytorch_lightning import Trainer, loggers, seed_everything
-from pytorch_lightning.callbacks import EarlyStopping, StochasticWeightAveraging
+from pytorch_lightning.callbacks import EarlyStopping, StochasticWeightAveraging, ModelCheckpoint
 import yaml
 from dataloaders import WaveDataModule
 from experiment import GeneratorExperiment
@@ -47,82 +50,53 @@ if __name__ == '__main__':
     seed_everything(np.random.randint(1, 2048), workers=True)
     # seed_everything(17, workers=True)
 
-    with open('./vae_config.yaml', 'r') as file:
-        try:
-            config = yaml.safe_load(file)
-        except yaml.YAMLError as exc:
-            print(exc)
+    config = get_config('wave_exp', './vae_config.yaml')
+    target_config = get_config('target_exp', './vae_config.yaml')
 
-    exp_params = config['wave_exp_params']
-
-    if exp_params['init_task']:
-        task = Task.init(project_name='Wavemodel', task_name=config['wave_exp_params']['exp_name'])
-
-    fft_len = config['settings']['fft_len']
+    fft_len = config.fft_len
     nr = 5000  # int((config['perf_params']['vehicle_slant_range_min'] * 2 / c0 - 1 / TAC) * fs)
-
-    print('Setting up wavemodel...')
-    warm_start = False
-    if config['wave_exp_params']['warm_start']:
-        wave_mdl = load(GeneratorModel, './model/current_model_params.pic')
-        if wave_mdl:
-            print('Wavemodel loaded from save state.')
-            warm_start = True
-        else:
-            print('Wavemodel save file does not match current structure. Re-running with new structure.')
-            wave_mdl = buildModel(exp_params, config['target_exp_params'], fft_len, 1,
-                                  config['target_exp_params']['model_params']['latent_dim'])
-    else:
-        print('Initializing new wavemodel...')
-        wave_mdl = buildModel(exp_params, config['target_exp_params'], fft_len, 1,
-                              config['target_exp_params']['model_params']['latent_dim'])
-
     # Since these are dependent on apache params, we set them up here instead of in the yaml file
     print('Setting up data generator...')
-    config['wave_exp_params']['dataset_params']['max_pulse_length'] = nr
-    config['wave_exp_params']['dataset_params']['min_pulse_length'] = 1000
+    config.dataset_params['max_pulse_length'] = nr
+    config.dataset_params['min_pulse_length'] = 1000
 
-    data = WaveDataModule(clutter_latent_dim=exp_params['clutter_latent_size'],
-                          target_latent_dim=config['target_exp_params']['model_params']['latent_dim'], device=device,
+    data = WaveDataModule(clutter_latent_dim=config.clutter_latent_size,
+                          target_latent_dim=config.target_latent_size, device=device,
                           fft_sz=fft_len,
-                          **exp_params["dataset_params"])
+                          **config.dataset_params)
     data.setup()
 
-    print('Setting up experiment...')
-    experiment = GeneratorExperiment(wave_mdl, exp_params)
+    print('Setting up embedding model...')
+    embedding = TargetEmbedding.load_from_checkpoint(f'{target_config.weights_path}/{target_config.model_name}.ckpt', config=target_config)
 
-    if warm_start:
-        name = 'WaveModel'
-        # Find the latest version and append to that
-        try:
-            mnum = max(int(n.split('_')[-1]) for n in listdir(f"{config['train_params']['log_dir']}/{name}"))
-            logger = loggers.TensorBoardLogger(config['train_params']['log_dir'],
-                                               name="WaveModel", version=mnum, log_graph=True)
-        except ValueError:
-            logger = loggers.TensorBoardLogger(config['train_params']['log_dir'],
-                                               name="WaveModel", log_graph=True)
+    print('Initializing wavemodel...')
+    if config.warm_start:
+        wave_mdl = GeneratorModel.load_from_checkpoint(f'{config.weights_path}/{config.model_name}.ckpt', config=config, embedding=embedding, strict=False)
     else:
-        logger = loggers.TensorBoardLogger(config['train_params']['log_dir'],
-                                           name="WaveModel", log_graph=True)
-
-    expected_lr = max((exp_params['LR'] *
-                       exp_params['scheduler_gamma'] ** (
-                               exp_params['max_epochs'] * exp_params['swa_start'])),
-                      1e-9)
-    trainer = Trainer(logger=logger, max_epochs=config['wave_exp_params']['max_epochs'],
-                      log_every_n_steps=exp_params['log_epoch'], devices=[0], callbacks=
-                      [EarlyStopping(monitor='target_loss', patience=exp_params['patience'],
-                                     check_finite=True),
-                       StochasticWeightAveraging(swa_lrs=expected_lr,
-                                                 swa_epoch_start=exp_params['swa_start'])])
+        wave_mdl = GeneratorModel(config=config, embedding=embedding)
+    logger = loggers.TensorBoardLogger(config.log_dir,
+                                       name=config.model_name, log_graph=True)
+    expected_lr = max((config.lr * config.scheduler_gamma ** (config.max_epochs * config.swa_start)), 1e-9)
+    trainer = Trainer(logger=logger, max_epochs=config.max_epochs, default_root_dir=config.weights_path,
+                      log_every_n_steps=config.log_epoch, devices=[1], callbacks=
+                      [EarlyStopping(monitor='target_loss', patience=config.patience, check_finite=True),
+                       StochasticWeightAveraging(swa_lrs=expected_lr, swa_epoch_start=config.swa_start),
+                       ModelCheckpoint(monitor='loss_epoch')])
 
     print("======= Training =======")
     try:
-        trainer.fit(experiment, datamodule=data)
+        trainer.fit(wave_mdl, datamodule=data)
     except KeyboardInterrupt:
-        print('Breaking out of training early.')
+        if trainer.is_global_zero:
+            print('Training interrupted.')
+        else:
+            print('adios!')
+            exit(0)
 
     if trainer.global_rank == 0:
+        if config.save_model:
+            trainer.save_checkpoint(f'{config.weights_path}/{config.model_name}.ckpt')
+            print('Checkpoint saved.')
 
         with torch.no_grad():
             wave_mdl.to(device)
@@ -180,14 +154,17 @@ if __name__ == '__main__':
             plt.xlabel('Lag')
             plt.ylabel('Power (dB)')
 
+            plt.figure()
+            plt.plot(db(np.fft.ifft(np.fft.fftshift(clutter[0]) * np.fft.fftshift(clutter[0]).conj())))
+
             # Save the model structure out to a PNG
             # plot_model(mdl, to_file='./mdl_plot.png', show_shapes=True)
             # waveforms = np.fft.fftshift(waveforms, axes=2)
             plt.figure('Autocorrelation')
             linear = np.fft.fft(
                 genPulse(np.linspace(0, 1, 10),
-                         np.linspace(0, 1, 10), nr, fs, config['settings']['fc'],
-                         config['settings']['bandwidth']), fft_len)
+                         np.linspace(0, 1, 10), nr, fs, config.fc,
+                         config.bandwidth), fft_len)
             linear = linear / sum(linear * linear.conj())  # Unit energy
             inp_wave = waves[0, 0] * waves[0, 0].conj()
             autocorr1 = np.fft.fftshift(db(np.fft.ifft(upsample(inp_wave))))
@@ -232,11 +209,15 @@ if __name__ == '__main__':
             plt.xlabel('Time')
             plt.colorbar()
 
-        if trainer.is_global_zero and config['wave_exp_params']['save_model']:
-            try:
-                wave_mdl.save('./model')
-                print('Model saved to disk.')
-            except Exception as e:
-                print(f'Model not saved: {e}')
-        if config['wave_exp_params']['init_task']:
-            task.close()
+'''wave = np.fft.fft(np.fft.ifft(waves[0, 0]), 32768)
+rp_back = np.load('/home/jeff/repo/simulib/scripts/single_rp_back.npy')
+rp_old_mf = np.load('/home/jeff/repo/simulib/scripts/single_mf_pulse_back.npy')
+rp_fft = np.fft.fft(rp_back[0, 0], 32768)
+rp_imf = rp_fft * wave * wave.conj()
+rp_mf = np.zeros(32768 * 8, dtype=np.complex128)
+rp_mf[:16384] = rp_imf[:16384]
+rp_mf[-16384:] = rp_imf[-16384:]
+rp_mf = np.fft.ifft(rp_mf)[:rp_old_mf.shape[1]]
+plt.figure()
+plt.plot(db(rp_mf))
+plt.plot(db(rp_old_mf[0]))'''

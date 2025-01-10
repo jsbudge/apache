@@ -36,23 +36,27 @@ generate_data_settings:
     
 # This is for setting up training of target embedding
 target_exp_params:
-  LR: 0.0000014
-  weight_decay: 0.01
-  scheduler_gamma: 0.7
-  betas: [ .9, .99 ]
-  step_size: 1
-  swa_start: .7
-  log_epoch: 10
-  save_model: True
-  transform_data: False
-  warm_start: True
-  loss_landscape: False
-  output_images: False
-  model_type: TargetEncoder
-  patience: 550
-  is_tuning: False
-  max_epochs: 200
-  is_training: True
+  training_params:
+    lr: 0.0000014
+    weight_decay: 0.1
+    scheduler_gamma: 0.9
+    betas: [ .9, .99 ]
+    step_size: 1
+    swa_start: .7
+    log_epoch: 10
+    save_model: True
+    transform_data: False
+    warm_start: False
+    loss_landscape: False
+    max_epochs: 276
+    patience: 10
+  logging_params:
+    output_images: False
+    model_name: target_encoder
+    is_tuning: False
+    is_training: True
+    log_dir: ./logs
+    weights_path: ./model
   dataset_params:
     data_path: ./data/target_tensors
     train_batch_size: 50
@@ -66,6 +70,7 @@ target_exp_params:
     var: 1.
     noise_level: 0.
   model_params:
+    fft_len: 8192
     in_channels: 2
     latent_dim: 1024
     channel_sz: 64
@@ -76,23 +81,27 @@ target_exp_params:
 
 # This is for setting up training of pulse classifier
 pulse_exp_params:
-  LR: 0.0014
-  weight_decay: 0.1
-  scheduler_gamma: 0.7
-  betas: [ .9, .99 ]
-  step_size: 1
-  swa_start: .7
-  log_epoch: 10
-  save_model: True
-  transform_data: False
-  warm_start: False
-  loss_landscape: False
-  output_images: False
-  model_type: PulseClassifier
-  patience: 550
-  is_tuning: False
-  max_epochs: 5
-  is_training: True
+  training_params:
+    lr: 0.0014
+    weight_decay: 0.1
+    scheduler_gamma: 0.7
+    betas: [ .9, .99 ]
+    step_size: 1
+    swa_start: .7
+    log_epoch: 10
+    save_model: False
+    transform_data: False
+    warm_start: False
+    loss_landscape: False
+    max_epochs: 15
+    patience: 550
+  logging_params:
+    output_images: False
+    model_name: pulse_classifier
+    is_tuning: False
+    is_training: True
+    log_dir: ./logs
+    weights_path: ./model
   dataset_params:
     data_path: ./data/target_tensors
     train_batch_size: 50
@@ -106,7 +115,8 @@ pulse_exp_params:
     var: 1.
     noise_level: 0.
   model_params:
-    in_channels: 2
+    fft_len: 8192
+    in_channels: 1024
     latent_dim: 1024
     channel_sz: 32
     label_sz: 25
@@ -116,34 +126,44 @@ pulse_exp_params:
 
 # For training of wavemodel
 wave_exp_params:
-  LR: 0.001
-  weight_decay: 0.5
-  scheduler_gamma: 0.7
-  swa_start: .6
-  warm_start: True
-  betas: [.9, .99]
-  step_size: 1
-  log_epoch: 10
-  is_tuning: False
-  save_model: True
-  loss_landscape: False
-  patience: 5
-  encoder_start_channel_sz: 2
-  encoder_layers: 2
-  embedding_concatenation_channels: 256
-  clutter_target_channels: 256
-  flowthrough_channels: 256
-  decoder_layers: 2
-  exp_to_ant_channels: 256
-  clutter_latent_size: 512
-  bandwidth: 400000000.
-  max_epochs: 28
-  init_task: False
-  exp_name: wavemodel-6x6-goodsidelobes
+  training_params:
+    lr: 0.000001
+    weight_decay: 0.01
+    scheduler_gamma: 0.7
+    swa_start: .6
+    warm_start: False
+    betas: [.9, .99]
+    step_size: 1
+    log_epoch: 100
+    is_tuning: False
+    save_model: True
+    loss_landscape: False
+    max_epochs: 400
+    patience: 15
+  model_params:
+    n_ants: 1
+    fft_len: 8192
+    fs: 2000000000.
+    fc: 9600000000.
+    encoder_start_channel_sz: 2
+    encoder_layers: 2
+    embedding_concatenation_channels: 64
+    clutter_target_channels: 64
+    flowthrough_channels: 64
+    decoder_layers: 2
+    exp_to_ant_channels: 64
+    clutter_latent_size: 512
+    target_latent_size: 1024
+    n_fourier_modes: 18
+    bandwidth: 400000000.
+  logging_params:
+    log_dir: ./logs
+    weights_path: ./model
+    model_name: wave_model
   dataset_params:
     data_path: ./data
-    train_batch_size: 2
-    val_batch_size: 2
+    train_batch_size: 16
+    val_batch_size: 16
     num_workers: 0
     pin_memory: False
     split: .7

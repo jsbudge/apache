@@ -5,7 +5,8 @@ from numba import cuda
 from simulib.backproject_functions import backprojectPulseSet, backprojectPulseStream
 from simulib.mesh_objects import Mesh
 from apache_helper import ApachePlatform
-from models import load as loadModel
+from config import get_config
+from models import load as loadModel, TargetEmbedding
 from simulib.simulation_functions import llh2enu, db, azelToVec, genPulse
 from simulib.cuda_kernels import applyRadiationPatternCPU
 from simulib.mesh_functions import readCombineMeshFile, getRangeProfileFromMesh
@@ -125,8 +126,14 @@ if __name__ == '__main__':
     pdd = np.fft.fftshift(np.fft.fft(genPulse(np.linspace(0, 1, 10), np.linspace(0, 1, 10), nr, fs, 0, settings['bandwidth']), wave_fft_len))
     pulse_data = np.stack([pdd.real, pdd.imag])
     mfilt = np.stack([pdd.real, -pdd.imag])
+    print('Setting up embedding model...')
+    target_config = get_config('target_exp', './vae_config.yaml')
+    embedding = TargetEmbedding.load_from_checkpoint(f'{target_config.weights_path}/{target_config.model_name}.ckpt',
+                                                     config=target_config)
     print('Setting up wavemodel...')
-    wave_mdl = loadModel(GeneratorModel, './model/current_model_params.pic')
+    model_config = get_config('wave_exp', './vae_config.yaml')
+    wave_mdl = GeneratorModel.load_from_checkpoint(f'{model_config.weights_path}/{model_config.model_name}.ckpt',
+                                                   config=model_config, embedding=embedding, strict=False)
     # wave_mdl.to(device)
     print('Wavemodel loaded.')
     patterns = torch.load('/home/jeff/repo/apache/data/target_embedding_means.pt')[0]
@@ -188,14 +195,15 @@ if __name__ == '__main__':
     if settings['simulation_params']['load_targets']:
         pass
 
+    wave_mdl.to(device)
+    waves = wave_mdl.full_forward(pulse_data, patterns[0].to(device), nr)
+    wave_mdl.to('cpu')
+    waves = np.fft.fft(np.fft.ifft(waves, axis=1)[:, :nr], fft_len, axis=1) * 1e6
+    chirps = [waves for _ in rps]
+    mfilts = [w.conj() for w in chirps]
+
     for idx, ts in enumerate(data_t):
         # Modify the pulse
-        wave_mdl.to(device)
-        waves = wave_mdl.full_forward(pulse_data, patterns[0].to(device), nr)
-        wave_mdl.to('cpu')
-        waves = np.fft.fft(np.fft.ifft(waves, axis=1)[:, :nr], fft_len, axis=1) * 1e6
-        chirps = [waves for _ in rps]
-        mfilts = [w.conj() for w in chirps]
         ex_chirps.append(chirps)
         # _, chirps, mfilts = genChirpAndMatchedFilters(waves, rps, bwidth, fs, 0., fft_len)
         txposes = [rp.txpos(ts).astype(np.float32) for rp in rps]
@@ -246,6 +254,8 @@ if __name__ == '__main__':
             pulse_data = np.fft.fftshift(np.fft.fft(np.fft.ifft(compressed_data, axis=1),
                                         wave_config['settings']['fft_len'], axis=1), axes=1)
 
+    print('Simulation complete. Plotting stuff...')
+
     """
     ----------------------------PLOTS-------------------------------
     """
@@ -261,11 +271,11 @@ if __name__ == '__main__':
         plt.subplot(2, 1, 1)
         plt.title('Spectrum')
         for ch in chirps:
-            plt.plot(db(ch))
+            plt.plot(db(ch[0]))
         plt.subplot(2, 1, 2)
         plt.title('Time Series')
         for ch in chirps:
-            plt.plot(np.fft.ifft(ch).real)
+            plt.plot(np.fft.ifft(ch[0]).real)
 
         plt.figure('Matched Filtering')
         plt.subplot(2, 1, 1)
@@ -276,7 +286,7 @@ if __name__ == '__main__':
 
         plt.figure('Chirp Changes')
         for n in ex_chirps:
-            plt.plot(db(n[0]))
+            plt.plot(db(n[0].flatten()))
 
         rbi_image = np.array(rbi_image)
         plt.figure(f'RBI image for {target_target}')

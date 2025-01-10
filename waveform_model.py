@@ -2,9 +2,12 @@ import contextlib
 import pickle
 from typing import Optional, Union, Tuple, Dict
 import torch
+from neuralop import TFNO1d
 from torch import nn, Tensor
 from pytorch_lightning import LightningModule
 from torch.nn import functional as nn_func
+
+from config import Config
 from layers import FourierFeature, PulseLength, LKA1d, LKATranspose1d
 import numpy as np
 
@@ -27,8 +30,9 @@ class FlatModule(LightningModule):
     parameters to flatten the model to use in a loss landscape, should it be desired.
     """
 
-    def __init__(self):
+    def __init__(self, config: Config = None):
         super(FlatModule, self).__init__()
+        self.config = config
 
     def get_flat_params(self):
         """Get flattened and concatenated params of the model."""
@@ -66,32 +70,26 @@ class FlatModule(LightningModule):
 
 class GeneratorModel(FlatModule):
     def __init__(self,
-                 fft_len: int,
-                 clutter_latent_size: int,
-                 target_latent_size: int,
-                 n_ants: int,
-                 embedding: LightningModule,
-                 fs: float = 2e9,
-                 encoder_start_channel_sz: int = 2,
-                 encoder_layers: int = 3,
-                 embedding_concatenation_channels: int = 32,
-                 clutter_target_channels: int = 32,
-                 flowthrough_channels: int = 32,
-                 decoder_layers: int = 3,
-                 exp_to_ant_channels: int = 32,
+                 config: Config,
+                 embedding: LightningModule | Config,
                  **kwargs,
                  ) -> None:
-        self.param_dict = {}
-        for key, val in locals().items():
-            if val != self:
-                self.param_dict[key] = val
-        super(GeneratorModel, self).__init__()
+        super(GeneratorModel, self).__init__(config)
+        self.n_ants = config.n_ants
+        self.fft_len = config.fft_len
+        self.clutter_latent_size = config.clutter_latent_size
+        self.target_latent_size = config.target_latent_size
+        self.fs = config.fs
+        self.encoder_start_channel_sz = config.encoder_start_channel_sz
+        self.encoder_layers = config.encoder_layers
+        self.embedding_concatenation_channels = config.embedding_concatenation_channels
+        self.clutter_target_channels = config.clutter_target_channels
+        self.flowthrough_channels = config.flowthrough_channels
+        self.decoder_layers = config.decoder_layers
+        self.exp_to_ant_channels = config.exp_to_ant_channels
+        self.automatic_optimization = False
+        self.n_fourier_modes = config.n_fourier_modes
 
-        self.n_ants = n_ants
-        self.fft_len = fft_len
-        self.clutter_latent_size = clutter_latent_size
-        self.target_latent_size = target_latent_size
-        self.fs = fs
         self.embedding = embedding
         self.embedding.eval()
         for param in self.embedding.parameters():
@@ -100,81 +98,81 @@ class GeneratorModel(FlatModule):
         '''CLUTTER ENCODING LAYERS'''
         # Calculate out layer sizes
         encoder_l = [nn.Sequential(
-            nn.Conv1d(2, encoder_start_channel_sz, 1, 1, 0),
+            nn.Conv1d(2, self.encoder_start_channel_sz, 1, 1, 0),
             nn.GELU(),
         )]
-        for n in range(encoder_layers):
+        for n in range(self.encoder_layers):
             encoder_l.append(nn.Sequential(
-                nn.Conv1d(encoder_start_channel_sz * 2**n, encoder_start_channel_sz * 2**(n + 1), 4, 2, 1),
+                nn.Conv1d(self.encoder_start_channel_sz * 2**n, self.encoder_start_channel_sz * 2**(n + 1), 4, 2, 1),
                 nn.GELU(),
-                LKA1d(encoder_start_channel_sz * 2**(n + 1), kernel_sizes=(513, 95), dilation=12),
-                nn.LayerNorm(fft_len // 2**(n + 1)),
+                LKA1d(self.encoder_start_channel_sz * 2**(n + 1), kernel_sizes=(513, 95), dilation=12),
+                nn.LayerNorm(self.fft_len // 2**(n + 1)),
             ))
-        encoder_l.append(nn.Conv1d(encoder_start_channel_sz * 2**encoder_layers, 1, 1, 1, 0))
+        encoder_l.append(nn.Conv1d(self.encoder_start_channel_sz * 2**self.encoder_layers, 1, 1, 1, 0))
         self.clutter_encoder = nn.Sequential(*encoder_l)
         self.clutter_encoder_final = nn.Sequential(
-            nn.Linear(fft_len // 2**(n + 1), clutter_latent_size),
+            nn.Linear(self.fft_len // 2**(n + 1), self.clutter_latent_size),
             nn.GELU(),
         )
 
         '''TRANSFORMER'''
-        self.predict_decoder = nn.Transformer(clutter_latent_size, num_decoder_layers=7, num_encoder_layers=7, nhead=8,
+        self.predict_decoder = nn.Transformer(self.clutter_latent_size, num_decoder_layers=7, num_encoder_layers=7, nhead=8,
                                               batch_first=True, activation='gelu')
         self.predict_decoder.apply(init_weights)
 
         '''EMBEDDING CONCATENATION LAYERS'''
         self.target_embedding_combine = nn.Sequential(
-            nn.Conv1d(1, embedding_concatenation_channels, 1, 1, 0),
-            nn.GELU(),
-            LKA1d(embedding_concatenation_channels, kernel_sizes=(513, 513), dilation=12),
-            nn.LayerNorm(target_latent_size),
-            nn.Conv1d(embedding_concatenation_channels, flowthrough_channels, 1, 1, 0),
-            nn.GELU(),
-            nn.Linear(target_latent_size, clutter_latent_size),
+            TFNO1d(n_modes_height=self.n_fourier_modes, in_channels=2, out_channels=self.embedding_concatenation_channels,
+                   hidden_channels=self.embedding_concatenation_channels),
+            LKA1d(self.embedding_concatenation_channels, kernel_sizes=(513, 513), dilation=12),
+            nn.LayerNorm(self.target_latent_size),
+            TFNO1d(n_modes_height=self.n_fourier_modes, in_channels=self.embedding_concatenation_channels,
+                   out_channels=self.flowthrough_channels, hidden_channels=self.embedding_concatenation_channels),
+            nn.Linear(self.target_latent_size, self.clutter_latent_size),
             nn.GELU(),
         )
 
         '''CLUTTER AND TARGET COMBINATION LAYERS'''
         self.clutter_target_combine = nn.Sequential(
-            nn.Conv1d(flowthrough_channels, clutter_target_channels, 1, 1, 0),
-            nn.GELU(),
-            LKA1d(clutter_target_channels, kernel_sizes=(255, 255), dilation=12),
-            nn.LayerNorm(clutter_latent_size),
-            LKA1d(clutter_target_channels, kernel_sizes=(255, 255), dilation=6),
-            nn.LayerNorm(clutter_latent_size),
-            nn.Conv1d(clutter_target_channels, flowthrough_channels, 1, 1, 0),
+            TFNO1d(n_modes_height=self.n_fourier_modes, in_channels=self.flowthrough_channels, out_channels=self.clutter_target_channels,
+                   hidden_channels=self.clutter_target_channels),
+            LKA1d(self.clutter_target_channels, kernel_sizes=(255, 255), dilation=12),
+            nn.LayerNorm(self.clutter_latent_size),
+            LKA1d(self.clutter_target_channels, kernel_sizes=(255, 255), dilation=6),
+            nn.LayerNorm(self.clutter_latent_size),
+            TFNO1d(n_modes_height=self.n_fourier_modes, in_channels=self.clutter_target_channels,
+                   out_channels=self.flowthrough_channels, hidden_channels=self.clutter_target_channels),
         )
-
         '''WAVEFORM CREATION LAYERS'''
         self.expand_to_ants = nn.Sequential(
-            nn.Conv1d(flowthrough_channels, exp_to_ant_channels, 1, 1, 0),
-            nn.GELU(),
-            LKA1d(exp_to_ant_channels, kernel_sizes=(513, 513), dilation=12),
-            nn.LayerNorm(clutter_latent_size),
-            LKA1d(exp_to_ant_channels, kernel_sizes=(513, 513), dilation=12),
-            nn.LayerNorm(clutter_latent_size),
-            nn.Conv1d(exp_to_ant_channels, flowthrough_channels, 1, 1, 0),
-            nn.GELU(),
+            TFNO1d(n_modes_height=self.n_fourier_modes, in_channels=self.flowthrough_channels, out_channels=self.exp_to_ant_channels,
+                   hidden_channels=self.exp_to_ant_channels),
+            LKA1d(self.exp_to_ant_channels, kernel_sizes=(513, 513), dilation=12),
+            nn.LayerNorm(self.clutter_latent_size),
+            LKA1d(self.exp_to_ant_channels, kernel_sizes=(513, 513), dilation=12),
+            nn.LayerNorm(self.clutter_latent_size),
+            TFNO1d(n_modes_height=self.n_fourier_modes, in_channels=self.exp_to_ant_channels,
+                   out_channels=self.flowthrough_channels, hidden_channels=self.exp_to_ant_channels),
         )
-        self.expand_to_ants.apply(init_weights)
+        # self.expand_to_ants.apply(init_weights)
 
         '''DECODER LAYERS'''
         self.clutter_decoder_start = nn.Sequential(
-            nn.Linear(clutter_latent_size, fft_len // 2 ** decoder_layers),
+            nn.Linear(self.clutter_latent_size, self.fft_len // 2 ** self.decoder_layers),
             nn.GELU(),
         )
         decode_l = [nn.Sequential(
-            nn.Conv1d(flowthrough_channels, encoder_start_channel_sz * 2**decoder_layers, 1, 1, 0),
+            nn.Conv1d(self.flowthrough_channels, self.encoder_start_channel_sz * 2**self.decoder_layers, 1, 1, 0),
             nn.GELU(),
         )]
-        for n in range(decoder_layers, 0, -1):
+        for n in range(self.decoder_layers, 0, -1):
             decode_l.append(nn.Sequential(
-                nn.ConvTranspose1d(encoder_start_channel_sz * 2**n, encoder_start_channel_sz * 2**(n - 1), 4, 2, 1),
+                nn.ConvTranspose1d(self.encoder_start_channel_sz * 2**n, self.encoder_start_channel_sz * 2**(n - 1), 4, 2, 1),
                 nn.GELU(),
-                LKATranspose1d(encoder_start_channel_sz * 2**(n - 1), kernel_sizes=(513, 513), dilation=12),
-                nn.LayerNorm(fft_len // 2**(n - 1)),
+                LKATranspose1d(self.encoder_start_channel_sz * 2**(n - 1), kernel_sizes=(513, 513), dilation=12),
+                nn.LayerNorm(self.fft_len // 2**(n - 1)),
             ))
-        decode_l.append(nn.Conv1d(encoder_start_channel_sz * 2**(n-1), self.n_ants * 2, 1, 1, 0))
+        decode_l.append(nn.Conv1d(self.encoder_start_channel_sz * 2**(n-1), self.n_ants * 2, 1, 1, 0))
         self.wave_decoder = nn.Sequential(*decode_l)
 
         self.window_threshold = nn.Threshold(1e-9, 0.)
@@ -182,14 +180,14 @@ class GeneratorModel(FlatModule):
         ''' PULSE LENGTH INFORMATION '''
         self.pinfo = nn.Sequential(
             FourierFeature(1, 50),
-            nn.Linear(100, clutter_latent_size),
+            nn.Linear(100, self.clutter_latent_size),
             nn.GELU(),
         )
 
         self.plength = PulseLength()
 
-        self.example_input_array = ([[torch.zeros((1, 32, 2, fft_len)),
-                                      torch.zeros((1, target_latent_size)),
+        self.example_input_array = ([[torch.zeros((1, 32, 2, self.fft_len)),
+                                      torch.zeros((1, self.target_latent_size)),
                                       torch.tensor([[1250]])]])
 
     def forward(self, inp: list) -> torch.tensor:
@@ -207,10 +205,10 @@ class GeneratorModel(FlatModule):
         x = self.predict_decoder(x[:, :-1], x[:, 1:])[:, -1, ...].unsqueeze(1)
 
         # Add selected target into embedding and do some deep learning stuff
-        y = self.target_embedding_combine(y + target.unsqueeze(1))
+        y = self.target_embedding_combine(torch.cat([y, target.unsqueeze(1)], dim=1))
 
         # Combine clutter prediction with target information
-        x = self.clutter_target_combine(x * y)
+        x = self.clutter_target_combine(x + y)
 
         # Run through LKA layers to create a waveform according to spec
         x = self.expand_to_ants(x * self.pinfo(pulse_length.float().view(-1, 1)).unsqueeze(1))
@@ -268,20 +266,21 @@ class GeneratorModel(FlatModule):
             torch.abs(torch.fft.ifft(target_spectrum.unsqueeze(1) * mfiltered, dim=2)), dim=1)
         clut_ac = torch.sum(
             torch.abs(torch.fft.ifft(clutter_spectrum.unsqueeze(1) * mfiltered, dim=2)), dim=1)
-        ratio = clut_ac / (1e-12 + targ_ac)
-        if torch.any((targ_ac - clut_ac) > 0):
-            target_loss = ratio[(targ_ac - clut_ac) > 0].nanmean()
-        else:
-            target_loss = ratio.nanmean()
+        ratio = clut_ac / (1e-12 + targ_ac) * torch.fft.fftshift(torch.signal.windows.gaussian(self.fft_len, std=self.fft_len / 8., device=self.device))
+        target_loss = ratio.nanmean()
 
         # Sidelobe loss functions
         slf = torch.abs(torch.fft.ifft(mfiltered, dim=2))
         slf[slf == 0] = 1e-9
         sidelobe_func = 10 * torch.log(slf / 10)
-        slf_max = nn_func.max_pool1d_with_indices(
-            sidelobe_func, 17, 12, padding=8)[0].detach()[:, :, -2]
+        cost_mat = torch.sign(torch.gradient(sidelobe_func, dim=[2])[0]) * torch.arange(self.fft_len, 0, -1,
+                                                                                        device=self.device)
+
+        # slf_max = nn_func.max_pool1d_with_indices(
+        #     sidelobe_func, 17, 12, padding=8)[0].detach()[:, :, -2]
         # Get the ISLR for this waveform
-        sidelobe_loss = 10. / torch.nanmean(torch.abs(slf_max - torch.max(sidelobe_func, dim=-1)[0]))
+        sidelobe_loss = torch.nanmean(sidelobe_func[torch.arange(sidelobe_func.shape[0], device=self.device), 0,
+        torch.max(cost_mat, -1)[1].flatten()] / (1e-12 + torch.max(sidelobe_func, dim=-1)[0]))
 
         # Orthogonality
         if self.n_ants > 1:
@@ -302,21 +301,6 @@ class GeneratorModel(FlatModule):
 
         return {'target_loss': target_loss,
                 'sidelobe_loss': sidelobe_loss, 'ortho_loss': ortho_loss}
-
-    def save(self, fpath, model_name='current'):
-        torch.save(self.state_dict(), f'{fpath}/{model_name}_wave_model.state')
-        with open(f'{fpath}/{model_name}_model_params.pic', 'wb') as f:
-            pickle.dump({**self.param_dict, 'state_file': f'{fpath}/{model_name}_wave_model.state'}, f)
-
-    def getWindow(self, params):
-        # print(params)
-        bin_bw = int(params[0] / self.fs * self.fft_len)
-        bin_bw += 0 if bin_bw % 2 == 0 else 1
-        win_func = torch.zeros(self.fft_len, device=self.device)
-        # win_func[-bin_bw:] = torch.windows.hann(bin_bw, device=self.device)
-        win_func[:bin_bw // 2] = torch.windows.hann(bin_bw, device=self.device)[-bin_bw // 2:]
-        win_func[-bin_bw // 2:] = torch.windows.hann(bin_bw, device=self.device)[:bin_bw // 2]
-        return win_func
 
     def example_input_array(self) -> Optional[Union[Tensor, Tuple, Dict]]:
         return self.example_input_array
@@ -350,3 +334,55 @@ class GeneratorModel(FlatModule):
                                                                          torch.conj(complex_wave),
                                                                          dim=1))[:, None])  # Unit energy calculation
         return gen_waveform
+
+    def training_step(self, batch, batch_idx):
+        opt = self.optimizers()
+        train_loss = self.train_val_get(batch, batch_idx)
+        opt.zero_grad()
+        self.manual_backward(train_loss['loss'])
+        # self.clip_gradients(opt, gradient_clip_val=0.5, gradient_clip_algorithm="norm")
+        opt.step()
+        self.log_dict(train_loss, sync_dist=True,
+                      prog_bar=True, rank_zero_only=True, on_epoch=True)
+
+    def validation_step(self, batch, batch_idx):
+        self.log_dict(self.train_val_get(batch, batch_idx), sync_dist=True, prog_bar=True,
+                      rank_zero_only=True)
+
+    def on_validation_epoch_end(self) -> None:
+        self.log('lr', self.lr_schedulers().get_last_lr()[0], prog_bar=True, rank_zero_only=True)
+
+    def on_train_epoch_end(self) -> None:
+        sch = self.lr_schedulers()
+
+        # If the selected scheduler is a ReduceLROnPlateau scheduler.
+        if isinstance(sch, torch.optim.lr_scheduler.ReduceLROnPlateau):
+            sch.step(self.trainer.callback_metrics["val_loss"])
+        else:
+            sch.step()
+        if self.trainer.is_global_zero and not self.config.is_tuning and self.config.loss_landscape:
+            self.optim_path.append(self.get_flat_params())
+
+    def configure_optimizers(self):
+        optimizer = torch.optim.AdamW(self.parameters(),
+                                      lr=self.config.lr,
+                                      weight_decay=self.config.weight_decay,
+                                      betas=self.config.betas,
+                                      eps=1e-7)
+        if self.config.scheduler_gamma is None:
+            return optimizer
+        scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=self.config.scheduler_gamma)
+        '''scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, cooldown=self.params['step_size'],
+                                                         factor=self.params['scheduler_gamma'], threshold=1e-5)'''
+
+        return {'optimizer': optimizer, 'lr_scheduler': scheduler}
+
+    def train_val_get(self, batch, batch_idx):
+        clutter_spec, target_spec, target_enc, pulse_length = batch
+
+        results = self.forward([clutter_spec, target_enc, pulse_length])
+        train_loss = self.loss_function(results, clutter_spec, target_spec, target_enc, pulse_length)
+
+        train_loss['loss'] = torch.sqrt(torch.abs(
+            train_loss['sidelobe_loss'] * (1 + train_loss['target_loss'] + train_loss['ortho_loss'])))
+        return train_loss
