@@ -6,7 +6,8 @@ from neuralop import TFNO1d
 from torch import nn, Tensor
 from pytorch_lightning import LightningModule
 from torch.nn import functional as nn_func
-
+from pytorch_lightning.utilities import grad_norm
+from torch.optim import Optimizer
 from config import Config
 from layers import FourierFeature, PulseLength, LKA1d, LKATranspose1d
 import numpy as np
@@ -66,6 +67,10 @@ class FlatModule(LightningModule):
             (name, param.shape, param.numel())
             for name, param in self.named_parameters()
         ]
+
+    def on_before_optimizer_step(self, optimizer: Optimizer) -> None:
+        norms = grad_norm(self, norm_type=2)  # Compute 2-norm for each layer
+        self.log_dict(norms)
 
 
 class GeneratorModel(FlatModule):

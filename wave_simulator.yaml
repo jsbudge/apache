@@ -32,9 +32,9 @@ simulation_params:
   target_target: 2
   use_sdr_fc: True
   # This is for use_sdr_gps == False
-  collect_duration: 2.
+  collect_duration: 1.
   prf: 10000.
-  scan_rate: 20.  # deg/s
+  scan_rate: 40.  # deg/s
   scan_angle: 20.  # degrees
   standoff_range: 2181.  # meters
   az_bw: .866

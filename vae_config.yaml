@@ -99,7 +99,7 @@ pulse_exp_params:
     output_images: False
     model_name: pulse_classifier
     is_tuning: False
-    is_training: True
+    is_training: False
     log_dir: ./logs
     weights_path: ./model
   dataset_params:

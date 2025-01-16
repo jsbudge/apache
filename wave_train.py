@@ -2,9 +2,9 @@ import pickle
 from pathlib import Path
 
 from config import get_config
-from utils import upsample, normalize, fs
+from utils import upsample, normalize, fs, narrow_band
 import numpy as np
-from simulib.simulation_functions import genPulse, db
+from simulib.simulation_functions import genPulse, db, findPowerOf2
 import matplotlib.pyplot as plt
 from scipy.signal import stft
 import torch
@@ -16,27 +16,12 @@ from experiment import GeneratorExperiment
 from models import TargetEmbedding, load
 from waveform_model import GeneratorModel
 from os import listdir
-from clearml import Task
 
 
 def force_cudnn_initialization():
     s = 32
     dev = torch.device('cuda')
     torch.nn.functional.conv2d(torch.zeros(s, s, s, s, device=dev), torch.zeros(s, s, s, s, device=dev))
-
-
-def buildModel(mdl_params, embedding_params, a_fft_len, a_n_ants, target_latent):
-    # Get the model, experiment, logger set up
-    embedding = TargetEmbedding(**embedding_params['model_params'], fft_len=a_fft_len,
-                                params=embedding_params)
-    print('Setting up decoder...')
-    try:
-        embedding.load_state_dict(torch.load('./model/target_model.state'))
-    except RuntimeError:
-        print('Model save file does not match current structure. Re-running with new structure.')
-    return GeneratorModel(fft_len=a_fft_len, embedding=embedding, **mdl_params,
-                         target_latent_size=target_latent,
-                         n_ants=a_n_ants)
 
 
 
@@ -67,7 +52,7 @@ if __name__ == '__main__':
     data.setup()
 
     print('Setting up embedding model...')
-    embedding = TargetEmbedding.load_from_checkpoint(f'{target_config.weights_path}/{target_config.model_name}.ckpt', config=target_config)
+    embedding = TargetEmbedding.load_from_checkpoint(f'{target_config.weights_path}/{target_config.model_name}.ckpt', config=target_config, strict=False)
 
     print('Initializing wavemodel...')
     if config.warm_start:
@@ -221,3 +206,11 @@ rp_mf = np.fft.ifft(rp_mf)[:rp_old_mf.shape[1]]
 plt.figure()
 plt.plot(db(rp_mf))
 plt.plot(db(rp_old_mf[0]))'''
+
+waf, tau, theta = narrow_band(np.fft.ifft(waves[0, 0]), np.arange(512) - 256)
+
+plt.figure()
+plt.imshow(db(waf[4096 - 256:4096 + 256, :]))
+# plt.clim([-100, -76])
+plt.axis('tight')
+plt.show()

@@ -27,7 +27,10 @@ if __name__ == '__main__':
 
     # Get the model, experiment, logger set up
     if target_config.is_training:
-        model = TargetEmbedding(target_config)
+        if target_config.warm_start:
+            model = TargetEmbedding.load_from_checkpoint(f'{target_config.weights_path}/{target_config.model_name}.ckpt', strict=False)
+        else:
+            model = TargetEmbedding(target_config)
         logger = loggers.TensorBoardLogger(target_config.log_dir, name=target_config.model_name)
         expected_lr = max((target_config.lr * target_config.scheduler_gamma ** (target_config.max_epochs *
                                                                     target_config.swa_start)), 1e-9)
@@ -41,11 +44,7 @@ if __name__ == '__main__':
 
         print("======= Training =======")
         try:
-            if target_config.warm_start:
-                trainer.fit(model, ckpt_path=f'{target_config.weights_path}/{target_config.model_name}.ckpt',
-                            datamodule=data)
-            else:
-                trainer.fit(model, datamodule=data)
+            trainer.fit(model, datamodule=data)
         except KeyboardInterrupt:
             if trainer.is_global_zero:
                 print('Training interrupted.')
