@@ -209,7 +209,7 @@ plt.plot(db(rp_old_mf[0]))'''
 
 waf, tau, theta = narrow_band(np.fft.ifft(waves[0, 0]), np.arange(512) - 256)
 
-plt.figure()
+plt.figure('Ambiguity Function')
 plt.imshow(db(waf[4096 - 256:4096 + 256, :]))
 # plt.clim([-100, -76])
 plt.axis('tight')

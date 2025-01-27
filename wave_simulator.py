@@ -136,7 +136,7 @@ if __name__ == '__main__':
                                                    config=model_config, embedding=embedding, strict=False)
     # wave_mdl.to(device)
     print('Wavemodel loaded.')
-    patterns = torch.load('/home/jeff/repo/apache/data/target_embedding_means.pt')[0]
+    patterns = torch.tensor(torch.load('/home/jeff/repo/apache/data/target_tensors/target_embedding_means.pt')[2], dtype=torch.float32)
 
     # Calculate out points on the ground
     gx, gy, gz = bg.getGrid(settings['origin'], settings['grid_width'], settings['grid_height'], *nbpj_pts,
@@ -160,18 +160,16 @@ if __name__ == '__main__':
     mesh = readCombineMeshFile('/home/jeff/Documents/roman_facade/scene.gltf', points=3000000)
     mesh = mesh.rotate(mesh.get_rotation_matrix_from_xyz(np.array([np.pi / 2, 0, 0])))
     mesh = mesh.translate(llh2enu(*grid_origin, grid_origin), relative=False)
-    mesh_ids = np.asarray(mesh.triangle_material_ids)
 
     bgmesh = Mesh(mesh, num_box_levels=settings['nbox_levels'])
 
     # Add in the target mesh
-    mesh = readCombineMeshFile('/home/jeff/Documents/roman_facade/scene.gltf', points=3000000)
+    mesh = readCombineMeshFile('/home/jeff/Documents/target_meshes/cessna-172-obj.obj', points=3000000)
     mesh = mesh.rotate(mesh.get_rotation_matrix_from_xyz(np.array([np.pi / 2, 0, 0])))
     mesh = mesh.translate(llh2enu(*grid_origin, grid_origin), relative=False)
-    mesh_ids = np.asarray(mesh.triangle_material_ids)
 
-    bgmesh = Mesh(mesh, num_box_levels=settings['nbox_levels'])
-    scene = Scene([bgmesh])
+    planemesh = Mesh(mesh, num_box_levels=settings['nbox_levels'])
+    scene = Scene([bgmesh, planemesh])
 
     test = None
     print('Running simulation...')
@@ -219,7 +217,7 @@ if __name__ == '__main__':
     pulse_data = np.stack([pdd.real, pdd.imag])
 
     wave_mdl.to(device)
-    waves = wave_mdl.full_forward(pulse_data, patterns[0].to(device), nr)
+    waves = wave_mdl.full_forward(pulse_data, patterns.squeeze(0).to(device), nr)
     wave_mdl.to('cpu')
     waves = np.fft.fft(np.fft.ifft(waves, axis=1)[:, :nr], fft_len, axis=1) * 1e6
     chirps = [waves for _ in rps]
@@ -321,13 +319,13 @@ if __name__ == '__main__':
         def getMeshFig(title='Title Goes Here', zrange=100):
             fig = go.Figure(data=[
                 go.Mesh3d(
-                    x=mesh.vertices[:, 0],
-                    y=mesh.vertices[:, 1],
-                    z=mesh.vertices[:, 2],
+                    x=bgmesh.vertices[:, 0],
+                    y=bgmesh.vertices[:, 1],
+                    z=bgmesh.vertices[:, 2],
                     # i, j and k give the vertices of triangles
-                    i=mesh.tri_idx[:, 0],
-                    j=mesh.tri_idx[:, 1],
-                    k=mesh.tri_idx[:, 2],
+                    i=bgmesh.tri_idx[:, 0],
+                    j=bgmesh.tri_idx[:, 1],
+                    k=bgmesh.tri_idx[:, 2],
                     # facecolor=triangle_colors,
                     showscale=True
                 )

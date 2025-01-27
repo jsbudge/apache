@@ -12,7 +12,7 @@ from config import Config
 from layers import FourierFeature, PulseLength, LKA1d, LKATranspose1d
 import numpy as np
 
-from utils import normalize
+from utils import normalize, get_pslr
 
 
 def init_weights(m):
@@ -278,14 +278,8 @@ class GeneratorModel(FlatModule):
         slf = torch.abs(torch.fft.ifft(mfiltered, dim=2))
         slf[slf == 0] = 1e-9
         sidelobe_func = 10 * torch.log(slf / 10)
-        cost_mat = torch.sign(torch.gradient(sidelobe_func, dim=[2])[0]) * torch.arange(self.fft_len, 0, -1,
-                                                                                        device=self.device)
-
-        # slf_max = nn_func.max_pool1d_with_indices(
-        #     sidelobe_func, 17, 12, padding=8)[0].detach()[:, :, -2]
-        # Get the ISLR for this waveform
-        sidelobe_loss = torch.nanmean(sidelobe_func[torch.arange(sidelobe_func.shape[0], device=self.device), 0,
-        torch.max(cost_mat, -1)[1].flatten()] / (1e-12 + torch.max(sidelobe_func, dim=-1)[0]))
+        pslrs = get_pslr(sidelobe_func.squeeze(1))
+        sidelobe_loss = 1. / (1e-12 + torch.nanmean(pslrs))
 
         # Orthogonality
         if self.n_ants > 1:

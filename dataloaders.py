@@ -145,7 +145,7 @@ class WaveDataset(Dataset):
         self.datapath = f'{root_dir}/target_tensors/clutter_tensors'
 
         clutter_spec_files = glob(f'{self.datapath}/tc_*.pt')
-        patterns = torch.load(f'{root_dir}/target_embedding_means.pt')
+        patterns = torch.load(f'{root_dir}/target_tensors/target_embedding_means.pt')
 
         # Clutter data
         file_idxes = np.arange(len(clutter_spec_files) - seq_len)
@@ -158,7 +158,7 @@ class WaveDataset(Dataset):
             Xs = file_idxes
         self.idxes = Xs if is_val else Xt
         self.single = single_example
-        self.patterns = patterns[0]
+        self.patterns = torch.stack([torch.tensor(p, dtype=torch.float32).squeeze(0) for p in patterns])
 
         self.seq_len = seq_len
         self.min_pulse_length = min_pulse_length

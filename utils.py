@@ -1,5 +1,5 @@
 import numpy as np
-
+import torch
 
 fs = 2e9
 c0 = 299792458.0
@@ -28,6 +28,26 @@ def scale_normalize(data):
     ndata = data / np.expand_dims(np.sqrt(np.sum(data * data.conj(), axis=-1).real), axis=len(data.shape) - 1)
     ndata[ndata != 0] = (ndata[ndata != 0] - abs(ndata[ndata != 0]).mean()) / ndata[ndata != 0].std()
     return ndata
+
+
+def get_pslr(a):
+    """
+    Gets Peak Sidelobe Ratio for a signal.
+    :param a: NxM tensor, where N is the batch size and M is the number of samples. Expects them to be real.
+    :return: Nx1 tensor of PSLR values.
+    """
+    gpu_temp1 = a[:, 1:-1] - a[:, :-2]
+    gpu_temp2 = a[:, 1:-1] - a[:, 2:]
+
+    # and checking where both shifts are positive;
+    out1 = torch.where(gpu_temp1 > 0, gpu_temp1 * 0 + 1, gpu_temp1 * 0)
+    out2 = torch.where(gpu_temp2 > 0, out1, gpu_temp2 * 0)
+
+    # argrelmax containing all peaks
+    argrelmax_gpu = torch.nonzero(out2, out=None)
+    peaks = [a[argrelmax_gpu[argrelmax_gpu[:, 0] == n, 0], argrelmax_gpu[argrelmax_gpu[:, 0] == n, 1]] for n in
+             range(a.shape[0])]
+    return torch.stack([abs(torch.topk(p, 2).values.diff()) for p in peaks])
 
 
 def narrow_band(signal, lag=None, n_fbins=None):
