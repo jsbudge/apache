@@ -6,7 +6,7 @@ from simulib.backproject_functions import backprojectPulseSet, backprojectPulseS
 from simulib.mesh_objects import Mesh, Scene
 from apache_helper import ApachePlatform
 from config import get_config
-from models import load as loadModel, TargetEmbedding
+from models import TargetEmbedding
 from simulib.simulation_functions import llh2enu, db, azelToVec, genChirp, genTaylorWindow
 from simulib.cuda_kernels import applyRadiationPatternCPU
 from simulib.mesh_functions import readCombineMeshFile, getRangeProfileFromScene

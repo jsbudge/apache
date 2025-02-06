@@ -136,7 +136,7 @@ wave_exp_params:
     step_size: 1
     log_epoch: 100
     is_tuning: False
-    save_model: True
+    save_model: False
     loss_landscape: False
     max_epochs: 1200
     patience: 500
