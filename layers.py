@@ -40,19 +40,18 @@ def std_2d(img: torch.Tensor, sigma: float) -> tuple[torch.Tensor, torch.Tensor,
 
 
 class FourierFeature(LightningModule):
-    def __init__(self, in_features, n_fourier: int = 6, *args: Any, **kwargs: Any):
+    def __init__(self, sigma: float = 10., n_fourier: int = 6, *args: Any, **kwargs: Any):
         super().__init__(*args, **kwargs)
-        self.out_features = in_features * n_fourier * 2
-        self.in_features = in_features
+        self.out_features = n_fourier * 2
+        self.sigma = sigma
         self.n_fourier = n_fourier
 
     def forward(self, x):
-        out = torch.zeros((x.shape[0], self.out_features), device=self.device)
-        for f in range(self.in_features):
-            for n in range(self.n_fourier):
-                out[:, f * self.n_fourier + n] = torch.sin(2 * torch.pi * (2 ** n) * x[:, f])
-                out[:, (f + self.in_features) * self.n_fourier + n] = torch.cos(2 * torch.pi * (2 ** n) * x[:, f])
-        return out
+        j = torch.arange(self.n_fourier, device=self.device)
+        coeffs = 2 * np.pi * self.sigma ** (j / self.n_fourier)
+        vp = coeffs * torch.unsqueeze(x, -1)
+        vp_cat = torch.cat((torch.cos(vp), torch.sin(vp)), dim=-1)
+        return vp_cat.flatten(-2, -1)
 
 
 class Linear2d(LightningModule):

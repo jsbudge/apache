@@ -112,10 +112,10 @@ if __name__ == '__main__':
     scene = Scene()
     # mesh_ids = []
 
-    '''mesh = readCombineMeshFile('/home/jeff/Documents/roman_facade/scene.gltf', points=3000000)
+    mesh = readCombineMeshFile('/home/jeff/Documents/roman_facade/scene.gltf', points=3000000)
     mesh = mesh.rotate(mesh.get_rotation_matrix_from_xyz(np.array([np.pi / 2, 0, 0])))
     mesh = mesh.translate(llh2enu(*grid_origin, bg.ref), relative=False)
-    scene.add(Mesh(mesh, num_box_levels=nbox_levels))'''
+    scene.add(Mesh(mesh, num_box_levels=nbox_levels))
 
     '''mesh = readCombineMeshFile('/home/jeff/Documents/eze_france/scene.gltf', 1e9, scale=1 / 100)
     mesh = mesh.translate(np.array([0, 0, 0]), relative=False)
@@ -188,17 +188,29 @@ if __name__ == '__main__':
     print('Done.')
 
     # Generate a chirp
-    fft_len = 8192
+    '''chirp_bandwidth = 400e6
+    chirp = genChirp(nr, fs, fc, chirp_bandwidth)
+    fft_chirp = np.fft.fft(chirp, fft_len)
+    taytay = genTaylorWindow(fc % fs, chirp_bandwidth / 2, fs, fft_len)
+    mf_chirp = fft_chirp.conj() * taytay'''
+
+    # Generate a chirp
+    wfft_len = 8192
     pulse_time_data = sdr_f.getPulses(sdr_f[0].frame_num[np.arange(10)], 0)[1].T
-    pulse_filt = sdr_f.genMatchedFilter(0, fft_len=fft_len)
-    pulse_data = np.fft.fft(pulse_time_data, fft_len, axis=-1) * pulse_filt
+    pulse_filt = sdr_f.genMatchedFilter(0, fft_len=wfft_len)
+    pulse_data = np.fft.fft(pulse_time_data, wfft_len, axis=-1) * pulse_filt
     wave_mdl.to(device)
     waves = wave_mdl.full_forward(pulse_data, patterns.squeeze(0).to(device), nr)
     wave_mdl.to('cpu')
     waves = np.fft.fft(np.fft.ifft(waves, axis=1)[:, :nr], fft_len, axis=1) * 1e6
     fft_chirp = waves.flatten()
-    taytay = genTaylorWindow(fc % fs, settings['bandwidth'] / 2, fs, fft_len)
-    mf_chirp = fft_chirp.conj() * taytay * fft_chirp
+    # Claculate out fft_chirp
+    passband = np.where(db(fft_chirp) > db(fft_chirp).max() - 20)[0]
+    freqs = np.fft.fftfreq(fft_len, 1 / fs)
+    pass_bandwidth = freqs[passband.max()] - freqs[passband.min()]
+    pass_fc = (freqs[passband.max()] + freqs[passband.min()]) / 2
+    taytay = genTaylorWindow(pass_fc % fs, pass_bandwidth / 2, fs, fft_len)
+    mf_chirp = fft_chirp.conj() * fft_chirp * taytay
 
     # Load in boxes and meshes for speedup of ray tracing
     print('Loading mesh box structure...', end='')

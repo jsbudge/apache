@@ -1,4 +1,5 @@
 import contextlib
+import math
 import pickle
 from typing import Optional, Union, Tuple, Dict
 import torch
@@ -23,6 +24,20 @@ def init_weights(m):
         if hasattr(m, 'bias'):
             if m.bias is not None:
                 m.bias.data.fill_(.01)
+                
+def _xavier_init(model):
+    """
+    Performs the Xavier weight initialization.
+    """
+    for module in model.modules():
+        if isinstance(module, (nn.Linear, nn.Conv1d, nn.ConvTranspose1d)):
+            nn.init.kaiming_normal_(module.weight)
+            if module.bias is not None:
+                fan_in, _ = nn.init._calculate_fan_in_and_fan_out(module.weight)
+                if fan_in != 0:
+                    bound = 1 / math.sqrt(fan_in)
+                    nn.init.uniform_(module.bias, -bound, bound)
+            # nn.init.he_(module.weight)
 
 
 class FlatModule(LightningModule):
@@ -104,12 +119,12 @@ class GeneratorModel(FlatModule):
         # Calculate out layer sizes
         encoder_l = [nn.Sequential(
             nn.Conv1d(2, self.encoder_start_channel_sz, 1, 1, 0),
-            nn.GELU(),
+            nn.SiLU(),
         )]
         for n in range(self.encoder_layers):
             encoder_l.append(nn.Sequential(
                 nn.Conv1d(self.encoder_start_channel_sz * 2**n, self.encoder_start_channel_sz * 2**(n + 1), 4, 2, 1),
-                nn.GELU(),
+                nn.SiLU(),
                 LKA1d(self.encoder_start_channel_sz * 2**(n + 1), kernel_sizes=(513, 95), dilation=12),
                 nn.LayerNorm(self.fft_len // 2**(n + 1)),
             ))
@@ -117,13 +132,13 @@ class GeneratorModel(FlatModule):
         self.clutter_encoder = nn.Sequential(*encoder_l)
         self.clutter_encoder_final = nn.Sequential(
             nn.Linear(self.fft_len // 2**(n + 1), self.clutter_latent_size),
-            nn.GELU(),
+            nn.SiLU(),
         )
 
         '''TRANSFORMER'''
         self.predict_decoder = nn.Transformer(self.clutter_latent_size, num_decoder_layers=7, num_encoder_layers=7, nhead=8,
                                               batch_first=True, activation='gelu')
-        self.predict_decoder.apply(init_weights)
+        # self.predict_decoder.apply(init_weights)
 
         '''EMBEDDING CONCATENATION LAYERS'''
         self.target_embedding_combine = nn.Sequential(
@@ -134,7 +149,7 @@ class GeneratorModel(FlatModule):
             TFNO1d(n_modes_height=self.n_fourier_modes, in_channels=self.embedding_concatenation_channels,
                    out_channels=self.flowthrough_channels, hidden_channels=self.embedding_concatenation_channels),
             nn.Linear(self.target_latent_size, self.clutter_latent_size),
-            nn.GELU(),
+            nn.SiLU(),
         )
 
         '''CLUTTER AND TARGET COMBINATION LAYERS'''
@@ -164,16 +179,16 @@ class GeneratorModel(FlatModule):
         '''DECODER LAYERS'''
         self.clutter_decoder_start = nn.Sequential(
             nn.Linear(self.clutter_latent_size, self.fft_len // 2 ** self.decoder_layers),
-            nn.GELU(),
+            nn.SiLU(),
         )
         decode_l = [nn.Sequential(
             nn.Conv1d(self.flowthrough_channels, self.encoder_start_channel_sz * 2**self.decoder_layers, 1, 1, 0),
-            nn.GELU(),
+            nn.SiLU(),
         )]
         for n in range(self.decoder_layers, 0, -1):
             decode_l.append(nn.Sequential(
                 nn.ConvTranspose1d(self.encoder_start_channel_sz * 2**n, self.encoder_start_channel_sz * 2**(n - 1), 4, 2, 1),
-                nn.GELU(),
+                nn.SiLU(),
                 LKATranspose1d(self.encoder_start_channel_sz * 2**(n - 1), kernel_sizes=(513, 513), dilation=12),
                 nn.LayerNorm(self.fft_len // 2**(n - 1)),
             ))
@@ -184,12 +199,20 @@ class GeneratorModel(FlatModule):
 
         ''' PULSE LENGTH INFORMATION '''
         self.pinfo = nn.Sequential(
-            FourierFeature(1, 50),
+            FourierFeature(100., 50),
             nn.Linear(100, self.clutter_latent_size),
-            nn.GELU(),
+            nn.SiLU(),
         )
 
         self.plength = PulseLength()
+
+        _xavier_init(self.wave_decoder)
+        _xavier_init(self.predict_decoder)
+        _xavier_init(self.clutter_encoder)
+        _xavier_init(self.expand_to_ants)
+        _xavier_init(self.clutter_target_combine)
+        _xavier_init(self.target_embedding_combine)
+
 
         self.example_input_array = ([[torch.zeros((1, 32, 2, self.fft_len)),
                                       torch.zeros((1, self.target_latent_size)),

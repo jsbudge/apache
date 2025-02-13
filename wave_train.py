@@ -90,6 +90,7 @@ if __name__ == '__main__':
             cc, tc, ts, plength = next(iter(data.train_dataloader()))
             cc = cc.to(device)
             ts = ts.to(device)
+            plength = plength.to(device)
 
             nn_output = wave_mdl([cc, ts, plength])
             # nn_numpy = nn_output[0, 0, ...].cpu().data.numpy()
