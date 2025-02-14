@@ -154,7 +154,7 @@ class GeneratorModel(FlatModule):
 
         '''CLUTTER AND TARGET COMBINATION LAYERS'''
         self.clutter_target_combine = nn.Sequential(
-            TFNO1d(n_modes_height=self.n_fourier_modes, in_channels=self.flowthrough_channels, out_channels=self.clutter_target_channels,
+            TFNO1d(n_modes_height=self.n_fourier_modes, in_channels=self.flowthrough_channels + 1, out_channels=self.clutter_target_channels,
                    hidden_channels=self.clutter_target_channels),
             LKA1d(self.clutter_target_channels, kernel_sizes=(255, 255), dilation=12),
             nn.LayerNorm(self.clutter_latent_size),
@@ -165,7 +165,7 @@ class GeneratorModel(FlatModule):
         )
         '''WAVEFORM CREATION LAYERS'''
         self.expand_to_ants = nn.Sequential(
-            TFNO1d(n_modes_height=self.n_fourier_modes, in_channels=self.flowthrough_channels, out_channels=self.exp_to_ant_channels,
+            TFNO1d(n_modes_height=self.n_fourier_modes, in_channels=self.flowthrough_channels + 1, out_channels=self.exp_to_ant_channels,
                    hidden_channels=self.exp_to_ant_channels),
             LKA1d(self.exp_to_ant_channels, kernel_sizes=(513, 513), dilation=12),
             nn.LayerNorm(self.clutter_latent_size),
@@ -236,10 +236,10 @@ class GeneratorModel(FlatModule):
         y = self.target_embedding_combine(torch.cat([y, target.unsqueeze(1)], dim=1))
 
         # Combine clutter prediction with target information
-        x = self.clutter_target_combine(x + y)
+        x = self.clutter_target_combine(torch.cat([x, y], dim=1))
 
         # Run through LKA layers to create a waveform according to spec
-        x = self.expand_to_ants(x * self.pinfo(pulse_length.float().view(-1, 1)).unsqueeze(1))
+        x = self.expand_to_ants(torch.cat([x, self.pinfo(pulse_length.float().view(-1, 1)).unsqueeze(1)], dim=1))
         # final_win = self.window(self.bw_integrate(x).squeeze(1), bandwidth.view(-1, 1) / self.fs).repeat_interleave(
         #     2, dim=1)
         x = self.wave_decoder(self.clutter_decoder_start(x)) * self.window_threshold(clutter[:, -1, ...])
@@ -294,14 +294,16 @@ class GeneratorModel(FlatModule):
             torch.abs(torch.fft.ifft(target_spectrum.unsqueeze(1) * mfiltered, dim=2)), dim=1)
         clut_ac = torch.sum(
             torch.abs(torch.fft.ifft(clutter_spectrum.unsqueeze(1) * mfiltered, dim=2)), dim=1)
-        ratio = clut_ac / (1e-12 + targ_ac) * torch.fft.fftshift(torch.signal.windows.gaussian(self.fft_len, std=self.fft_len / 8., device=self.device))
-        target_loss = ratio.nanmean()
+        '''ratio = clut_ac / (1e-12 + targ_ac) * torch.fft.fftshift(torch.signal.windows.gaussian(self.fft_len, std=self.fft_len / 8., device=self.device))
+        target_loss = ratio.nanmean()'''
+        target_loss = torch.nanmean(nn_func.cosine_similarity(targ_ac, clut_ac)**2)
 
         # Sidelobe loss functions
         slf = torch.abs(torch.fft.ifft(mfiltered, dim=2))
         slf[slf == 0] = 1e-9
         sidelobe_func = 10 * torch.log(slf / 10)
-        pslrs = get_pslr(sidelobe_func.squeeze(1))
+        pslrs = torch.max(sidelobe_func, dim=-1)[0] - torch.mean(sidelobe_func, dim=-1)
+        # pslrs = get_pslr(sidelobe_func.squeeze(1))
         sidelobe_loss = 1. / (1e-12 + torch.nanmean(pslrs))
 
         # Orthogonality

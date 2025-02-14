@@ -136,7 +136,7 @@ wave_exp_params:
     step_size: 1
     log_epoch: 100
     is_tuning: False
-    save_model: False
+    save_model: True
     loss_landscape: False
     max_epochs: 1200
     patience: 500
@@ -162,8 +162,8 @@ wave_exp_params:
     model_name: wave_model
   dataset_params:
     data_path: ./data
-    train_batch_size: 16
-    val_batch_size: 16
+    train_batch_size: 32
+    val_batch_size: 32
     num_workers: 0
     pin_memory: False
     split: .7
