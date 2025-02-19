@@ -127,8 +127,8 @@ pulse_exp_params:
 # For training of wavemodel
 wave_exp_params:
   training_params:
-    lr: 0.000001
-    weight_decay: 0.01
+    lr: 0.00001
+    weight_decay: 0.05
     scheduler_gamma: 0.99
     swa_start: .6
     warm_start: False
@@ -140,6 +140,7 @@ wave_exp_params:
     loss_landscape: False
     max_epochs: 1200
     patience: 500
+    distributed: False
   model_params:
     n_ants: 1
     fft_len: 8192

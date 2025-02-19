@@ -109,6 +109,8 @@ class GeneratorModel(FlatModule):
         self.exp_to_ant_channels = config.exp_to_ant_channels
         self.automatic_optimization = False
         self.n_fourier_modes = config.n_fourier_modes
+        self.bandwidth = config.bandwidth
+        self.baseband_fc = (config.fc % self.fs) - self.fs
 
         self.embedding = embedding
         self.embedding.eval()
@@ -195,7 +197,12 @@ class GeneratorModel(FlatModule):
         decode_l.append(nn.Conv1d(self.encoder_start_channel_sz * 2**(n-1), self.n_ants * 2, 1, 1, 0))
         self.wave_decoder = nn.Sequential(*decode_l)
 
-        self.window_threshold = nn.Threshold(1e-9, 0.)
+        # self.window_threshold = nn.Threshold(1e-9, 0.)
+        freqs = np.fft.fftshift(np.fft.fftfreq(self.fft_len, 1 / self.fs))
+        freq_mask = np.logical_and(self.baseband_fc - self.bandwidth / 2 < freqs, freqs < self.baseband_fc + self.bandwidth / 2).astype(np.float32)
+        # freq_mask[freq_mask == 0.] += 1e-8
+        threshold = np.ones(self.fft_len) * freq_mask
+        self.window_threshold = torch.tensor(threshold, dtype=torch.float32)
 
         ''' PULSE LENGTH INFORMATION '''
         self.pinfo = nn.Sequential(
@@ -242,7 +249,7 @@ class GeneratorModel(FlatModule):
         x = self.expand_to_ants(torch.cat([x, self.pinfo(pulse_length.float().view(-1, 1)).unsqueeze(1)], dim=1))
         # final_win = self.window(self.bw_integrate(x).squeeze(1), bandwidth.view(-1, 1) / self.fs).repeat_interleave(
         #     2, dim=1)
-        x = self.wave_decoder(self.clutter_decoder_start(x)) * self.window_threshold(clutter[:, -1, ...])
+        x = self.wave_decoder(self.clutter_decoder_start(x)) * self.window_threshold.to(self.device)
         x = self.plength(x, pulse_length)
         x = x.view(-1, self.n_ants, 2, self.fft_len)
         return x
@@ -302,8 +309,8 @@ class GeneratorModel(FlatModule):
         slf = torch.abs(torch.fft.ifft(mfiltered, dim=2))
         slf[slf == 0] = 1e-9
         sidelobe_func = 10 * torch.log(slf / 10)
-        pslrs = torch.max(sidelobe_func, dim=-1)[0] - torch.mean(sidelobe_func, dim=-1)
-        # pslrs = get_pslr(sidelobe_func.squeeze(1))
+        # pslrs = torch.max(sidelobe_func, dim=-1)[0] - torch.mean(sidelobe_func, dim=-1)
+        pslrs = get_pslr(sidelobe_func.squeeze(1))
         sidelobe_loss = 1. / (1e-12 + torch.nanmean(pslrs))
 
         # Orthogonality

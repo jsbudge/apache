@@ -70,15 +70,6 @@ if __name__ == '__main__':
     grid_origin = settings['origin']
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-    # This is all the constants in the radar equation for this simulation
-    fc = settings['fc']
-    radar_coeff = (
-            c0 ** 2 / fc ** 2 * settings['antenna_params']['transmit_power'][0] * 10 ** (
-                (settings['antenna_params']['gain'][0] + 2.15) / 10) * 10 ** (
-                        (settings['antenna_params']['gain'][0] + 2.15) / 10) *
-            10 ** ((settings['antenna_params']['rec_gain'][0] + 2.15) / 10) / (4 * np.pi) ** 3)
-    noise_power = 10 ** (sim_settings['noise_power_db'] / 10)
-
     print('Setting up embedding model...')
     target_config = get_config('target_exp', './vae_config.yaml')
     embedding = TargetEmbedding.load_from_checkpoint(f'{target_config.weights_path}/{target_config.model_name}.ckpt',
@@ -98,6 +89,15 @@ if __name__ == '__main__':
         rp.getRadarParams(0., plp, upsample))
     idx_t = sdr_f[0].frame_num[sdr_f[0].nframes // 2: sdr_f[0].nframes // 2 + npulses]
     data_t = sdr_f[0].pulse_time[idx_t]
+
+    # This is all the constants in the radar equation for this simulation
+    fc = settings['fc']
+    radar_coeff = (
+            c0 ** 2 / fc ** 2 * settings['antenna_params']['transmit_power'][0] * 10 ** (
+            (settings['antenna_params']['gain'][0] + 2.15) / 10) * 10 ** (
+                    (settings['antenna_params']['gain'][0] + 2.15) / 10) *
+            10 ** ((settings['antenna_params']['rec_gain'][0] + 2.15) / 10) / (4 * np.pi) ** 3)
+    noise_power = 10 ** (sim_settings['noise_power_db'] / 10)
 
     pointing_vec = rp.boresight(data_t).mean(axis=0)
 
@@ -135,7 +135,7 @@ if __name__ == '__main__':
     scene.add(Mesh(mesh, num_box_levels=nbox_levels))
     triangle_colors = np.mean(np.asarray(mesh.vertex_colors)[np.asarray(mesh.triangles)], axis=1)'''
 
-    car = readCombineMeshFile('/home/jeff/Documents/nissan_sky/NissanSkylineGT-R(R32).obj',
+    '''car = readCombineMeshFile('/home/jeff/Documents/nissan_sky/NissanSkylineGT-R(R32).obj',
                               points=num_mesh_triangles)  # Has just over 500000 points in the file
     car = car.rotate(car.get_rotation_matrix_from_xyz(np.array([np.pi / 2, 0, 0])))
     car = car.rotate(car.get_rotation_matrix_from_xyz(np.array([0, 0, -42.51 * DTR])))
@@ -155,7 +155,7 @@ if __name__ == '__main__':
     mkss[6] = mkss[13] = mkss[17] = .8  # body
     mkss[12] = mkss[4] = .01  # windshield
     scene.add(Mesh(car, num_box_levels=4, material_sigmas=msigmas, material_kd=mkds, material_ks=mkss,
-                   use_box_pts=True))
+                   use_box_pts=True))'''
 
     '''building = readCombineMeshFile('/home/jeff/Documents/target_meshes/long_hangar.obj', points=1e9, scale=.033)
     building = building.rotate(building.get_rotation_matrix_from_xyz(np.array([np.pi / 2, 0, 0])))
@@ -191,26 +191,24 @@ if __name__ == '__main__':
     '''chirp_bandwidth = 400e6
     chirp = genChirp(nr, fs, fc, chirp_bandwidth)
     fft_chirp = np.fft.fft(chirp, fft_len)
-    taytay = genTaylorWindow(fc % fs, chirp_bandwidth / 2, fs, fft_len)
-    mf_chirp = fft_chirp.conj() * taytay'''
+    mtaytay = genTaylorWindow(fc % fs, chirp_bandwidth / 2, fs, fft_len)
+    mf_chirp = fft_chirp.conj() * mtaytay'''
 
     # Generate a chirp
+    # pulse_time_data = np.repeat(genChirp(nr, fs, fc, 600e6).reshape(1, -1), 10, axis=0)
     wfft_len = 8192
     pulse_time_data = sdr_f.getPulses(sdr_f[0].frame_num[np.arange(10)], 0)[1].T
     pulse_filt = sdr_f.genMatchedFilter(0, fft_len=wfft_len)
-    pulse_data = np.fft.fft(pulse_time_data, wfft_len, axis=-1) * pulse_filt
+    pulse_data = np.fft.fftshift(np.fft.fft(pulse_time_data, wfft_len, axis=-1) * pulse_filt)
     wave_mdl.to(device)
     waves = wave_mdl.full_forward(pulse_data, patterns.squeeze(0).to(device), nr)
     wave_mdl.to('cpu')
     waves = np.fft.fft(np.fft.ifft(waves, axis=1)[:, :nr], fft_len, axis=1) * 1e6
     fft_chirp = waves.flatten()
-    # Claculate out fft_chirp
-    passband = np.where(db(fft_chirp) > db(fft_chirp).max() - 20)[0]
-    freqs = np.fft.fftfreq(fft_len, 1 / fs)
-    pass_bandwidth = freqs[passband.max()] - freqs[passband.min()]
-    pass_fc = (freqs[passband.max()] + freqs[passband.min()]) / 2
-    taytay = genTaylorWindow(pass_fc % fs, pass_bandwidth / 2, fs, fft_len)
-    mf_chirp = fft_chirp.conj() * fft_chirp * taytay
+
+    # Shift the wave to the baseband fc
+    taytay = genTaylorWindow(fc % fs, 400e6 / 2, fs, fft_len)
+    mf_chirp = fft_chirp.conj() * taytay
 
     # Load in boxes and meshes for speedup of ray tracing
     print('Loading mesh box structure...', end='')
@@ -372,6 +370,14 @@ if __name__ == '__main__':
             go.Scatter3d(x=sample_points[n:n + 256, 0], y=sample_points[n:n + 256, 1], z=sample_points[n:n + 256, 2],
                          mode='markers'))
     fig.show()
+
+    # Waveform information
+    plt.figure('Waveform')
+    plt.subplot(2, 1, 1)
+    plt.plot(db(mf_chirp))
+    plt.plot(db(fft_chirp))
+    plt.subplot(2, 1, 2)
+    plt.plot(db(np.fft.ifft(fft_chirp * mf_chirp)))
 
     '''tri_pcd = o3d.geometry.PointCloud()
     tri_pcd.points = o3d.utility.Vector3dVector(mesh.vertices[mesh.tri_idx].mean(axis=1))

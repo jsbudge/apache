@@ -62,12 +62,19 @@ if __name__ == '__main__':
     logger = loggers.TensorBoardLogger(config.log_dir,
                                        name=config.model_name, log_graph=True)
     expected_lr = max((config.lr * config.scheduler_gamma ** (config.max_epochs * config.swa_start)), 1e-9)
-    trainer = Trainer(logger=logger, max_epochs=config.max_epochs, num_sanity_val_steps=0, default_root_dir=config.weights_path,
-                      log_every_n_steps=config.log_epoch, devices=[0, 1], strategy='ddp', callbacks=
-                      [EarlyStopping(monitor='target_loss', patience=config.patience, check_finite=True),
-                       StochasticWeightAveraging(swa_lrs=expected_lr, swa_epoch_start=config.swa_start),
-                       ModelCheckpoint(monitor='loss_epoch')])
-
+    if config.distributed:
+        trainer = Trainer(logger=logger, max_epochs=config.max_epochs, num_sanity_val_steps=0, default_root_dir=config.weights_path,
+                          log_every_n_steps=config.log_epoch, devices=[0, 1], strategy='ddp', callbacks=
+                          [EarlyStopping(monitor='target_loss', patience=config.patience, check_finite=True),
+                           StochasticWeightAveraging(swa_lrs=expected_lr, swa_epoch_start=config.swa_start),
+                           ModelCheckpoint(monitor='loss_epoch')])
+    else:
+        trainer = Trainer(logger=logger, max_epochs=config.max_epochs, num_sanity_val_steps=0,
+                          default_root_dir=config.weights_path,
+                          log_every_n_steps=config.log_epoch, devices=[0], callbacks=
+                          [EarlyStopping(monitor='target_loss', patience=config.patience, check_finite=True),
+                           StochasticWeightAveraging(swa_lrs=expected_lr, swa_epoch_start=config.swa_start),
+                           ModelCheckpoint(monitor='loss_epoch')])
     print("======= Training =======")
     try:
         trainer.fit(wave_mdl, datamodule=data)
@@ -139,9 +146,6 @@ if __name__ == '__main__':
             plt.legend(['Clutter', 'Target'])
             plt.xlabel('Lag')
             plt.ylabel('Power (dB)')
-
-            plt.figure()
-            plt.plot(db(np.fft.ifft(np.fft.fftshift(clutter[0]) * np.fft.fftshift(clutter[0]).conj())))
 
             # Save the model structure out to a PNG
             # plot_model(mdl, to_file='./mdl_plot.png', show_shapes=True)
