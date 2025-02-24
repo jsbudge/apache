@@ -138,9 +138,8 @@ class TargetDataset(Dataset):
 
 
 class WaveDataset(Dataset):
-    def __init__(self, root_dir: str, target_latent_dim: int = 1024, clutter_latent_dim: int = 512, fft_sz: int = 4096,
-                 split: float = 1., single_example: bool = False, min_pulse_length: int = 1, max_pulse_length: int = 2,
-                 seq_len: int = 32, is_val=False, seed=42):
+    def __init__(self, root_dir: str, split: float = 1., single_example: bool = False, min_pulse_length: int = 1,
+                 max_pulse_length: int = 2, seq_len: int = 32, is_val=False, seed=42):
         assert Path(root_dir).is_dir()
         self.datapath = f'{root_dir}/target_tensors/clutter_tensors'
 
@@ -168,7 +167,7 @@ class WaveDataset(Dataset):
     def __getitem__(self, idx):
         data = [torch.load(f'{self.datapath}/tc_{n}.pt') for n in range(idx, idx + self.seq_len)]
         return (torch.cat([c.unsqueeze(0) for c, t, i in data], dim=0), data[-1][1], self.patterns[data[-1][2]].clone().detach(),
-                np.random.randint(self.min_pulse_length, self.max_pulse_length))
+                np.random.randint(self.min_pulse_length, self.max_pulse_length), np.random.rand() * .6 + .2)
 
     def __len__(self):
         return self.idxes.shape[0]
@@ -313,42 +312,30 @@ class WaveDataModule(BaseModule):
     def __init__(
             self,
             data_path: str,
-            clutter_latent_dim: int = 50,
-            target_latent_dim: int = 1024,
             train_batch_size: int = 8,
             val_batch_size: int = 8,
             pin_memory: bool = False,
             split: float = 1.,
             single_example: bool = False,
-            mu: float = 0.,
-            var: float = 1.,
             device: str = 'cpu',
-            fft_sz: int = 4096,
             min_pulse_length: int = 1,
             max_pulse_length: int = 2,
             **kwargs,
     ):
         super().__init__(train_batch_size, val_batch_size, pin_memory, single_example, device)
 
-        self.clutter_latent_dim = clutter_latent_dim
-        self.target_latent_dim = target_latent_dim
         self.data_dir = data_path
         self.split = split
         self.min_pulse_length = min_pulse_length
         self.max_pulse_length = max_pulse_length
         self.device = device
-        self.fft_sz = fft_sz
-        self.mu = mu
-        self.var = var
 
     def setup(self, stage: Optional[str] = None) -> None:
-        self.train_dataset = WaveDataset(self.data_dir, clutter_latent_dim=self.clutter_latent_dim,
-                                         target_latent_dim=self.target_latent_dim, fft_sz=self.fft_sz, split=self.split,
+        self.train_dataset = WaveDataset(self.data_dir, split=self.split,
                                          single_example=self.single_example, min_pulse_length=self.min_pulse_length,
                                          max_pulse_length=self.max_pulse_length)
 
-        self.val_dataset = WaveDataset(self.data_dir, clutter_latent_dim=self.clutter_latent_dim,
-                                       target_latent_dim=self.target_latent_dim, fft_sz=self.fft_sz, split=self.split,
+        self.val_dataset = WaveDataset(self.data_dir, split=self.split,
                                        single_example=self.single_example, min_pulse_length=self.min_pulse_length,
                                        max_pulse_length=self.max_pulse_length, is_val=True)
 

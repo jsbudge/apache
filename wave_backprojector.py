@@ -135,7 +135,7 @@ if __name__ == '__main__':
     scene.add(Mesh(mesh, num_box_levels=nbox_levels))
     triangle_colors = np.mean(np.asarray(mesh.vertex_colors)[np.asarray(mesh.triangles)], axis=1)'''
 
-    '''car = readCombineMeshFile('/home/jeff/Documents/nissan_sky/NissanSkylineGT-R(R32).obj',
+    car = readCombineMeshFile('/home/jeff/Documents/nissan_sky/NissanSkylineGT-R(R32).obj',
                               points=num_mesh_triangles)  # Has just over 500000 points in the file
     car = car.rotate(car.get_rotation_matrix_from_xyz(np.array([np.pi / 2, 0, 0])))
     car = car.rotate(car.get_rotation_matrix_from_xyz(np.array([0, 0, -42.51 * DTR])))
@@ -155,7 +155,7 @@ if __name__ == '__main__':
     mkss[6] = mkss[13] = mkss[17] = .8  # body
     mkss[12] = mkss[4] = .01  # windshield
     scene.add(Mesh(car, num_box_levels=4, material_sigmas=msigmas, material_kd=mkds, material_ks=mkss,
-                   use_box_pts=True))'''
+                   use_box_pts=True))
 
     '''building = readCombineMeshFile('/home/jeff/Documents/target_meshes/long_hangar.obj', points=1e9, scale=.033)
     building = building.rotate(building.get_rotation_matrix_from_xyz(np.array([np.pi / 2, 0, 0])))
@@ -201,7 +201,11 @@ if __name__ == '__main__':
     pulse_filt = sdr_f.genMatchedFilter(0, fft_len=wfft_len)
     pulse_data = np.fft.fftshift(np.fft.fft(pulse_time_data, wfft_len, axis=-1) * pulse_filt)
     wave_mdl.to(device)
-    waves = wave_mdl.full_forward(pulse_data, patterns.squeeze(0).to(device), nr)
+    waves = wave_mdl.full_forward(pulse_data, patterns.squeeze(0).to(device), nr, settings['bandwidth'] / fs)
+    # Roll the waves to the right spot
+    freqs = np.fft.fftfreq(wfft_len, 1 / fs)
+    freqdiff = abs(freqs - ((fc % fs) - fs))
+    waves = np.roll(waves, np.where(freqdiff == freqdiff.min())[0][0], axis=-1)
     wave_mdl.to('cpu')
     waves = np.fft.fft(np.fft.ifft(waves, axis=1)[:, :nr], fft_len, axis=1) * 1e6
     fft_chirp = waves.flatten()

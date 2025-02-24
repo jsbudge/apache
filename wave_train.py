@@ -45,10 +45,7 @@ if __name__ == '__main__':
     config.dataset_params['max_pulse_length'] = nr
     config.dataset_params['min_pulse_length'] = 1000
 
-    data = WaveDataModule(clutter_latent_dim=config.clutter_latent_size,
-                          target_latent_dim=config.target_latent_size, device=device,
-                          fft_sz=fft_len,
-                          **config.dataset_params)
+    data = WaveDataModule(device=device, **config.dataset_params)
     data.setup()
 
     print('Setting up embedding model...')
@@ -94,12 +91,13 @@ if __name__ == '__main__':
             wave_mdl.to(device)
             wave_mdl.eval()
 
-            cc, tc, ts, plength = next(iter(data.train_dataloader()))
+            cc, tc, ts, plength, bandwidth = next(iter(data.train_dataloader()))
             cc = cc.to(device)
             ts = ts.to(device)
             plength = plength.to(device)
+            bandwidth = bandwidth.to(device)
 
-            nn_output = wave_mdl([cc, ts, plength])
+            nn_output = wave_mdl([cc, ts, plength, bandwidth])
             # nn_numpy = nn_output[0, 0, ...].cpu().data.numpy()
 
             waves = wave_mdl.getWaveform(nn_output=nn_output).cpu().data.numpy()

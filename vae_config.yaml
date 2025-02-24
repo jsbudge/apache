@@ -147,11 +147,10 @@ wave_exp_params:
     fs: 2000000000.
     fc: 9600000000.
     encoder_start_channel_sz: 2
-    encoder_layers: 2
     embedding_concatenation_channels: 64
     clutter_target_channels: 64
     flowthrough_channels: 128
-    decoder_layers: 2
+    wave_decoder_channels: 64
     exp_to_ant_channels: 64
     clutter_latent_size: 512
     target_latent_size: 1024
