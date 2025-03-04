@@ -14,7 +14,7 @@ import itertools
 
 if __name__ == '__main__':
     torch.set_float32_matmul_precision('medium')
-    gpu_num = 1
+    gpu_num = 0
     device = f'cuda:{gpu_num}' if torch.cuda.is_available() else 'cpu'
     seed_everything(np.random.randint(1, 2048), workers=True)
     # seed_everything(43, workers=True)

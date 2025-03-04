@@ -97,7 +97,7 @@ if __name__ == '__main__':
             plength = plength.to(device)
             bandwidth = bandwidth.to(device)
 
-            nn_output = wave_mdl([cc, ts, plength, bandwidth])
+            nn_output = wave_mdl(cc, ts, plength, bandwidth)
             # nn_numpy = nn_output[0, 0, ...].cpu().data.numpy()
 
             waves = wave_mdl.getWaveform(nn_output=nn_output).cpu().data.numpy()

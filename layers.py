@@ -39,7 +39,7 @@ def std_2d(img: torch.Tensor, sigma: float) -> tuple[torch.Tensor, torch.Tensor,
     return std_x, std_y, std_xy
 
 
-class FourierFeature(LightningModule):
+class FourierFeature(nn.Module):
     def __init__(self, sigma: float = 10., n_fourier: int = 6, *args: Any, **kwargs: Any):
         super().__init__(*args, **kwargs)
         self.out_features = n_fourier * 2
@@ -47,14 +47,14 @@ class FourierFeature(LightningModule):
         self.n_fourier = n_fourier
 
     def forward(self, x):
-        j = torch.arange(self.n_fourier, device=self.device)
+        j = torch.arange(self.n_fourier, device=x.device)
         coeffs = 2 * np.pi * self.sigma ** (j / self.n_fourier)
         vp = coeffs * torch.unsqueeze(x, -1)
         vp_cat = torch.cat((torch.cos(vp), torch.sin(vp)), dim=-1)
         return vp_cat.flatten(-2, -1)
 
 
-class Linear2d(LightningModule):
+class Linear2d(nn.Module):
     def __init__(self, width, height, nchan):
         super(Linear2d, self).__init__()
         self.width = width
@@ -71,7 +71,7 @@ class Linear2d(LightningModule):
         return x
 
 
-class SelfAttention(LightningModule):
+class SelfAttention(nn.Module):
     '''
     This is taken from a Medium article that references Self-Attention Generative Adversarial Networks:
     https://arxiv.org/pdf/1805.08318.pdf
@@ -94,7 +94,7 @@ class SelfAttention(LightningModule):
         return o.view(*size).contiguous()
 
 
-class STFTAttention(LightningModule):
+class STFTAttention(nn.Module):
     '''
     This is taken from a Medium article that references Self-Attention Generative Adversarial Networks:
     https://arxiv.org/pdf/1805.08318.pdf
@@ -114,7 +114,7 @@ class STFTAttention(LightningModule):
         return o.contiguous()
 
 
-class LSTMAttention(LightningModule):
+class LSTMAttention(nn.Module):
     def __init__(self):
         super(LSTMAttention, self).__init__()
 
@@ -132,7 +132,7 @@ class LSTMAttention(LightningModule):
         return context_vector, attn_weights
 
 
-class WindowConvolution(LightningModule):
+class WindowConvolution(nn.Module):
     def __init__(self, fs, *args: Any, **kwargs: Any):
         super().__init__(*args, **kwargs)
         self.fs = fs
@@ -147,7 +147,7 @@ class WindowConvolution(LightningModule):
         return torch.conv1d(x, self.gen_window(pulse_length, fft_len), padding='same')
 
 
-class WindowGenerate(LightningModule):
+class WindowGenerate(nn.Module):
     def __init__(self, fft_len, n_ants, *args: Any, **kwargs: Any):
         super().__init__(*args, **kwargs)
         self.fft_len = fft_len
@@ -166,7 +166,7 @@ class WindowGenerate(LightningModule):
         return ret
 
 
-class PulseLength(LightningModule):
+class PulseLength(nn.Module):
 
     def __init__(self, *args: Any, **kwargs: Any):
         super().__init__(*args, **kwargs)
@@ -175,14 +175,14 @@ class PulseLength(LightningModule):
         x = torch.complex(x[:, ::2, :], x[:, 1::2, :])
         x = torch.fft.ifft(torch.fft.fftshift(x, dim=2), dim=2)
         for n in range(x.shape[0]):
-            x[n, :, :pl[n]] *= torch.hann_window(int(pl[n]), device=self.device)
+            x[n, :, :pl[n]] *= torch.hann_window(int(pl[n]), device=x.device)
             x[n, :, pl[n]:] = 0
         x = torch.view_as_real(torch.fft.fftshift(torch.fft.fft(x, dim=2), dim=2))
         x = torch.cat([x[:, n, ...].swapaxes(1, 2) for n in range(x.shape[1])], dim=1)
         return x
 
 
-class AttentionConv(LightningModule):
+class AttentionConv(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size, stride=1, padding=0, groups=1, bias=False):
         super(AttentionConv, self).__init__()
         self.out_channels = out_channels
@@ -227,7 +227,7 @@ class AttentionConv(LightningModule):
         return out
 
 
-class Block2d(LightningModule):
+class Block2d(nn.Module):
 
     def __init__(self, channel_sz):
         super(Block2d, self).__init__()
@@ -248,7 +248,7 @@ class Block2d(LightningModule):
         return self.block(x)
 
 
-class Block1d(LightningModule):
+class Block1d(nn.Module):
 
     def __init__(self, channel_sz, transpose=False):
         super(Block1d, self).__init__()
@@ -282,7 +282,7 @@ class Block1d(LightningModule):
         return self.block(x)
 
 
-class LKA(LightningModule):
+class LKA(nn.Module):
 
     def __init__(self, channel_sz, kernel_sizes=(3, 3), dilation=6, *args: Any, **kwargs: Any):
         super().__init__(*args, **kwargs)
@@ -300,7 +300,7 @@ class LKA(LightningModule):
         return self.kernel(x) * x
 
 
-class LKATranspose(LightningModule):
+class LKATranspose(nn.Module):
 
     def __init__(self, channel_sz, kernel_sizes=(3, 3), dilation=6, *args: Any, **kwargs: Any):
         super().__init__(*args, **kwargs)
@@ -318,7 +318,7 @@ class LKATranspose(LightningModule):
         return self.kernel(x) * x
 
 
-class LKA1d(LightningModule):
+class LKA1d(nn.Module):
 
     def __init__(self, channel_sz, kernel_sizes=(3, 3), dilation=6, *args: Any, **kwargs: Any):
         super().__init__(*args, **kwargs)
@@ -336,7 +336,7 @@ class LKA1d(LightningModule):
         return self.kernel(x) * x
 
 
-class LKATranspose1d(LightningModule):
+class LKATranspose1d(nn.Module):
 
     def __init__(self, channel_sz, kernel_sizes=(3, 3), dilation=6, *args: Any, **kwargs: Any):
         super().__init__(*args, **kwargs)
@@ -354,7 +354,7 @@ class LKATranspose1d(LightningModule):
         return self.kernel(x) * x
 
 
-class SelfAttention2d(LightningModule):
+class SelfAttention2d(nn.Module):
     """ Self attention Layer"""
 
     def __init__(self, in_dim, activation=None):
@@ -401,7 +401,7 @@ with minor alterations by myself.
 """
 
 
-class ScaledDotProductAttention(LightningModule):
+class ScaledDotProductAttention(nn.Module):
     """
     Scaled Dot-Product Attention proposed in "Attention Is All You Need"
     Compute the dot products of the query with all keys, divide each by sqrt(dim),
@@ -438,7 +438,7 @@ class ScaledDotProductAttention(LightningModule):
         return context, attn
 
 
-class DotProductAttention(LightningModule):
+class DotProductAttention(nn.Module):
     """
     Compute the dot products of the query with all values and apply a softmax function to obtain the weights on the values
     """
@@ -456,7 +456,7 @@ class DotProductAttention(LightningModule):
         return context, attn
 
 
-class AdditiveAttention(LightningModule):
+class AdditiveAttention(nn.Module):
     """
      Applies a additive attention (bahdanau) mechanism on the output features from the decoder.
      Additive attention proposed in "Neural Machine Translation by Jointly Learning to Align and Translate" paper.
@@ -490,7 +490,7 @@ class AdditiveAttention(LightningModule):
         return context, attn
 
 
-class LocationAwareAttention(LightningModule):
+class LocationAwareAttention(nn.Module):
     """
     Applies a location-aware attention mechanism on the output features from the decoder.
     Location-aware attention proposed in "Attention-Based Models for Speech Recognition" paper.
@@ -551,7 +551,7 @@ class LocationAwareAttention(LightningModule):
         return context, attn
 
 
-class MultiHeadLocationAwareAttention(LightningModule):
+class MultiHeadLocationAwareAttention(nn.Module):
     """
     Applies a multi-headed location-aware attention mechanism on the output features from the decoder.
     Location-aware attention proposed in "Attention-Based Models for Speech Recognition" paper.
@@ -615,7 +615,7 @@ class MultiHeadLocationAwareAttention(LightningModule):
         return context, attn
 
 
-class MultiHeadAttention(LightningModule):
+class MultiHeadAttention(nn.Module):
     """
     Multi-Head Attention proposed in "Attention Is All You Need"
     Instead of performing a single attention function with d_model-dimensional keys, values, and queries,
@@ -694,7 +694,7 @@ class MultiHeadAttention(LightningModule):
         return context, attn
 
 
-class RelativeMultiHeadAttention(LightningModule):
+class RelativeMultiHeadAttention(nn.Module):
     """
     Multi-head attention with relative positional encoding.
     This concept was proposed in the "Transformer-XL: Attentive Language Models Beyond a Fixed-Length Context"
@@ -785,7 +785,7 @@ class RelativeMultiHeadAttention(LightningModule):
         return pos_score
 
 
-class CustomizingAttention(LightningModule):
+class CustomizingAttention(nn.Module):
     r"""
     Customizing Attention
 

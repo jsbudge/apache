@@ -57,20 +57,14 @@ class TargetEmbedding(FlatModule):
                 nn.GELU(),
             ))
             self.encoder_conv.append(nn.Sequential(
-                # LKA1d(ch_lev_enc, kernel_sizes=(513, 513), dilation=20),
-                LKA1d(ch_lev_enc, kernel_sizes=(129, 129), dilation=60),
+                TFNO1d(n_modes_height=16, in_channels=ch_lev_enc, out_channels=ch_lev_enc, hidden_channels=ch_lev_enc),
                 nn.LayerNorm(layer_sz),
-                # nn.Conv1d(ch_lev_enc, ch_lev_enc, 257, 1, 128),
-                # nn.GELU(),
             ))
             prev_lev_enc = ch_lev_enc + 0
 
         prev_lev_dec = prev_lev_enc
         self.encoder_flatten = nn.Sequential(
-            TFNO1d(n_modes_height=16, in_channels=prev_lev_dec,
-                   out_channels=prev_lev_dec, hidden_channels=prev_lev_dec),
-            nn.Conv1d(prev_lev_dec, 1, 1, 1, 0),
-            nn.GELU(),
+            TFNO1d(n_modes_height=8, in_channels=prev_lev_dec, out_channels=1, hidden_channels=prev_lev_dec),
         )
         self.fc_z = nn.Sequential(
             nn.Linear(out_sz, self.latent_dim),
