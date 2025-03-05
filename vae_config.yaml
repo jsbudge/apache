@@ -39,12 +39,12 @@ target_exp_params:
   training_params:
     lr: 0.00014
     weight_decay: 0.01
-    scheduler_gamma: 0.9
+    scheduler_gamma: 0.95
     betas: [ .9, .99 ]
     step_size: 1
     swa_start: .7
     log_epoch: 10
-    save_model: False
+    save_model: True
     transform_data: False
     warm_start: False
     loss_landscape: False
@@ -73,7 +73,7 @@ target_exp_params:
     fft_len: 8192
     in_channels: 2
     latent_dim: 1024
-    channel_sz: 48
+    channel_sz: 32
     label_sz: 25
     # These values are taken from a sampling of data, should be the same as the dataset params
     mu: 0.

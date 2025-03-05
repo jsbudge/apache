@@ -54,10 +54,13 @@ class TargetEmbedding(FlatModule):
             layer_sz = config.fft_len // (2 ** (l + 1))
             self.encoder_reduce.append(nn.Sequential(
                 nn.Conv1d(prev_lev_enc, ch_lev_enc, 4, 2, 1),
-                nn.GELU(),
+                nn.SELU(),
+
             ))
             self.encoder_conv.append(nn.Sequential(
                 TFNO1d(n_modes_height=16, in_channels=ch_lev_enc, out_channels=ch_lev_enc, hidden_channels=ch_lev_enc),
+                nn.LayerNorm(layer_sz),
+                LKA1d(ch_lev_enc, (15, 15), 100),
                 nn.LayerNorm(layer_sz),
             ))
             prev_lev_enc = ch_lev_enc + 0
@@ -68,7 +71,7 @@ class TargetEmbedding(FlatModule):
         )
         self.fc_z = nn.Sequential(
             nn.Linear(out_sz, self.latent_dim),
-            nn.GELU(),
+            nn.SELU(),
             nn.Linear(self.latent_dim, self.latent_dim),
         )
 
@@ -176,13 +179,9 @@ class TargetEmbedding(FlatModule):
 
 
 class PulseClassifier(LightningModule):
-    def __init__(self,
-                 config: Config,
-                 embedding_model: LightningModule = None,
-                 **kwargs) -> None:
-        super(PulseClassifier, self).__init__(config)
+    def __init__(self, config: Config, embedding_model: LightningModule = None, *args, **kwargs) -> None:
 
-
+        super().__init__(*args, **kwargs)
         self.channel_sz = config.channel_sz
         self.in_channels = config.in_channels
         self.label_sz = config.label_sz

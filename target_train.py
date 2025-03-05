@@ -54,11 +54,11 @@ if __name__ == '__main__':
         if target_config.save_model:
             trainer.save_checkpoint(f'{target_config.weights_path}/{target_config.model_name}.ckpt')
     else:
-        model = TargetEmbedding.load_from_checkpoint(f'{target_config.weights_path}/{target_config.model_name}.ckpt')
+        model = TargetEmbedding.load_from_checkpoint(f'{target_config.weights_path}/{target_config.model_name}.ckpt', config=target_config)
 
 
     if classifier_config.is_training:
-        pmodel = PulseClassifier(classifier_config, embedding_model=model)
+        pmodel = PulseClassifier(config=classifier_config, embedding_model=model)
         logger = loggers.TensorBoardLogger(classifier_config.log_dir, name=classifier_config.model_name)
         expected_lr = max((classifier_config.lr * classifier_config.scheduler_gamma ** (classifier_config.max_epochs *
                                                                                 classifier_config.swa_start)), 1e-9)
