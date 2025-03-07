@@ -14,7 +14,7 @@ import itertools
 
 if __name__ == '__main__':
     torch.set_float32_matmul_precision('medium')
-    gpu_num = 0
+    gpu_num = 1
     device = f'cuda:{gpu_num}' if torch.cuda.is_available() else 'cpu'
     seed_everything(np.random.randint(1, 2048), workers=True)
     # seed_everything(43, workers=True)
@@ -54,7 +54,7 @@ if __name__ == '__main__':
         if target_config.save_model:
             trainer.save_checkpoint(f'{target_config.weights_path}/{target_config.model_name}.ckpt')
     else:
-        model = TargetEmbedding.load_from_checkpoint(f'{target_config.weights_path}/{target_config.model_name}.ckpt', config=target_config)
+        model = TargetEmbedding.load_from_checkpoint(f'{target_config.weights_path}/{target_config.model_name}.ckpt', config=target_config, strict=False)
 
 
     if classifier_config.is_training:

@@ -60,8 +60,6 @@ class TargetEmbedding(FlatModule):
             self.encoder_conv.append(nn.Sequential(
                 TFNO1d(n_modes_height=16, in_channels=ch_lev_enc, out_channels=ch_lev_enc, hidden_channels=ch_lev_enc),
                 nn.LayerNorm(layer_sz),
-                LKA1d(ch_lev_enc, (15, 15), 100),
-                nn.LayerNorm(layer_sz),
             ))
             prev_lev_enc = ch_lev_enc + 0
 
@@ -182,6 +180,7 @@ class PulseClassifier(LightningModule):
     def __init__(self, config: Config, embedding_model: LightningModule = None, *args, **kwargs) -> None:
 
         super().__init__(*args, **kwargs)
+        self.config = config
         self.channel_sz = config.channel_sz
         self.in_channels = config.in_channels
         self.label_sz = config.label_sz

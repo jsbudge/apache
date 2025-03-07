@@ -38,7 +38,7 @@ generate_data_settings:
 target_exp_params:
   training_params:
     lr: 0.00014
-    weight_decay: 0.01
+    weight_decay: 0.5
     scheduler_gamma: 0.95
     betas: [ .9, .99 ]
     step_size: 1
@@ -73,7 +73,7 @@ target_exp_params:
     fft_len: 8192
     in_channels: 2
     latent_dim: 1024
-    channel_sz: 32
+    channel_sz: 64
     label_sz: 25
     # These values are taken from a sampling of data, should be the same as the dataset params
     mu: 0.
@@ -99,7 +99,7 @@ pulse_exp_params:
     output_images: False
     model_name: pulse_classifier
     is_tuning: False
-    is_training: False
+    is_training: True
     log_dir: ./logs
     weights_path: ./model
   dataset_params:
