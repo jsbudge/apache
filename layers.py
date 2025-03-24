@@ -320,16 +320,16 @@ class LKATranspose(nn.Module):
 
 class LKA1d(nn.Module):
 
-    def __init__(self, channel_sz, kernel_sizes=(3, 3), dilation=6, *args: Any, **kwargs: Any):
+    def __init__(self, channel_sz, kernel_sizes=(3, 3), dilation=6, activation='gelu', *args: Any, **kwargs: Any):
         super().__init__(*args, **kwargs)
         padding = int(dilation * (kernel_sizes[1] - 1) // 2)
         self.kernel = nn.Sequential(
             nn.Conv1d(channel_sz, channel_sz, kernel_sizes[0], 1, int(kernel_sizes[0] // 2)),
-            nn.GELU(),
+            nn.GELU() if activation == 'gelu' else nn.SiLU(),
             nn.Conv1d(channel_sz, channel_sz, kernel_sizes[1], 1, padding, dilation=dilation),
-            nn.GELU(),
+            nn.GELU() if activation == 'gelu' else nn.SiLU(),
             nn.Conv1d(channel_sz, channel_sz, 1, 1, 0),
-            nn.GELU(),
+            nn.GELU() if activation == 'gelu' else nn.SiLU(),
         )
 
     def forward(self, x):
@@ -338,16 +338,16 @@ class LKA1d(nn.Module):
 
 class LKATranspose1d(nn.Module):
 
-    def __init__(self, channel_sz, kernel_sizes=(3, 3), dilation=6, *args: Any, **kwargs: Any):
+    def __init__(self, channel_sz, kernel_sizes=(3, 3), dilation=6, activation='gelu', *args: Any, **kwargs: Any):
         super().__init__(*args, **kwargs)
         padding = int(dilation * (kernel_sizes[1] - 1) // 2)
         self.kernel = nn.Sequential(
             nn.ConvTranspose1d(channel_sz, channel_sz, kernel_sizes[0], 1, int(kernel_sizes[0] // 2)),
-            nn.GELU(),
+            nn.GELU() if activation == 'gelu' else nn.SiLU(),
             nn.ConvTranspose1d(channel_sz, channel_sz, kernel_sizes[1], 1, padding, dilation=dilation),
-            nn.GELU(),
+            nn.GELU() if activation == 'gelu' else nn.SiLU(),
             nn.ConvTranspose1d(channel_sz, channel_sz, 1, 1, 0),
-            nn.GELU(),
+            nn.GELU() if activation == 'gelu' else nn.SiLU(),
         )
 
     def forward(self, x):

@@ -120,7 +120,7 @@ class GeneratorModel(FlatModule):
             param.requires_grad = False
 
         '''TRANSFORMER'''
-        self.predict_decoder = nn.Transformer(self.target_latent_size, num_decoder_layers=3, num_encoder_layers=3, nhead=2,
+        self.predict_decoder = nn.Transformer(self.target_latent_size, num_decoder_layers=5, num_encoder_layers=5, nhead=16,
                                               batch_first=True, activation='gelu')
         # self.predict_decoder.apply(init_weights)
 
@@ -128,9 +128,9 @@ class GeneratorModel(FlatModule):
         self.clutter_target_combine = nn.Sequential(
             TFNO1d(n_modes_height=self.n_fourier_modes, in_channels=2, out_channels=self.clutter_target_channels,
                    hidden_channels=self.clutter_target_channels),
-            LKA1d(self.clutter_target_channels, kernel_sizes=(255, 43), dilation=12),
+            LKA1d(self.clutter_target_channels, kernel_sizes=(255, 129), dilation=12, activation='silu'),
             nn.LayerNorm(self.target_latent_size),
-            LKA1d(self.clutter_target_channels, kernel_sizes=(255, 85), dilation=6),
+            LKA1d(self.clutter_target_channels, kernel_sizes=(255, 255), dilation=6, activation='silu'),
             nn.LayerNorm(self.target_latent_size),
             TFNO1d(n_modes_height=self.n_fourier_modes, in_channels=self.clutter_target_channels,
                    out_channels=self.flowthrough_channels, hidden_channels=self.clutter_target_channels),
@@ -139,9 +139,9 @@ class GeneratorModel(FlatModule):
         self.expand_to_ants = nn.Sequential(
             TFNO1d(n_modes_height=self.n_fourier_modes, in_channels=self.flowthrough_channels, out_channels=self.exp_to_ant_channels,
                    hidden_channels=self.exp_to_ant_channels),
-            LKA1d(self.exp_to_ant_channels, kernel_sizes=(513, 85), dilation=12),
+            LKA1d(self.exp_to_ant_channels, kernel_sizes=(513, 129), dilation=12, activation='silu'),
             nn.LayerNorm(self.target_latent_size),
-            LKA1d(self.exp_to_ant_channels, kernel_sizes=(513, 85), dilation=12),
+            LKA1d(self.exp_to_ant_channels, kernel_sizes=(513, 129), dilation=12, activation='silu'),
             nn.LayerNorm(self.target_latent_size),
             TFNO1d(n_modes_height=self.n_fourier_modes, in_channels=self.exp_to_ant_channels,
                    out_channels=self.flowthrough_channels, hidden_channels=self.exp_to_ant_channels),
@@ -155,9 +155,9 @@ class GeneratorModel(FlatModule):
             TFNO1d(n_modes_height=self.n_fourier_modes, in_channels=self.flowthrough_channels + 2,
                    out_channels=self.wave_decoder_channels,
                    hidden_channels=self.wave_decoder_channels),
-            LKA1d(self.wave_decoder_channels, kernel_sizes=(513, 129), dilation=12),
+            LKA1d(self.wave_decoder_channels, kernel_sizes=(513, 129), dilation=12, activation='silu'),
             nn.LayerNorm(self.target_latent_size),
-            LKA1d(self.wave_decoder_channels, kernel_sizes=(513, 129), dilation=12),
+            LKA1d(self.wave_decoder_channels, kernel_sizes=(513, 129), dilation=12, activation='silu'),
             nn.LayerNorm(self.target_latent_size),
             TFNO1d(n_modes_height=self.n_fourier_modes, in_channels=self.wave_decoder_channels,
                    out_channels=self.flowthrough_channels, hidden_channels=self.wave_decoder_channels),
@@ -167,9 +167,9 @@ class GeneratorModel(FlatModule):
             TFNO1d(n_modes_height=self.n_fourier_modes, in_channels=self.flowthrough_channels + 2,
                    out_channels=self.wave_decoder_channels,
                    hidden_channels=self.wave_decoder_channels),
-            LKA1d(self.wave_decoder_channels, kernel_sizes=(513, 129), dilation=12),
+            LKA1d(self.wave_decoder_channels, kernel_sizes=(513, 129), dilation=12, activation='silu'),
             nn.LayerNorm(self.target_latent_size),
-            LKA1d(self.wave_decoder_channels, kernel_sizes=(513, 129), dilation=12),
+            LKA1d(self.wave_decoder_channels, kernel_sizes=(513, 129), dilation=12, activation='silu'),
             nn.LayerNorm(self.target_latent_size),
             TFNO1d(n_modes_height=self.n_fourier_modes, in_channels=self.wave_decoder_channels,
                    out_channels=self.n_ants * 2, hidden_channels=self.wave_decoder_channels),
@@ -189,7 +189,7 @@ class GeneratorModel(FlatModule):
             nn.SiLU(),
         )
 
-        # self.plength = PulseLength()
+        self.plength = PulseLength()
 
         _xavier_init(self.wave_decoder)
         _xavier_init(self.predict_decoder)
@@ -222,7 +222,7 @@ class GeneratorModel(FlatModule):
         for dec_layer in self.decoder_layers:
             x = dec_layer(torch.cat([x, bw_info, pl_info], dim=1))
         x = self.wave_decoder(torch.cat([x, bw_info, pl_info], dim=1))
-        # x = self.plength(x, pulse_length)
+        x = self.plength(x, pulse_length)
         '''bump_range = torch.linspace(-1, 1, self.fft_len, device=self.device)[None, :] / (bandwidth / 2)[:, None]
         bump = torch.exp(1 / (bump_range.unsqueeze(1) ** 40 - 1)) / EXP_1
         bump[bump > 1.] = 0.  # Remove asymptotes outside bandwidth range'''
@@ -288,15 +288,11 @@ class GeneratorModel(FlatModule):
         pslrs = torch.max(sidelobe_func, dim=-1)[0] - torch.mean(sidelobe_func, dim=-1)
         # pslrs = get_pslr(sidelobe_func.squeeze(1))
         sidelobe_loss = 1. / (EPS + torch.nanmean(pslrs))
+        # sidelobe_loss = torch.tensor(0., device=self.device)
 
         # Bandwidth loss
         thresh_waveform = nn_func.sigmoid((torch.abs(gen_waveform) - 1e-9) * 1e2)
-        bandwidth_loss = torch.nanmean(torch.abs(torch.sum(thresh_waveform, dim=-1) / self.fft_len - args[5])**.05)
-
-        # Pulse length loss
-        time_domain = torch.fft.ifft(gen_waveform, dim=-1)
-        thresh_waveform = nn_func.sigmoid((torch.abs(time_domain) - 1e-9) * 1e2)
-        pl_loss = torch.nanmean((torch.abs(torch.sum(thresh_waveform, dim=-1) - args[4]) / self.fft_len) ** .05)
+        bandwidth_loss = torch.nanmean(torch.abs(torch.sum(thresh_waveform, dim=-1) / self.fft_len - args[5])**.5)
 
         # Orthogonality
         if self.n_ants > 1:
@@ -317,7 +313,7 @@ class GeneratorModel(FlatModule):
         target_loss = torch.abs(target_loss)
 
         return {'target_loss': target_loss,
-                'sidelobe_loss': sidelobe_loss, 'ortho_loss': ortho_loss, 'bandwidth_loss': bandwidth_loss, 'pulse_length_loss': pl_loss}
+                'sidelobe_loss': sidelobe_loss, 'ortho_loss': ortho_loss, 'bandwidth_loss': bandwidth_loss}
 
     # def example_input_array(self) -> Optional[Union[Tensor, Tuple, Dict]]:
     #     return self.example_input_array
@@ -400,5 +396,5 @@ class GeneratorModel(FlatModule):
         train_loss = self.loss_function(results, clutter_spec, target_spec, target_enc, pulse_length, bandwidth)
 
         train_loss['loss'] = torch.sqrt(torch.abs(
-            train_loss['sidelobe_loss'] * (1 + train_loss['target_loss'] + train_loss['ortho_loss']))) + train_loss['bandwidth_loss'] + train_loss['pulse_length_loss']
+            train_loss['target_loss'] * (1 + train_loss['sidelobe_loss'] + train_loss['ortho_loss']))) + train_loss['bandwidth_loss']
         return train_loss
