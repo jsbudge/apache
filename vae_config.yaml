@@ -140,7 +140,7 @@ wave_exp_params:
     loss_landscape: False
     max_epochs: 1200
     patience: 500
-    distributed: False
+    distributed: True
   model_params:
     n_ants: 1
     fft_len: 8192

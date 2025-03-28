@@ -149,7 +149,7 @@ if __name__ == '__main__':
             linear = np.fft.fft(
                 genPulse(np.linspace(0, 1, 10),
                          np.linspace(0, 1, 10), nr, fs, config.fc,
-                         config.bandwidth), fft_len)
+                         bandwidth[0].cpu().data.numpy() * fs), fft_len)
             linear = linear / sum(linear * linear.conj())  # Unit energy
             inp_wave = waves[0, 0] * waves[0, 0].conj()
             autocorr1 = np.fft.fftshift(db(np.fft.ifft(upsample(inp_wave))))

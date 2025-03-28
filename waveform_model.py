@@ -10,7 +10,7 @@ from torch.nn import functional as nn_func
 from pytorch_lightning.utilities import grad_norm
 from torch.optim import Optimizer
 from config import Config
-from layers import FourierFeature, PulseLength, LKA1d, LKATranspose1d
+from layers import FourierFeature, PulseLength, LKA1d, LKATranspose1d, WindowGenerate
 import numpy as np
 
 from utils import normalize, get_pslr
@@ -109,6 +109,7 @@ class GeneratorModel(FlatModule):
         self.flowthrough_channels = config.flowthrough_channels
         self.wave_decoder_channels = config.wave_decoder_channels
         self.exp_to_ant_channels = config.exp_to_ant_channels
+        self.lstm_layers = 8
         self.automatic_optimization = False
         self.n_fourier_modes = config.n_fourier_modes
         self.bandwidth = config.bandwidth
@@ -120,8 +121,9 @@ class GeneratorModel(FlatModule):
             param.requires_grad = False
 
         '''TRANSFORMER'''
-        self.predict_decoder = nn.Transformer(self.target_latent_size, num_decoder_layers=5, num_encoder_layers=5, nhead=16,
-                                              batch_first=True, activation='gelu')
+        self.predict_lstm = nn.LSTM(self.target_latent_size, self.target_latent_size, self.lstm_layers, batch_first=True)
+        '''self.predict_decoder = nn.Transformer(self.target_latent_size, num_decoder_layers=5, num_encoder_layers=5, nhead=16,
+                                              batch_first=True, activation='gelu')'''
         # self.predict_decoder.apply(init_weights)
 
         '''CLUTTER AND TARGET COMBINATION LAYERS'''
@@ -190,9 +192,10 @@ class GeneratorModel(FlatModule):
         )
 
         self.plength = PulseLength()
+        self.bw_generate = WindowGenerate(self.fft_len, self.n_ants)
 
         _xavier_init(self.wave_decoder)
-        _xavier_init(self.predict_decoder)
+        # _xavier_init(self.predict_decoder)
         _xavier_init(self.expand_to_ants)
         _xavier_init(self.clutter_target_combine)
         _xavier_init(self.pinfo)
@@ -209,7 +212,13 @@ class GeneratorModel(FlatModule):
         x = torch.cat([self.embedding(clutter[:, n, ...]).unsqueeze(1) for n in range(clutter.shape[1])], dim=1)
 
         # Predict the next clutter step using transformer
-        x = self.predict_decoder(x[:, :-1], x[:, 1:])[:, -1, ...].unsqueeze(1)
+        h0 = torch.zeros(self.lstm_layers, x.size(0), self.target_latent_size).to(x.device).detach()
+        c0 = torch.zeros(self.lstm_layers, x.size(0), self.target_latent_size).to(x.device).detach()
+        xs = x[:, :self.lstm_layers, ...]
+        for split in range(self.lstm_layers, x.shape[1], self.lstm_layers):
+            xs, (h0, c0) = self.predict_lstm(x[:, split:split+self.lstm_layers, ...], (h0, c0))
+        x = xs[:, -1].unsqueeze(1)
+        # x = self.predict_decoder(x[:, :-1], x[:, 1:])[:, -1, ...].unsqueeze(1)
 
         # Combine clutter prediction with target information
         x = self.clutter_target_combine(torch.cat([x, target.unsqueeze(1)], dim=1))
@@ -222,7 +231,7 @@ class GeneratorModel(FlatModule):
         for dec_layer in self.decoder_layers:
             x = dec_layer(torch.cat([x, bw_info, pl_info], dim=1))
         x = self.wave_decoder(torch.cat([x, bw_info, pl_info], dim=1))
-        x = self.plength(x, pulse_length)
+        x = self.plength(x, pulse_length) * self.bw_generate(bandwidth)
         '''bump_range = torch.linspace(-1, 1, self.fft_len, device=self.device)[None, :] / (bandwidth / 2)[:, None]
         bump = torch.exp(1 / (bump_range.unsqueeze(1) ** 40 - 1)) / EXP_1
         bump[bump > 1.] = 0.  # Remove asymptotes outside bandwidth range'''
@@ -244,7 +253,7 @@ class GeneratorModel(FlatModule):
         clut = (torch.stack([torch.tensor(clut_norm.real, dtype=torch.float32, device=self.device),
                              torch.tensor(clut_norm.imag, dtype=torch.float32, device=self.device)])).swapaxes(0, 1)
         pl = torch.tensor([[pulse_length]], device=self.device)
-        bw = torch.tensor([[bandwidth]], device=self.device)
+        bw = torch.tensor([bandwidth], device=self.device)
 
         # Now that everything is formatted, get the waveform
         if isinstance(target_array, np.ndarray):
@@ -279,20 +288,19 @@ class GeneratorModel(FlatModule):
             torch.abs(torch.fft.ifft(clutter_spectrum.unsqueeze(1) * mfiltered, dim=2)), dim=1)
         '''ratio = clut_ac / (EPS + targ_ac) * torch.fft.fftshift(torch.signal.windows.gaussian(self.fft_len, std=self.fft_len / 8., device=self.device))
         target_loss = ratio.nanmean()'''
-        target_loss = torch.nanmean(torch.max(targ_ac, dim=-1)[0] / (EPS + torch.max(clut_ac, dim=-1)[0]))
+        target_loss = torch.nanmean(clut_ac / (EPS + targ_ac))
         # target_loss = torch.nanmean(nn_func.cosine_similarity(targ_ac, clut_ac)**2)
 
         # Sidelobe loss functions
         slf = nn_func.threshold(torch.abs(torch.fft.ifft(mfiltered, dim=2)), 1e-9, 1e-9)
         sidelobe_func = 10 * torch.log(slf / 10)
-        pslrs = torch.max(sidelobe_func, dim=-1)[0] - torch.mean(sidelobe_func, dim=-1)
+        theoretical_mainlobe_width = torch.max(torch.ceil(1 / (2 * args[5]))).int()
+        pslrs = torch.max(sidelobe_func, dim=-1)[0] - torch.mean(sidelobe_func[..., theoretical_mainlobe_width:-theoretical_mainlobe_width], dim=-1)
         # pslrs = get_pslr(sidelobe_func.squeeze(1))
         sidelobe_loss = 1. / (EPS + torch.nanmean(pslrs))
         # sidelobe_loss = torch.tensor(0., device=self.device)
 
         # Bandwidth loss
-        thresh_waveform = nn_func.sigmoid((torch.abs(gen_waveform) - 1e-9) * 1e2)
-        bandwidth_loss = torch.nanmean(torch.abs(torch.sum(thresh_waveform, dim=-1) / self.fft_len - args[5])**.5)
 
         # Orthogonality
         if self.n_ants > 1:
@@ -313,7 +321,7 @@ class GeneratorModel(FlatModule):
         target_loss = torch.abs(target_loss)
 
         return {'target_loss': target_loss,
-                'sidelobe_loss': sidelobe_loss, 'ortho_loss': ortho_loss, 'bandwidth_loss': bandwidth_loss}
+                'sidelobe_loss': sidelobe_loss, 'ortho_loss': ortho_loss}
 
     # def example_input_array(self) -> Optional[Union[Tensor, Tuple, Dict]]:
     #     return self.example_input_array
@@ -396,5 +404,5 @@ class GeneratorModel(FlatModule):
         train_loss = self.loss_function(results, clutter_spec, target_spec, target_enc, pulse_length, bandwidth)
 
         train_loss['loss'] = torch.sqrt(torch.abs(
-            train_loss['target_loss'] * (1 + train_loss['sidelobe_loss'] + train_loss['ortho_loss']))) + train_loss['bandwidth_loss']
+            train_loss['target_loss'] * (1 + train_loss['sidelobe_loss'] + train_loss['ortho_loss'])))# + train_loss['bandwidth_loss']
         return train_loss
