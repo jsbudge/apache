@@ -4,6 +4,7 @@ import numpy as np
 from pyrr import Matrix44
 import open3d as o3d
 from pyrr.matrix44 import create_perspective_projection_matrix_from_bounds
+from gui_classes import ArcBallUtil
 
 
 class QGLControllerWidget(QtOpenGL.QGLWidget):
@@ -55,6 +56,7 @@ class QGLControllerWidget(QtOpenGL.QGLWidget):
         self.color = self.prog['Color']
         self.mvp = self.prog['Mvp']
         self.mesh = None
+        self.arc_ball = ArcBallUtil(self.width(), self.height())
         self.center = np.zeros(3)
         self.scale = 1.0
 
@@ -74,6 +76,17 @@ class QGLControllerWidget(QtOpenGL.QGLWidget):
         self.vao = self.ctx.vertex_array(
                 self.prog, vao_content, index_buffer, 4,
             )
+        self.init_arcball()
+
+    def init_arcball(self):
+        self.arc_ball = ArcBallUtil(self.width(), self.height())
+        pts = np.asarray(self.mesh.vertices)
+        bbmin = np.min(pts, axis=0)
+        bbmax = np.max(pts, axis=0)
+        self.center = 0.5 * (bbmax + bbmin)
+        self.scale = np.linalg.norm(bbmax - self.center) / 10
+        self.arc_ball.Transform[:3, :3] /= self.scale
+        self.arc_ball.Transform[3, :3] = -self.center / self.scale
 
     def paintGL(self):
         self.ctx.clear(1.0, 1.0, 1.0)
@@ -84,7 +97,7 @@ class QGLControllerWidget(QtOpenGL.QGLWidget):
 
         self.aspect_ratio = self.width()/max(1.0, self.height())
         # proj = create_perspective_projection_matrix_from_bounds(-20, 20, 10, -10, 1., 20)
-        proj = Matrix44.perspective_projection(60.0, self.aspect_ratio, 5., 1000.0)
+        proj = Matrix44.perspective_projection(60.0, self.aspect_ratio, 5., 500.0)
         lookat = Matrix44.look_at(
             (0.0, 2.0, 20.0),  # eye
             (0.0, 0.0, 0.0),  # target
@@ -93,8 +106,10 @@ class QGLControllerWidget(QtOpenGL.QGLWidget):
 
         self.light.value = (1.0, 1.0, 1.0)
         self.color.value = (1.0, 1.0, 1.0, 0.8)
+        self.arc_ball.Transform[3, :3] = \
+            -self.arc_ball.Transform[:3, :3].T @ self.center
         self.mvp.write(
-            (proj * lookat).astype('f4'))
+            (proj * lookat * self.arc_ball.Transform).astype('f4'))
 
         self.vao.render()
 
@@ -103,3 +118,15 @@ class QGLControllerWidget(QtOpenGL.QGLWidget):
         height = max(2, height)
         self.ctx.viewport = (0, 0, width, height)
         return
+
+    def mousePressEvent(self, event):
+        if event.buttons() & QtCore.Qt.LeftButton:
+            self.arc_ball.onClickLeftDown(event.x(), event.y())
+
+    def mouseReleaseEvent(self, event):
+        if event.buttons() & QtCore.Qt.LeftButton:
+            self.arc_ball.onClickLeftUp()
+
+    def mouseMoveEvent(self, event):
+        if event.buttons() & QtCore.Qt.LeftButton:
+            self.arc_ball.onDrag(event.x(), event.y())
