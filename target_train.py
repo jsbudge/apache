@@ -88,6 +88,7 @@ if __name__ == '__main__':
         pmodel = PulseClassifier.load_from_checkpoint(f'{classifier_config.weights_path}/{classifier_config.model_name}.ckpt')
 
     if ptrainer.is_global_zero or not target_config.is_training:
+
         model.to(device)
         model.eval()
         sample = next(iter(data.val_dataloader()))

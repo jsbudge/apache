@@ -13,35 +13,10 @@ from config import Config
 from layers import FourierFeature, PulseLength, LKA1d, LKATranspose1d, WindowGenerate
 import numpy as np
 
-from utils import normalize, get_pslr
-
+from utils import normalize, get_pslr, _xavier_init
 
 EXP_1 = 0.36787944117144233
 EPS = 1e-12
-
-
-def init_weights(m):
-    with contextlib.suppress(ValueError):
-        if hasattr(m, 'weight'):
-            torch.nn.init.xavier_normal_(m.weight)
-        # sourcery skip: merge-nested-ifs
-        if hasattr(m, 'bias'):
-            if m.bias is not None:
-                m.bias.data.fill_(.01)
-                
-def _xavier_init(model):
-    """
-    Performs the Xavier weight initialization.
-    """
-    for module in model.modules():
-        if isinstance(module, (nn.Linear, nn.Conv1d, nn.ConvTranspose1d)):
-            nn.init.kaiming_normal_(module.weight)
-            if module.bias is not None:
-                fan_in, _ = nn.init._calculate_fan_in_and_fan_out(module.weight)
-                if fan_in != 0:
-                    bound = 1 / math.sqrt(fan_in)
-                    nn.init.uniform_(module.bias, -bound, bound)
-            # nn.init.he_(module.weight)
 
 
 class FlatModule(LightningModule):
@@ -121,9 +96,9 @@ class GeneratorModel(FlatModule):
             param.requires_grad = False
 
         '''TRANSFORMER'''
-        self.predict_lstm = nn.LSTM(self.target_latent_size, self.target_latent_size, self.lstm_layers, batch_first=True)
-        '''self.predict_decoder = nn.Transformer(self.target_latent_size, num_decoder_layers=5, num_encoder_layers=5, nhead=16,
-                                              batch_first=True, activation='gelu')'''
+        # self.predict_lstm = nn.LSTM(self.target_latent_size, self.target_latent_size, self.lstm_layers, batch_first=True)
+        self.predict_decoder = nn.Transformer(self.target_latent_size, num_decoder_layers=5, num_encoder_layers=5, nhead=16,
+                                              batch_first=True, activation=nn.SiLU())
         # self.predict_decoder.apply(init_weights)
 
         '''CLUTTER AND TARGET COMBINATION LAYERS'''
@@ -195,7 +170,7 @@ class GeneratorModel(FlatModule):
         self.bw_generate = WindowGenerate(self.fft_len, self.n_ants)
 
         _xavier_init(self.wave_decoder)
-        # _xavier_init(self.predict_decoder)
+        _xavier_init(self.predict_decoder)
         _xavier_init(self.expand_to_ants)
         _xavier_init(self.clutter_target_combine)
         _xavier_init(self.pinfo)
@@ -212,13 +187,7 @@ class GeneratorModel(FlatModule):
         x = torch.cat([self.embedding(clutter[:, n, ...]).unsqueeze(1) for n in range(clutter.shape[1])], dim=1)
 
         # Predict the next clutter step using transformer
-        h0 = torch.zeros(self.lstm_layers, x.size(0), self.target_latent_size).to(x.device).detach()
-        c0 = torch.zeros(self.lstm_layers, x.size(0), self.target_latent_size).to(x.device).detach()
-        xs = x[:, :self.lstm_layers, ...]
-        for split in range(self.lstm_layers, x.shape[1], self.lstm_layers):
-            xs, (h0, c0) = self.predict_lstm(x[:, split:split+self.lstm_layers, ...], (h0, c0))
-        x = xs[:, -1].unsqueeze(1)
-        # x = self.predict_decoder(x[:, :-1], x[:, 1:])[:, -1, ...].unsqueeze(1)
+        x = self.predict_decoder(x[:, :-1], x[:, 1:])[:, -1, ...].unsqueeze(1)
 
         # Combine clutter prediction with target information
         x = self.clutter_target_combine(torch.cat([x, target.unsqueeze(1)], dim=1))

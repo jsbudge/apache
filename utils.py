@@ -1,5 +1,8 @@
+import math
+
 import numpy as np
 import torch
+from torch import nn
 
 fs = 2e9
 c0 = 299792458.0
@@ -7,6 +10,21 @@ TAC = 125e6
 DTR = np.pi / 180
 inch_to_m = .0254
 m_to_ft = 3.2808
+
+
+def _xavier_init(model):
+    """
+    Performs the Xavier weight initialization.
+    """
+    for module in model.modules():
+        if isinstance(module, (nn.Linear, nn.Conv1d, nn.ConvTranspose1d)):
+            nn.init.kaiming_normal_(module.weight)
+            if module.bias is not None:
+                fan_in, _ = nn.init._calculate_fan_in_and_fan_out(module.weight)
+                if fan_in != 0:
+                    bound = 1 / math.sqrt(fan_in)
+                    nn.init.uniform_(module.bias, -bound, bound)
+            # nn.init.he_(module.weight)
 
 
 def upsample(val, fac=8):

@@ -28,7 +28,7 @@ settings:
 generate_data_settings:
   iterations: 10
   use_local_storage: True
-  save_files: True
+  save_files: False
   local_path: ./data
   obj_path: /home/jeff/Documents/target_meshes
   save_as_target: True
@@ -44,7 +44,7 @@ target_exp_params:
     step_size: 1
     swa_start: .7
     log_epoch: 10
-    save_model: True
+    save_model: False
     transform_data: False
     warm_start: False
     loss_landscape: False
@@ -140,7 +140,7 @@ wave_exp_params:
     loss_landscape: False
     max_epochs: 1200
     patience: 500
-    distributed: True
+    distributed: False
   model_params:
     n_ants: 1
     fft_len: 8192

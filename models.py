@@ -11,6 +11,7 @@ from layers import LKA, LKATranspose, LKA1d, LKATranspose1d
 from pytorch_lightning import LightningModule
 import matplotlib.pyplot as plt
 
+from utils import _xavier_init
 from waveform_model import FlatModule
 
 
@@ -54,11 +55,13 @@ class TargetEmbedding(FlatModule):
             layer_sz = config.fft_len // (2 ** (l + 1))
             self.encoder_reduce.append(nn.Sequential(
                 nn.Conv1d(prev_lev_enc, ch_lev_enc, 4, 2, 1),
-                nn.SELU(),
+                nn.SiLU(),
 
             ))
             self.encoder_conv.append(nn.Sequential(
-                TFNO1d(n_modes_height=16, in_channels=ch_lev_enc, out_channels=ch_lev_enc, hidden_channels=ch_lev_enc),
+                nn.Linear(layer_sz, layer_sz),
+                nn.SiLU(),
+                # TFNO1d(n_modes_height=16, in_channels=ch_lev_enc, out_channels=ch_lev_enc, hidden_channels=ch_lev_enc),
                 nn.LayerNorm(layer_sz),
             ))
             prev_lev_enc = ch_lev_enc + 0
@@ -69,7 +72,7 @@ class TargetEmbedding(FlatModule):
         )
         self.fc_z = nn.Sequential(
             nn.Linear(out_sz, self.latent_dim),
-            nn.SELU(),
+            nn.SiLU(),
             nn.Linear(self.latent_dim, self.latent_dim),
         )
 
@@ -78,6 +81,8 @@ class TargetEmbedding(FlatModule):
             nn.GELU(),
             nn.Linear(latent_dim, latent_dim)
         )'''
+
+        _xavier_init(self)
 
         self.out_sz = out_sz
         self.example_input_array = torch.randn((1, 2, config.fft_len))
@@ -210,6 +215,8 @@ class PulseClassifier(LightningModule):
             nn.Linear(self.in_channels // 2, self.label_sz),
             nn.Sigmoid()
         )
+
+        _xavier_init(self)
 
     def forward(self, inp: Tensor, **kwargs) -> Tensor:
         with torch.no_grad():
