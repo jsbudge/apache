@@ -137,8 +137,7 @@ class WaveformGeneratorWindow(QMainWindow):
         self.sar_pulse_range.setRange(1, 1000)
         self.sar_pulse_range.setValue(self.range_values)
         self.sar_pulse_range.valuesChanged.connect(self.slot_rigidize_bar)
-        self.sar_pulse_range.sliderReleased.connect(lambda: [self.sar_pulse_range.setValue(self.range_values),
-                                                    self.pulse_display.setText(f'{self.range_values[0]}-{self.range_values[1]}')])
+        self.sar_pulse_range.sliderReleased.connect(self.slot_update_slider)
         grid_layout.addWidget(self.sar_pulse_range, 4, 1, 1, 2)
         grid_layout.addWidget(self.pulse_display, 4, 3)
 
@@ -146,13 +145,10 @@ class WaveformGeneratorWindow(QMainWindow):
         self.range_size_spin_box = QSpinBox(self)
         self.range_size_spin_box.setRange(32, 128)
         self.range_size_spin_box.setSingleStep(32)
-        self.range_size_spin_box.valueChanged.connect(lambda: [self.sar_pulse_range.setValue(self.range_values),
-                                                             self.pulse_display.setText(
-                                                                 f'{self.range_values[0]}-{self.range_values[1]}')])
+        self.range_size_spin_box.valueChanged.connect(self.slot_update_slider)
         grid_layout.addWidget(self.range_size_spin_box, 5, 1)
         grid_layout.addWidget(QLabel("Show RDA Map"), 5, 2)
         self.show_rdmap_check_box = QCheckBox(self)
-        self.show_rdmap_check_box.clicked.connect(self.slot_checkbox)
         grid_layout.addWidget(self.show_rdmap_check_box, 5, 3)
 
         # Output file name layout
@@ -226,6 +222,14 @@ class WaveformGeneratorWindow(QMainWindow):
             self.output_folder_line_edit.setText(folder_path)
 
 
+    def slot_update_slider(self):
+        self.sar_pulse_range.setValue(self.range_values)
+        self.pulse_display.setText(f'{self.range_values[0]}-{self.range_values[1]}')
+        if self.show_rdmap_check_box.isChecked():
+            pdata = loadPulseData(self.sdr, self.range_values, self.wave_mdl.fft_len)
+            doppler_wave = np.fft.fft(np.fft.ifft(pdata, axis=-1), axis=0)
+            self.slot_updatePlot((np.zeros(self.wave_mdl.fft_len), doppler_wave))
+
     # Close event
     def closeEvent(self, a_event, **kwargs):
         self.savePersistentSettings()
@@ -247,9 +251,6 @@ class WaveformGeneratorWindow(QMainWindow):
                                  int(values[1] + self.range_size_spin_box.value() / 2))
             self.range_values = (0, self.range_size_spin_box.value()) if self.range_values[0] <= 0 else self.range_values
         # self.sar_pulse_range.setValue(self.range_values)
-
-    def slot_checkbox(self, value):
-        pass
 
 
     def ensure_wave_suffix(self):
@@ -398,12 +399,7 @@ class GenerateWaveformThread(QThread):
         sdr = self.sar_file
         self.signal_update_percentage.emit(25)
         self.signal_update_progress.emit('Loaded SDR file. Getting pulses...')
-        pulses = np.fft.fft(sdr.getPulses(sdr[0].frame_num[self.frame_range[0]:self.frame_range[1]], 0)[1].T,
-                            self.model.fft_len, axis=-1)
-        self.signal_update_progress.emit('Generating matched filter...')
-        self.signal_update_percentage.emit(35)
-        mfilt = sdr.genMatchedFilter(0, fft_len=self.model.fft_len)
-        pdata = pulses * mfilt
+        pdata = loadPulseData(sdr, self.frame_range, self.model.fft_len)
         pulse_data = np.fft.fftshift(pdata)
         nr = int(self.pulse_length * fs)
 
@@ -440,6 +436,12 @@ class GenerateWaveformThread(QThread):
             print(f'Error writing to file. {e}')
         doppler_wave = np.fft.fft(np.fft.ifft(pdata, axis=-1), axis=0)
         self.signal_waveform_generated.emit((waves, doppler_wave))
+
+def loadPulseData(sdr, frame_range, fft_len):
+    pulses = np.fft.fft(sdr.getPulses(sdr[0].frame_num[frame_range[0]:frame_range[1]], 0)[1].T,
+                        fft_len, axis=-1)
+    mfilt = sdr.genMatchedFilter(0, fft_len=fft_len)
+    return pulses * mfilt
 
 
 # Main

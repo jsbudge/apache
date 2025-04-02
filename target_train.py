@@ -1,7 +1,5 @@
 import torch
 from pytorch_lightning import Trainer, loggers, seed_everything
-from pytorch_lightning.callbacks import EarlyStopping, StochasticWeightAveraging, ModelCheckpoint
-from simulib.simulation_functions import db
 from config import get_config
 from dataloaders import TargetEncoderModule
 from models import TargetEmbedding, PulseClassifier
@@ -9,12 +7,11 @@ from sklearn.decomposition import KernelPCA
 import matplotlib.pyplot as plt
 import numpy as np
 from tqdm import tqdm
-import itertools
 
 
 if __name__ == '__main__':
     torch.set_float32_matmul_precision('medium')
-    gpu_num = 1
+    gpu_num = 0
     device = f'cuda:{gpu_num}' if torch.cuda.is_available() else 'cpu'
     seed_everything(np.random.randint(1, 2048), workers=True)
     # seed_everything(43, workers=True)
@@ -35,12 +32,7 @@ if __name__ == '__main__':
         expected_lr = max((target_config.lr * target_config.scheduler_gamma ** (target_config.max_epochs *
                                                                     target_config.swa_start)), 1e-9)
         trainer = Trainer(logger=logger, max_epochs=target_config.max_epochs, default_root_dir=target_config.weights_path,
-                          log_every_n_steps=target_config.log_epoch, devices=[gpu_num], callbacks=
-                          [EarlyStopping(monitor='train_loss', patience=target_config.patience,
-                                         check_finite=True),
-                           StochasticWeightAveraging(swa_lrs=expected_lr,
-                                                     swa_epoch_start=target_config.swa_start),
-                           ModelCheckpoint(monitor='train_loss')])
+                          log_every_n_steps=target_config.log_epoch, detect_anomaly=False, devices=[gpu_num])
 
         print("======= Training =======")
         try:
@@ -56,8 +48,53 @@ if __name__ == '__main__':
     else:
         model = TargetEmbedding.load_from_checkpoint(f'{target_config.weights_path}/{target_config.model_name}.ckpt', config=target_config, strict=False)
 
+    if trainer.is_global_zero:
+        import matplotlib as mplib
+        mplib.use('TkAgg')
+        model.to(device)
+        model.eval()
+        '''sample = next(iter(data.val_dataloader()))
+        embedding = model(sample[0].to(device))[0].cpu().data.numpy()
+        sample = sample[0][0].data.numpy()
+        print('Plotting outputs...')
+        plt.figure('Samples')
+        plt.subplot(2, 1, 1)
+        plt.title('Sample')
+        plt.plot(np.fft.fftshift(np.fft.fftfreq(8192, 1 / 2e9) / 1e6), db(sample[0] + 1j * sample[1]))
+        plt.xlabel('Freq (MHz)')
+        plt.ylabel('Power (dB)')
+        plt.subplot(2, 1, 2)
+        plt.title('Vector')
+        plt.xlabel('Element')
+        plt.plot(embedding)'''
 
-    if classifier_config.is_training:
+        # Snag the first 50 batches
+        batch_sz = target_config.val_batch_size
+        embeddings = []
+        samples = []
+        file_idx = []
+        val_gen = iter(data.val_dataloader())
+        for i, sam in tqdm(enumerate(val_gen)):
+            samples.append(sam[0])
+            embeddings.append(model.encode(sam[0].to(model.device)).cpu().data.numpy())
+            file_idx.append(sam[1])
+            if i >= 49:
+                break
+        embeddings = np.concatenate(embeddings, axis=0)
+        file_idx = np.concatenate(file_idx)
+        svd_t = KernelPCA(kernel='rbf', n_components=3).fit_transform(embeddings)
+
+        ax = plt.figure('Embedding Distances').add_subplot(projection='3d')
+        ax.scatter(svd_t[:, 0], svd_t[:, 1], svd_t[:, 2], c=file_idx / file_idx.max())
+        model.to('cpu')
+
+        plt.figure()
+        plt.plot(embeddings[::50].T)
+
+        plt.show()
+
+
+    '''if classifier_config.is_training:
         pmodel = PulseClassifier(config=classifier_config, embedding_model=model)
         logger = loggers.TensorBoardLogger(classifier_config.log_dir, name=classifier_config.model_name)
         expected_lr = max((classifier_config.lr * classifier_config.scheduler_gamma ** (classifier_config.max_epochs *
@@ -137,4 +174,4 @@ if __name__ == '__main__':
         plt.imshow(conf_sz)
         plt.colorbar()
 
-        plt.show()
+        plt.show()'''

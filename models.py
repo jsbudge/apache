@@ -1,7 +1,9 @@
 import contextlib
 import pickle
+from typing import Any
+
 import torch
-from neuralop import TFNO1d
+from neuralop import TFNO1d, TFNO2d
 from torch import nn, optim, Tensor
 from torch.nn import functional as tf
 import numpy as np
@@ -32,80 +34,75 @@ def init_weights(m):
 class TargetEmbedding(FlatModule):
     def __init__(self,
                  config: Config,
+                 training_mode: int = 0,
                  **kwargs) -> None:
         super(TargetEmbedding, self).__init__(config)
         self.save_hyperparameters()
         self.latent_dim = config.latent_dim
         self.channel_sz = config.channel_sz
-        self.in_channels = config.in_channels
+        self.in_channels = config.range_samples * 2
         self.automatic_optimization = False
         self.temperature = 1.0
+        self.mode = training_mode
 
         # Parameters for normalizing data correctly
         levels = 2
-        out_sz = config.fft_len // (2 ** levels)
+        out_sz = (config.angle_samples // (2 ** levels), config.fft_len // (2 ** levels))
 
         # Encoder
-        self.encoder_inflate = nn.Conv1d(self.in_channels, self.channel_sz, 1, 1, 0)
+        self.encoder_inflate = nn.Conv2d(self.in_channels, self.channel_sz, 1, 1, 0)
         prev_lev_enc = self.channel_sz
         self.encoder_reduce = nn.ModuleList()
         self.encoder_conv = nn.ModuleList()
         for l in range(levels):
             ch_lev_enc = prev_lev_enc * 2
-            layer_sz = config.fft_len // (2 ** (l + 1))
+            layer_sz = (config.angle_samples // (2 ** (l + 1)), config.fft_len // (2 ** (l + 1)))
             self.encoder_reduce.append(nn.Sequential(
-                nn.Conv1d(prev_lev_enc, ch_lev_enc, 4, 2, 1),
+                nn.Conv2d(prev_lev_enc, ch_lev_enc, 4, 2, 1),
                 nn.SiLU(),
-
             ))
             self.encoder_conv.append(nn.Sequential(
-                nn.Linear(layer_sz, layer_sz),
+                nn.Conv2d(ch_lev_enc, ch_lev_enc, 3, 1, 1),
                 nn.SiLU(),
-                # TFNO1d(n_modes_height=16, in_channels=ch_lev_enc, out_channels=ch_lev_enc, hidden_channels=ch_lev_enc),
-                nn.LayerNorm(layer_sz),
+                # TFNO2d(n_modes_height=4, n_modes_width=2, in_channels=ch_lev_enc, out_channels=ch_lev_enc, hidden_channels=ch_lev_enc),
             ))
             prev_lev_enc = ch_lev_enc + 0
 
         prev_lev_dec = prev_lev_enc
         self.encoder_flatten = nn.Sequential(
-            TFNO1d(n_modes_height=8, in_channels=prev_lev_dec, out_channels=1, hidden_channels=prev_lev_dec),
+            TFNO2d(n_modes_height=16, n_modes_width=16, in_channels=prev_lev_dec, out_channels=1, hidden_channels=prev_lev_dec),
+            nn.Conv2d(1, 1, (out_sz[0], 1), 1, 0),
+            nn.SiLU(),
         )
         self.fc_z = nn.Sequential(
-            nn.Linear(out_sz, self.latent_dim),
+            nn.Linear(out_sz[1], self.latent_dim),
             nn.SiLU(),
             nn.Linear(self.latent_dim, self.latent_dim),
         )
 
-        '''self.contrast_g = nn.Sequential(
-            nn.Linear(latent_dim, latent_dim),
-            nn.GELU(),
-            nn.Linear(latent_dim, latent_dim)
-        )'''
+        self.decoder = DecoderHead(config.latent_dim, config.channel_sz, config.in_channels, out_sz,
+                                   (config.angle_samples, config.fft_len))
 
         _xavier_init(self)
 
         self.out_sz = out_sz
-        self.example_input_array = torch.randn((1, 2, config.fft_len))
+        # self.example_input_array = torch.randn((1, self.in_channels, config.angle_samples, config.fft_len))
 
-    def forward(self, inp: Tensor, **kwargs) -> Tensor:
+    def encode(self, inp: Tensor, **kwargs) -> Tensor:
         """
-                Encodes the input by passing through the encoder network
-                and returns the latent codes.
-                :param inp: (Tensor) Input tensor to encoder [N x C x H x W]
-                :return: (Tensor) List of latent codes
-                """
+                        Encodes the input by passing through the encoder network
+                        and returns the latent codes.
+                        :param inp: (Tensor) Input tensor to encoder [N x C x H x W]
+                        :return: (Tensor) List of latent codes
+                        """
         inp = self.encoder_inflate(inp)
         for conv, red in zip(self.encoder_conv, self.encoder_reduce):
             inp = conv(red(inp))
-        inp = self.encoder_flatten(inp).view(-1, self.out_sz)
-        return self.fc_z(inp)
+        return self.fc_z(self.encoder_flatten(inp).view(-1, self.out_sz[1]))
 
-    def contrast_map(self, inp: Tensor, **kwargs):
-        # return self.contrast_g(self.forward(inp))
-        return self.forward(inp)
-
-    # def loss_function(self, y, y_pred):
-    #     return tf.cosine_similarity(y, y_pred)
+    def forward(self, inp: Tensor, **kwargs) -> Tensor:
+        enc = self.encode(inp, **kwargs)
+        return self.decoder(enc)
 
     def on_fit_start(self) -> None:
         if self.trainer.is_global_zero and self.logger:
@@ -153,7 +150,10 @@ class TargetEmbedding(FlatModule):
     def train_val_get(self, batch, batch_idx, kind='train'):
         img, idx = batch
 
-        feats = self.contrast_map(img)
+        feats = self.encode(img)
+        reconstructions = self.decoder(feats)
+
+        # COSINE SIMILARITY
         cos_sim = tf.cosine_similarity(feats[:, None, :], feats[None, :, :], dim=-1)
         # Mask out cosine similarity to itself
         self_mask = torch.eye(cos_sim.shape[0], dtype=torch.bool, device=cos_sim.device)
@@ -165,20 +165,75 @@ class TargetEmbedding(FlatModule):
         nll = -cos_sim[pos_mask] + torch.logsumexp(cos_sim, dim=-1)
         nll = nll.mean()
 
-        
+
         # Get ranking position of positive example
         comb_sim = torch.cat(
             [cos_sim[pos_mask][:, None], cos_sim.masked_fill(pos_mask, -9e15)],  # First position positive example
             dim=-1,
         )
         sim_argsort = comb_sim.argsort(dim=-1, descending=True).argmin(dim=-1)
-        
+
+        # RECONSTRUCTION LOSS
+        rec_loss = torch.mean(torch.square(img - reconstructions))
+        '''rec_loss = sum(
+            torch.mean(torch.abs(i - r)) for i, r in zip(img, reconstructions)
+        )'''
+
+        # COMBINATION LOSS
+        cll = nll + rec_loss
+
         # Logging ranking metrics
-        self.log_dict({f'{kind}_loss': nll, f"{kind}_acc_top1": (sim_argsort == 0).float().mean(),
+        self.log_dict({f'{kind}_total_loss': cll, f'{kind}_rec_loss': rec_loss, f'{kind}_nll': nll,
+                       f"{kind}_acc_top1": (sim_argsort == 0).float().mean(),
                        f"{kind}_acc_top5": (sim_argsort < 5).float().mean(),
                        f"{kind}_acc_mean_pos": 1 + sim_argsort.float().mean()}, on_epoch=True,
                       prog_bar=True, rank_zero_only=True)
-        return nll
+
+        return cll
+
+
+class DecoderHead(LightningModule):
+
+    def __init__(self, latent_dim: int, channel_sz: int, in_channels: int, out_sz: tuple, in_sz: tuple, *args: Any, **kwargs: Any):
+        super().__init__(*args, **kwargs)
+        self.latent_dim = latent_dim
+        self.channel_sz = channel_sz
+        self.in_channels = in_channels
+        self.out_sz = out_sz
+        inter_channels = 6
+
+        n_dec_layers = int(in_sz[0] / out_sz[0])
+
+        self.decoder_inflate = nn.Sequential(
+            nn.ConvTranspose2d(1, inter_channels, (out_sz[0], 1), 1, 0),
+            nn.SiLU(),
+        )
+        self.z_fc = nn.Sequential(
+            nn.Linear(self.latent_dim, self.latent_dim),
+            nn.SiLU(),
+            nn.Linear(self.latent_dim, out_sz[1]),
+            nn.SiLU(),
+        )
+
+        self.dec_layers = nn.ModuleList()
+        for _ in range(1):
+            self.dec_layers.append(nn.Sequential(
+                nn.ConvTranspose2d(inter_channels, inter_channels, 4, 2, 1),
+                nn.SiLU(),
+            ))
+        self.dec_layers.append(nn.Sequential(
+            nn.ConvTranspose2d(inter_channels, in_channels, 4, 2, 1),
+        ))
+
+    def forward(self, x):
+        x = self.z_fc(x)
+        x = self.decoder_inflate(x.view(-1, 1, 1, self.out_sz[1]))
+        for l in self.dec_layers:
+            x = l(x)
+        return x
+
+
+
 
 
 class PulseClassifier(LightningModule):

@@ -127,7 +127,7 @@ class TargetDataset(Dataset):
 
     def __getitem__(self, idx):
         sample, label = torch.load(f'{self.datapath}/target_{idx[1]}/target_{idx[1]}_{idx[0]}.pt')
-        return sample, label
+        return sample[:2], label
 
     def __len__(self):
         return self.file_idx.shape[0]
@@ -248,7 +248,7 @@ class BaseModule(LightningDataModule):
         self.train_dataset = None
         self.train_batch_size = train_batch_size
         self.val_batch_size = val_batch_size
-        self.num_workers = 0  # cpu_count() // 2
+        self.num_workers = 0 if 'num_workers' not in kwargs else cpu_count() // 2 if kwargs['num_workers'] == -1 else kwargs['num_workers']
         self.pin_memory = pin_memory
         self.single_example = single_example
         self.device = device
@@ -386,7 +386,7 @@ class TargetEncoderModule(BaseModule):
             var: float = 4.9,
             **kwargs,
     ):
-        super().__init__(train_batch_size, val_batch_size, pin_memory, single_example, device)
+        super().__init__(train_batch_size, val_batch_size, pin_memory, single_example, device, **kwargs)
 
         self.dataset_size = dataset_size
         self.data_path = data_path
