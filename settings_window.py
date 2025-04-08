@@ -3,12 +3,20 @@ from PyQt5.QtWidgets import QMainWindow, QVBoxLayout, QWidget, QLabel, QGridLayo
 
 
 class SettingsWindow(QMainWindow):
-    signal_save: pyqtSignal
+    signal_save: pyqtSignal([str, str, str, str])
+    _target_id_fnme: str
+    _target_name_fnme: str
+    _target_mesh_path: str
+    _model_path: str
 
-    def __init__(self):
+    def __init__(self, id_fnme, name_fnme, mesh_path, model_path):
         super().__init__()
         self.setWindowTitle("Settings")
         self.setGeometry(250, 250, 300, 200)
+        self._target_mesh_path = mesh_path
+        self._target_name_fnme = name_fnme
+        self._target_id_fnme = id_fnme
+        self._model_path = model_path
 
         central_widget = QWidget()
         layout = QGridLayout(central_widget)
@@ -26,6 +34,7 @@ class SettingsWindow(QMainWindow):
         self.tname_line_edit = QLineEdit(self)
         self.tname_line_edit.setAcceptDrops(True)
         self.tname_line_edit.setReadOnly(True)
+        self.tname_line_edit.setText(self._target_name_fnme)
         layout.addWidget(self.tname_line_edit, 2, 1)
         self.tname_browse_btn = QPushButton("Browse", self)
         self.tname_browse_btn.clicked.connect(self.browse_tname_file)
@@ -35,6 +44,7 @@ class SettingsWindow(QMainWindow):
         self.tid_line_edit = QLineEdit(self)
         self.tid_line_edit.setAcceptDrops(True)
         self.tid_line_edit.setReadOnly(True)
+        self.tid_line_edit.setText(self._target_id_fnme)
         layout.addWidget(self.tid_line_edit, 3, 1)
         self.tid_browse_btn = QPushButton("Browse", self)
         self.tid_browse_btn.clicked.connect(self.browse_tid_file)
@@ -44,13 +54,15 @@ class SettingsWindow(QMainWindow):
         self.mesh_line_edit = QLineEdit(self)
         self.mesh_line_edit.setAcceptDrops(True)
         self.mesh_line_edit.setReadOnly(True)
+        self.mesh_line_edit.setText(self._target_mesh_path)
         layout.addWidget(self.mesh_line_edit, 4, 1)
         self.mesh_browse_btn = QPushButton("Browse", self)
         self.mesh_browse_btn.clicked.connect(self.browse_mesh_path)
         layout.addWidget(self.mesh_browse_btn, 4, 2)
 
         self.save_button = QPushButton("Save", self)
-        self.save_button.clicked.connect(lambda: self.signal_save.emit())
+        self.save_button.clicked.connect(lambda: self.signal_save.emit([self._target_mesh_path, self._target_id_fnme,
+                                                                        self._target_name_fnme, self._model_path]))
         layout.addWidget(self.save_button, 5, 0)
 
         central_widget.setLayout(layout)
@@ -58,7 +70,7 @@ class SettingsWindow(QMainWindow):
 
 
     def browse_model_file(self):
-        file_path, _ = QFileDialog.getOpenFileName(self, "Select Model File", "", "Model Files (*.chkpt);;All Files (*)")
+        file_path, _ = QFileDialog.getOpenFileName(self, "Select Model Config File", "", "Model Files (*.yaml);;All Files (*)")
         if file_path:
             self.model_line_edit.setText(file_path)
 

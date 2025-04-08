@@ -47,6 +47,7 @@ class WaveformGeneratorWindow(QMainWindow):
     _target_names_file: str = './target_files.yaml'
     _target_ids_file: str = './data/target_ids.txt'
     _target_mesh_path: str = '/home/jeff/Documents/target_meshes'
+    _model_path: str = './vae_config.yaml'
 
     def __init__(self, model):
         super().__init__()
@@ -241,7 +242,8 @@ class WaveformGeneratorWindow(QMainWindow):
             self.slot_updatePlot((np.zeros(self.wave_mdl.fft_len), doppler_wave))
 
     def open_settings_window(self):
-        self.settings_window = SettingsWindow()
+        self.settings_window = SettingsWindow(self._target_mesh_path, self._target_names_file, self._target_ids_file,
+                                              self._model_path)
         self.settings_window.signal_save.connect(self.slot_reload_model)
         self.settings_window.show()
 
@@ -284,6 +286,7 @@ class WaveformGeneratorWindow(QMainWindow):
         self._target_mesh_path = settings.value("target_mesh_path", "")
         self._target_ids_file = settings.value("target_ids_file", "")
         self._target_names_file = settings.value("target_names_file", "")
+        self._model_path = settings.value("model_path", "")
 
     def target_selected(self, index):
         mesh = readCombineMeshFile(
@@ -326,6 +329,7 @@ class WaveformGeneratorWindow(QMainWindow):
         settings.setValue("target_mesh_path", self._target_mesh_path)
         settings.setValue("target_ids_file", self._target_ids_file)
         settings.setValue("target_names_file", self._target_names_file)
+        settings.setValue("model_path", self._model_path)
 
     def show_message(self, a_message):
         msg_box = QMessageBox(self)
@@ -341,6 +345,21 @@ class WaveformGeneratorWindow(QMainWindow):
 
     def slot_update_percentage(self, value):
         self.progress_bar.setValue(value)
+
+    def slot_reload_model(self):
+        target_config = get_config('target_exp', './vae_config.yaml')
+        self.progress_bar.setText('Loading embedding model...')
+        embedding = TargetEmbedding.load_from_checkpoint(
+            f'{target_config.weights_path}/{target_config.model_name}.ckpt',
+            config=target_config, strict=False)
+        self.progress_bar.setText('Loading wavemodel configuration files...')
+        model_config = get_config('wave_exp', './vae_config.yaml')
+        self.progress_bar.setText('Loading wavemodel...')
+        self.wave_mdl = GeneratorModel.load_from_checkpoint(f'{model_config.weights_path}/{model_config.model_name}.ckpt',
+                                                       config=model_config, embedding=embedding, strict=False)
+        self.wave_mdl.eval()
+        self.progress_bar.setText('Wavemodel loaded.')
+
 
     # Start processing
     def start_processing(self):
