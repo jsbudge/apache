@@ -18,7 +18,7 @@ from mesh_viewer import QGLControllerWidget
 import torch
 from PyQt5.QtWidgets import (QApplication, QComboBox, QDoubleSpinBox, QFileDialog, QGridLayout, QHBoxLayout, QLabel,
                              QLineEdit, QMainWindow, QMessageBox, QPushButton, QVBoxLayout, QWidget, QSpinBox,
-                             QSplashScreen, QCheckBox)
+                             QSplashScreen, QCheckBox, QAction)
 from PyQt5.QtGui import QPixmap
 from PyQt5.QtCore import pyqtSignal, Qt, QSettings, QThread, QTimer
 from superqt import QRangeSlider
@@ -28,6 +28,8 @@ from config import get_config
 from models import TargetEmbedding
 import os
 import sys
+
+from settings_window import SettingsWindow
 from waveform_model import GeneratorModel
 
 fs = 2e9
@@ -41,6 +43,10 @@ class WaveformGeneratorWindow(QMainWindow):
     win_width: int = 500
     win_height: int = 500
     win_full_width: int = 1200
+    _model_fnme: str = None
+    _target_names_file: str = './target_files.yaml'
+    _target_ids_file: str = './data/target_ids.txt'
+    _target_mesh_path: str = '/home/jeff/Documents/target_meshes'
 
     def __init__(self, model):
         super().__init__()
@@ -48,6 +54,10 @@ class WaveformGeneratorWindow(QMainWindow):
         self.setWindowTitle("Waveform Generator")
         self.setGeometry(200, 200, self.win_width, self.win_height)
         self.setFixedSize(self.win_width, self.win_height)
+        menu_bar = self.menuBar()
+        new_window_action = QAction("Settings", self)
+        new_window_action.triggered.connect(self.open_settings_window)
+        menu_bar.addAction(new_window_action)
 
         # Main layout
         main_layout = QHBoxLayout()
@@ -60,16 +70,16 @@ class WaveformGeneratorWindow(QMainWindow):
 
         # Target combo box and information
         # Load files in from ids.txt
-        with open('./target_files.yaml', 'r') as file:
+        with open(self._target_names_file, 'r') as file:
             try:
                 self.target_scalings = list(yaml.safe_load(file).items())
             except yaml.YAMLError as exc:
                 print(exc)
                 exit()
-        with open('./data/target_ids.txt', 'r') as f:
+        with open(self._target_ids_file, 'r') as f:
             target_ids = [t.strip().split(":")[1][1:] for t in f.readlines()]
         self.target_files = [
-            Path(f'/home/jeff/Documents/target_meshes/{t}') for t in target_ids]
+            Path(f'{self._target_mesh_path}/{t}') for t in target_ids]
         # Load mean tensors
         self.patterns = torch.load('./data/target_tensors/target_embedding_means.pt')
         grid_layout.addWidget(QLabel("Target:"), 0, 0)
@@ -230,6 +240,11 @@ class WaveformGeneratorWindow(QMainWindow):
             doppler_wave = np.fft.fft(np.fft.ifft(pdata, axis=-1), axis=0)
             self.slot_updatePlot((np.zeros(self.wave_mdl.fft_len), doppler_wave))
 
+    def open_settings_window(self):
+        self.settings_window = SettingsWindow()
+        self.settings_window.signal_save.connect(self.slot_reload_model)
+        self.settings_window.show()
+
     # Close event
     def closeEvent(self, a_event, **kwargs):
         self.savePersistentSettings()
@@ -266,6 +281,9 @@ class WaveformGeneratorWindow(QMainWindow):
         self.output_folder_line_edit.setText(settings.value("output_folder", ""))
         self.pulse_length_spin_box.setValue(float(settings.value("pulse_length_us", 0)))
         self.bandwidth_spin_box.setValue(float(settings.value("bandwidth_mhz", 0)))
+        self._target_mesh_path = settings.value("target_mesh_path", "")
+        self._target_ids_file = settings.value("target_ids_file", "")
+        self._target_names_file = settings.value("target_names_file", "")
 
     def target_selected(self, index):
         mesh = readCombineMeshFile(
@@ -305,6 +323,9 @@ class WaveformGeneratorWindow(QMainWindow):
         settings.setValue("output_folder", self.output_folder_line_edit.text())
         settings.setValue("pulse_length_us", self.pulse_length_spin_box.value())
         settings.setValue("bandwidth_mhz", self.bandwidth_spin_box.value())
+        settings.setValue("target_mesh_path", self._target_mesh_path)
+        settings.setValue("target_ids_file", self._target_ids_file)
+        settings.setValue("target_names_file", self._target_names_file)
 
     def show_message(self, a_message):
         msg_box = QMessageBox(self)
