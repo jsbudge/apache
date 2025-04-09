@@ -33,7 +33,6 @@ if __name__ == '__main__':
     # seed_everything(17, workers=True)
 
     config = get_config('wave_exp', './vae_config.yaml')
-    target_config = get_config('target_exp', './vae_config.yaml')
 
     fft_len = config.fft_len
     nr = 5000  # int((config['perf_params']['vehicle_slant_range_min'] * 2 / c0 - 1 / TAC) * fs)
@@ -45,14 +44,11 @@ if __name__ == '__main__':
     data = WaveDataModule(device=device, **config.dataset_params)
     data.setup()
 
-    print('Setting up embedding model...')
-    embedding = TargetEmbedding.load_from_checkpoint(f'{target_config.weights_path}/{target_config.model_name}.ckpt', config=target_config, strict=False)
-
     print('Initializing wavemodel...')
     if config.warm_start:
-        wave_mdl = GeneratorModel.load_from_checkpoint(f'{config.weights_path}/{config.model_name}.ckpt', config=config, embedding=embedding, strict=False)
+        wave_mdl = GeneratorModel.load_from_checkpoint(f'{config.weights_path}/{config.model_name}.ckpt', config=config, strict=False)
     else:
-        wave_mdl = GeneratorModel(config=config, embedding=embedding)
+        wave_mdl = GeneratorModel(config=config)
     logger = loggers.TensorBoardLogger(config.log_dir,
                                        name=config.model_name, log_graph=True)
     expected_lr = max((config.lr * config.scheduler_gamma ** (config.max_epochs * config.swa_start)), 1e-9)

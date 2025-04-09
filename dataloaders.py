@@ -104,7 +104,7 @@ class TargetDataset(Dataset):
                  var: float = 4.9, seed: int = 7):
         # Load in data
         self.datapath = datapath
-        targets = [o for o in os.listdir(datapath) if 'target_' in o]
+        targets = [o for o in os.listdir(datapath) if 'target_' in o and 'embedding' not in o]
         file_sizes = [0 for _ in targets]
         for d in targets:
             ntarg = int(d[7:])
@@ -126,8 +126,8 @@ class TargetDataset(Dataset):
         self.file_list = [list(valids[np.where(self.file_idx == n)[0]].astype(int)) for n in range(len(file_sizes))]
 
     def __getitem__(self, idx):
-        sample, label = torch.load(f'{self.datapath}/target_{idx[1]}/target_{idx[1]}_{idx[0]}.pt')
-        return sample[:2], label
+        sample, label = torch.load(f'{self.datapath}/target_{idx[1]}/target_{idx[1]}_{idx[0]}.pt', weights_only=True)
+        return sample, label
 
     def __len__(self):
         return self.file_idx.shape[0]

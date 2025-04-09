@@ -70,30 +70,22 @@ class FlatModule(LightningModule):
 class GeneratorModel(FlatModule):
     def __init__(self,
                  config: Config,
-                 embedding: LightningModule | Config,
                  **kwargs,
                  ) -> None:
         super(GeneratorModel, self).__init__(config)
         self.n_ants = config.n_ants
         self.fft_len = config.fft_len
-        self.clutter_latent_size = config.clutter_latent_size
         self.target_latent_size = config.target_latent_size
         self.fs = config.fs
-        self.embedding_concatenation_channels = config.embedding_concatenation_channels
         self.clutter_target_channels = config.clutter_target_channels
         self.flowthrough_channels = config.flowthrough_channels
         self.wave_decoder_channels = config.wave_decoder_channels
-        self.exp_to_ant_channels = config.exp_to_ant_channels
-        self.lstm_layers = 8
+        self.waveform_channels = config.waveform_channels
+        self.target_channels = config.target_channels
         self.automatic_optimization = False
         self.n_fourier_modes = config.n_fourier_modes
         self.bandwidth = config.bandwidth
         self.baseband_fc = (config.fc % self.fs) - self.fs
-
-        self.embedding = embedding
-        self.embedding.eval()
-        for param in self.embedding.parameters():
-            param.requires_grad = False
 
         '''TRANSFORMER'''
         # self.predict_lstm = nn.LSTM(self.target_latent_size, self.target_latent_size, self.lstm_layers, batch_first=True)
@@ -102,53 +94,45 @@ class GeneratorModel(FlatModule):
         # self.predict_decoder.apply(init_weights)
 
         '''CLUTTER AND TARGET COMBINATION LAYERS'''
-        self.clutter_target_combine = nn.Sequential(
-            TFNO1d(n_modes_height=self.n_fourier_modes, in_channels=2, out_channels=self.clutter_target_channels,
-                   hidden_channels=self.clutter_target_channels),
-            LKA1d(self.clutter_target_channels, kernel_sizes=(255, 129), dilation=12, activation='silu'),
-            nn.LayerNorm(self.target_latent_size),
-            LKA1d(self.clutter_target_channels, kernel_sizes=(255, 255), dilation=6, activation='silu'),
-            nn.LayerNorm(self.target_latent_size),
-            TFNO1d(n_modes_height=self.n_fourier_modes, in_channels=self.clutter_target_channels,
-                   out_channels=self.flowthrough_channels, hidden_channels=self.clutter_target_channels),
+        self.clutter_encoder = nn.Sequential(
+            nn.Linear(self.fft_len, self.target_latent_size),
+            nn.SiLU(),
         )
-        '''WAVEFORM CREATION LAYERS'''
-        self.expand_to_ants = nn.Sequential(
-            TFNO1d(n_modes_height=self.n_fourier_modes, in_channels=self.flowthrough_channels, out_channels=self.exp_to_ant_channels,
-                   hidden_channels=self.exp_to_ant_channels),
-            LKA1d(self.exp_to_ant_channels, kernel_sizes=(513, 129), dilation=12, activation='silu'),
-            nn.LayerNorm(self.target_latent_size),
-            LKA1d(self.exp_to_ant_channels, kernel_sizes=(513, 129), dilation=12, activation='silu'),
-            nn.LayerNorm(self.target_latent_size),
-            TFNO1d(n_modes_height=self.n_fourier_modes, in_channels=self.exp_to_ant_channels,
-                   out_channels=self.flowthrough_channels, hidden_channels=self.exp_to_ant_channels),
+        self.clutter_squash = nn.Sequential(
+            nn.Linear(2, 1),
+            nn.SiLU(),
         )
-        # self.expand_to_ants.apply(init_weights)
 
-        '''DECODER LAYERS'''
-        self.decoder_layers = nn.ModuleList()
-        for _ in range(config.n_decoder_layers):
-            self.decoder_layers.append(nn.Sequential(
+        self.clutter_target_init = nn.Sequential(
+            TFNO1d(n_modes_height=self.n_fourier_modes, in_channels=2, out_channels=self.flowthrough_channels,
+                   hidden_channels=self.clutter_target_channels, non_linearity=nn.SiLU()),
+            LKA1d(self.clutter_target_channels, kernel_sizes=(255, 129), dilation=12, activation='silu'),
+        )
+
+        '''SKIP LAYERS'''
+        self.waveform_layers = nn.ModuleList()
+        self.target_layers = nn.ModuleList()
+        for _ in range(config.n_skip_layers):
+            self.waveform_layers.append(nn.Sequential(
             TFNO1d(n_modes_height=self.n_fourier_modes, in_channels=self.flowthrough_channels + 2,
-                   out_channels=self.wave_decoder_channels,
-                   hidden_channels=self.wave_decoder_channels),
-            LKA1d(self.wave_decoder_channels, kernel_sizes=(513, 129), dilation=12, activation='silu'),
-            nn.LayerNorm(self.target_latent_size),
-            LKA1d(self.wave_decoder_channels, kernel_sizes=(513, 129), dilation=12, activation='silu'),
-            nn.LayerNorm(self.target_latent_size),
-            TFNO1d(n_modes_height=self.n_fourier_modes, in_channels=self.wave_decoder_channels,
-                   out_channels=self.flowthrough_channels, hidden_channels=self.wave_decoder_channels),
-        ))
+                   out_channels=self.waveform_channels, non_linearity=nn.SiLU(),
+                   hidden_channels=self.waveform_channels),
+            TFNO1d(n_modes_height=self.n_fourier_modes, in_channels=self.waveform_channels,
+                   out_channels=self.flowthrough_channels, non_linearity=nn.SiLU(), hidden_channels=self.waveform_channels),
+            ))
+            self.target_layers.append(nn.Sequential(
+                TFNO1d(n_modes_height=self.n_fourier_modes, in_channels=self.flowthrough_channels + 1,
+                       out_channels=self.target_channels, non_linearity=nn.SiLU(),
+                       hidden_channels=self.target_channels),
+                TFNO1d(n_modes_height=self.n_fourier_modes, in_channels=self.target_channels, non_linearity=nn.SiLU(),
+                       out_channels=self.flowthrough_channels, hidden_channels=self.target_channels),
+            ))
 
         self.wave_decoder = nn.Sequential(
             TFNO1d(n_modes_height=self.n_fourier_modes, in_channels=self.flowthrough_channels + 2,
-                   out_channels=self.wave_decoder_channels,
+                   out_channels=self.wave_decoder_channels, non_linearity=nn.SiLU(),
                    hidden_channels=self.wave_decoder_channels),
-            LKA1d(self.wave_decoder_channels, kernel_sizes=(513, 129), dilation=12, activation='silu'),
-            nn.LayerNorm(self.target_latent_size),
-            LKA1d(self.wave_decoder_channels, kernel_sizes=(513, 129), dilation=12, activation='silu'),
-            nn.LayerNorm(self.target_latent_size),
-            TFNO1d(n_modes_height=self.n_fourier_modes, in_channels=self.wave_decoder_channels,
+            TFNO1d(n_modes_height=self.n_fourier_modes, in_channels=self.wave_decoder_channels, non_linearity=nn.SiLU(),
                    out_channels=self.n_ants * 2, hidden_channels=self.wave_decoder_channels),
             nn.Linear(self.target_latent_size, self.fft_len),
         )
@@ -171,8 +155,7 @@ class GeneratorModel(FlatModule):
 
         _xavier_init(self.wave_decoder)
         _xavier_init(self.predict_decoder)
-        _xavier_init(self.expand_to_ants)
-        _xavier_init(self.clutter_target_combine)
+        _xavier_init(self.clutter_target_init)
         _xavier_init(self.pinfo)
         _xavier_init(self.bandwidth_info)
 
@@ -184,21 +167,23 @@ class GeneratorModel(FlatModule):
     def forward(self, clutter, target, pulse_length, bandwidth) -> torch.tensor:
 
         # Run clutter through the encoder
-        x = torch.cat([self.embedding(clutter[:, n, ...]).unsqueeze(1) for n in range(clutter.shape[1])], dim=1)
+        x = self.clutter_encoder(clutter)
+        x = self.clutter_squash(x.swapaxes(-2, -1))
+        x = x.squeeze(-1)
 
         # Predict the next clutter step using transformer
         x = self.predict_decoder(x[:, :-1], x[:, 1:])[:, -1, ...].unsqueeze(1)
 
         # Combine clutter prediction with target information
-        x = self.clutter_target_combine(torch.cat([x, target.unsqueeze(1)], dim=1))
+        x = self.clutter_target_init(torch.cat([x, target.unsqueeze(1)], dim=1))
 
         bw_info = self.bandwidth_info(bandwidth.float().view(-1, 1)).unsqueeze(1)
         pl_info = self.pinfo(pulse_length.float().view(-1, 1)).unsqueeze(1)
 
         # Run through LKA layers to create a waveform according to spec
-        x = self.expand_to_ants(x)
-        for dec_layer in self.decoder_layers:
-            x = dec_layer(torch.cat([x, bw_info, pl_info], dim=1))
+        for wl, tl in zip(self.waveform_layers, self.target_layers):
+            x = wl(torch.cat([x, bw_info, pl_info], dim=1))
+            x = tl(torch.cat([x, target.unsqueeze(1)], dim=1))
         x = self.wave_decoder(torch.cat([x, bw_info, pl_info], dim=1))
         x = self.plength(x, pulse_length) * self.bw_generate(bandwidth)
         '''bump_range = torch.linspace(-1, 1, self.fft_len, device=self.device)[None, :] / (bandwidth / 2)[:, None]

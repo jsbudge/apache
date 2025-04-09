@@ -64,7 +64,9 @@ class TargetEmbedding(FlatModule):
             self.encoder_conv.append(nn.Sequential(
                 nn.Conv2d(ch_lev_enc, ch_lev_enc, 3, 1, 1),
                 nn.SiLU(),
-                # TFNO2d(n_modes_height=4, n_modes_width=2, in_channels=ch_lev_enc, out_channels=ch_lev_enc, hidden_channels=ch_lev_enc),
+                nn.Conv2d(ch_lev_enc, ch_lev_enc, 3, 1, 1),
+                nn.SiLU(),
+                TFNO2d(n_modes_height=4, n_modes_width=2, in_channels=ch_lev_enc, out_channels=ch_lev_enc, hidden_channels=ch_lev_enc),
             ))
             prev_lev_enc = ch_lev_enc + 0
 
@@ -80,7 +82,7 @@ class TargetEmbedding(FlatModule):
             nn.Linear(self.latent_dim, self.latent_dim),
         )
 
-        self.decoder = DecoderHead(config.latent_dim, config.channel_sz, config.in_channels, out_sz,
+        self.decoder = DecoderHead(config.latent_dim, config.channel_sz, self.in_channels, out_sz,
                                    (config.angle_samples, config.fft_len))
 
         _xavier_init(self)
@@ -180,7 +182,7 @@ class TargetEmbedding(FlatModule):
         )'''
 
         # COMBINATION LOSS
-        cll = nll + rec_loss
+        cll = nll + rec_loss * .01
 
         # Logging ranking metrics
         self.log_dict({f'{kind}_total_loss': cll, f'{kind}_rec_loss': rec_loss, f'{kind}_nll': nll,

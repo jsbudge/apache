@@ -82,7 +82,10 @@ class WaveformGeneratorWindow(QMainWindow):
         self.target_files = [
             Path(f'{self._target_mesh_path}/{t}') for t in target_ids]
         # Load mean tensors
-        self.patterns = torch.load('./data/target_tensors/target_embedding_means.pt')
+        try:
+            self.patterns = torch.load('./data/target_tensors/target_embedding_means.pt')
+        except Exception:
+            self.patterns = []
         grid_layout.addWidget(QLabel("Target:"), 0, 0)
         self.target_combo_box = QComboBox(self)
         grid_layout.addWidget(self.target_combo_box, 0, 1, 1, 2)
@@ -211,6 +214,7 @@ class WaveformGeneratorWindow(QMainWindow):
         container.setLayout(main_layout)
         self.setCentralWidget(container)
 
+        # Set the model viewer to update every 20 milliseconds
         timer = QTimer(self)
         timer.setInterval(20)  # period, in milliseconds
         timer.timeout.connect(self.mview.updateGL)
@@ -347,16 +351,11 @@ class WaveformGeneratorWindow(QMainWindow):
         self.progress_bar.setValue(value)
 
     def slot_reload_model(self):
-        target_config = get_config('target_exp', './vae_config.yaml')
-        self.progress_bar.setText('Loading embedding model...')
-        embedding = TargetEmbedding.load_from_checkpoint(
-            f'{target_config.weights_path}/{target_config.model_name}.ckpt',
-            config=target_config, strict=False)
         self.progress_bar.setText('Loading wavemodel configuration files...')
         model_config = get_config('wave_exp', './vae_config.yaml')
         self.progress_bar.setText('Loading wavemodel...')
         self.wave_mdl = GeneratorModel.load_from_checkpoint(f'{model_config.weights_path}/{model_config.model_name}.ckpt',
-                                                       config=model_config, embedding=embedding, strict=False)
+                                                       config=model_config, strict=False)
         self.wave_mdl.eval()
         self.progress_bar.setText('Wavemodel loaded.')
 
@@ -492,16 +491,16 @@ if __name__ == "__main__":
     splash.show()
     splash.showMessage('Loading model configuration files...')
     target_config = get_config('target_exp', './vae_config.yaml')
-    splash.showMessage('Loading embedding model...')
-    embedding = TargetEmbedding.load_from_checkpoint(
-        f'{target_config.weights_path}/{target_config.model_name}.ckpt',
-        config=target_config, strict=False)
     splash.showMessage('Loading wavemodel configuration files...')
     model_config = get_config('wave_exp', './vae_config.yaml')
     splash.showMessage('Loading wavemodel...')
-    wave_mdl = GeneratorModel.load_from_checkpoint(f'{model_config.weights_path}/{model_config.model_name}.ckpt',
-                                                        config=model_config, embedding=embedding, strict=False)
-    wave_mdl.eval()
+    try:
+        wave_mdl = GeneratorModel.load_from_checkpoint(f'{model_config.weights_path}/{model_config.model_name}.ckpt',
+                                                            config=model_config, strict=False)
+        wave_mdl.eval()
+    except Exception:
+        print('Wavemodel not loaded.')
+        wave_mdl = None
     splash.showMessage('Done.')
     splash.showMessage('Building interface...')
     window = WaveformGeneratorWindow(wave_mdl)

@@ -86,15 +86,10 @@ if __name__ == '__main__':
     sim_settings = settings['simulation_params']
     grid_origin = settings['origin']
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-
-    print('Setting up embedding model...')
-    target_config = get_config('target_exp', './vae_config.yaml')
-    embedding = TargetEmbedding.load_from_checkpoint(f'{target_config.weights_path}/{target_config.model_name}.ckpt',
-                                                     config=target_config, strict=False)
     print('Setting up wavemodel...')
     model_config = get_config('wave_exp', './vae_config.yaml')
     wave_mdl = GeneratorModel.load_from_checkpoint(f'{model_config.weights_path}/{model_config.model_name}.ckpt',
-                                                   config=model_config, embedding=embedding, strict=False)
+                                                   config=model_config, strict=False)
     # wave_mdl.to(device)
     print('Wavemodel loaded.')
     patterns = torch.tensor(torch.load('/home/jeff/repo/apache/data/target_tensors/target_embedding_means.pt')[2],
@@ -241,7 +236,7 @@ if __name__ == '__main__':
 
     # Locate the extrema to speed up the optimization
     flight_path = rp.txpos(sdr_f[0].pulse_time)
-    sp = scene.bounding_box()
+    sp = scene.bounding_box
     pmax = sp.max(axis=0)
     vecs = np.array([pmax[0] - flight_path[:, 0], pmax[1] - flight_path[:, 1],
                      pmax[2] - flight_path[:, 2]]).T

@@ -78,7 +78,7 @@ if __name__ == '__main__':
             samples.append(sam[0])
             embeddings.append(model.encode(sam[0].to(model.device)).cpu().data.numpy())
             file_idx.append(sam[1])
-            if i >= 49:
+            if i >= batch_sz - 1:
                 break
         embeddings = np.concatenate(embeddings, axis=0)
         file_idx = np.concatenate(file_idx)
@@ -89,7 +89,7 @@ if __name__ == '__main__':
         model.to('cpu')
 
         plt.figure()
-        plt.plot(embeddings[::50].T)
+        plt.plot(embeddings[::batch_sz].T)
 
         plt.show()
 
