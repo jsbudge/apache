@@ -2,11 +2,14 @@ import torch
 from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import EarlyStopping, StochasticWeightAveraging
 import yaml
+
+from config import get_config
 from dataloaders import EncoderModule
 from models import init_weights, Encoder
 import optuna
 import sys
 
+from target_train import setupTrainer
 
 print(f'Cuda is available? {torch.cuda.is_available()}')
 try:
@@ -30,39 +33,23 @@ with open('./vae_config.yaml') as y:
 
 
 def objective(trial: optuna.Trial):
+    target_config = get_config('target_exp', './vae_config.yaml')
 
-    batch_sz = trial.suggest_categorical('batch_size', [2, 8, 16])
     weight_decay = trial.suggest_float('weight_decay', 0.0, .99, step=.01)
     lr = trial.suggest_categorical('lr', [.00000001, .001, .0001, .01, .00001, .000001, .0000001])
-    swa_start = trial.suggest_float('swa_start', .1, .9, step=.1)
-    scheduler_gamma = trial.suggest_float('scheduler_gamma', .1, .99, step=.01)
-    beta0 = trial.suggest_float('beta0', .01, .99, step=.01)
-    beta1 = trial.suggest_float('beta1', .01, .99, step=.01)
-    step_size = trial.suggest_int('step_size', 1, 5, step=1)
+    scheduler_gamma = trial.suggest_float('scheduler_gamma', .1, .99, step=.05)
+    beta0 = trial.suggest_float('beta0', .1, .99, step=.05)
+    beta1 = trial.suggest_float('beta1', .1, .99, step=.05)
+    latent_dim = trial.suggest_int('latent_dim', 10, 2048, 32)
 
-    param_dict['exp_params']['weight_decay'] = weight_decay
-    param_dict['exp_params']['LR'] = lr
-    param_dict['exp_params']['swa_start'] = swa_start
-    param_dict['exp_params']['scheduler_gamma'] = scheduler_gamma
-    param_dict['exp_params']['betas'] = [beta0, beta1]
-    param_dict['exp_params']['step_size'] = step_size
+    target_config.weight_decay = weight_decay
+    target_config.lr = lr
+    target_config.scheduler_gamma = scheduler_gamma
+    target_config.betas = [beta0, beta1]
+    target_config.latent_dim = latent_dim
 
-    param_dict['exp_params']['dataset_params']['train_batch_size'] = batch_sz
-    param_dict['exp_params']['dataset_params']['val_batch_size'] = batch_sz
-
-    data = EncoderModule(fft_len=param_dict['settings']['fft_len'], **param_dict['exp_params']["dataset_params"])
-    data.setup()
-    param_dict['exp_params']['is_tuning'] = True
-
-    expected_lr = max((param_dict['exp_params']['LR'] *
-                       param_dict['exp_params']['scheduler_gamma'] ** (param_dict['exp_params']['max_epochs'] *
-                                                         param_dict['exp_params']['swa_start'])), 1e-9)
-    model = Encoder(**param_dict['model_params'], fft_len=param_dict['settings']['fft_len'], params=param_dict['exp_params'])
-    model.apply(init_weights)
-    trainer = Trainer(logger=False, max_epochs=5, enable_checkpointing=False,
-                      strategy='ddp', deterministic=True, devices=[0], callbacks=
-                      [StochasticWeightAveraging(swa_lrs=expected_lr,
-                                                 swa_epoch_start=param_dict['exp_params']['swa_start'])])
+    target_config.max_epochs = 5
+    trainer, model, data = setupTrainer(pref_device, target_config, do_logs=False, trainer_args={'enable_checkpointing': False})
     trainer.fit(model, datamodule=data)
 
     return trainer.callback_metrics['val_loss'].item()

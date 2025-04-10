@@ -1,5 +1,7 @@
 import torch
 from pytorch_lightning import Trainer, loggers, seed_everything
+from simulib.simulation_functions import db
+
 from config import get_config
 from dataloaders import TargetEncoderModule
 from models import TargetEmbedding, PulseClassifier
@@ -7,6 +9,29 @@ from sklearn.decomposition import KernelPCA
 import matplotlib.pyplot as plt
 import numpy as np
 from tqdm import tqdm
+
+
+def setupTrainer(a_gpu_num, tconf, do_logs=True, **trainer_args):
+
+
+    enc_data_module = TargetEncoderModule(**tconf.dataset_params)
+    enc_data_module.setup()
+
+    # Get the model, experiment, logger set up
+    if tconf.warm_start:
+        mdl = TargetEmbedding.load_from_checkpoint(
+            f'{tconf.weights_path}/{tconf.model_name}.ckpt', strict=False)
+    else:
+        mdl = TargetEmbedding(tconf)
+    if do_logs:
+        log_mod = loggers.TensorBoardLogger(tconf.log_dir, name=tconf.model_name)
+    else:
+        log_mod = None
+    ret_train = Trainer(logger=log_mod, max_epochs=tconf.max_epochs,
+                        default_root_dir=tconf.weights_path,
+                        log_every_n_steps=tconf.log_epoch, detect_anomaly=False, devices=[a_gpu_num], **trainer_args)
+    return ret_train, mdl, enc_data_module
+
 
 
 if __name__ == '__main__':
@@ -18,22 +43,10 @@ if __name__ == '__main__':
 
     target_config = get_config('target_exp', './vae_config.yaml')
     classifier_config = get_config('pulse_exp', './vae_config.yaml')
-
-    data = TargetEncoderModule(**target_config.dataset_params)
-    data.setup()
+    trainer, model, data = setupTrainer(gpu_num, target_config)
 
     # Get the model, experiment, logger set up
     if target_config.is_training:
-        if target_config.warm_start:
-            model = TargetEmbedding.load_from_checkpoint(f'{target_config.weights_path}/{target_config.model_name}.ckpt', strict=False)
-        else:
-            model = TargetEmbedding(target_config)
-        logger = loggers.TensorBoardLogger(target_config.log_dir, name=target_config.model_name)
-        expected_lr = max((target_config.lr * target_config.scheduler_gamma ** (target_config.max_epochs *
-                                                                    target_config.swa_start)), 1e-9)
-        trainer = Trainer(logger=logger, max_epochs=target_config.max_epochs, default_root_dir=target_config.weights_path,
-                          log_every_n_steps=target_config.log_epoch, detect_anomaly=False, devices=[gpu_num])
-
         print("======= Training =======")
         try:
             trainer.fit(model, datamodule=data)
@@ -45,8 +58,6 @@ if __name__ == '__main__':
                 exit(0)
         if target_config.save_model:
             trainer.save_checkpoint(f'{target_config.weights_path}/{target_config.model_name}.ckpt')
-    else:
-        model = TargetEmbedding.load_from_checkpoint(f'{target_config.weights_path}/{target_config.model_name}.ckpt', config=target_config, strict=False)
 
     if trainer.is_global_zero:
         import matplotlib as mplib
@@ -90,6 +101,15 @@ if __name__ == '__main__':
 
         plt.figure()
         plt.plot(embeddings[::batch_sz].T)
+
+        example = torch.load('/home/jeff/repo/apache/data/target_tensors/target_2/target_2_24.pt', weights_only=True)
+        example_data = example[0].cpu().data.numpy()
+        plt.figure()
+        plt.imshow(db(example_data[0] + 1j * example_data[1]))
+        plt.axis('tight')
+        plt.clim(-10, 10)
+        plt.xlabel('Range Bin')
+        plt.yticks([])
 
         plt.show()
 

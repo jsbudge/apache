@@ -42,12 +42,14 @@ class TargetEmbedding(FlatModule):
         self.channel_sz = config.channel_sz
         self.in_channels = config.range_samples * 2
         self.automatic_optimization = False
-        self.temperature = 1.0
+        self.temperature = config.temperature
         self.mode = training_mode
 
         # Parameters for normalizing data correctly
-        levels = 2
+        levels = config.levels
         out_sz = (config.angle_samples // (2 ** levels), config.fft_len // (2 ** levels))
+
+        nonlinearity = nn.SiLU() if config.nonlinearity == 'silu' else nn.GELU() if config.nonlinearity == 'gelu' else nn.SELU()
 
         # Encoder
         self.encoder_inflate = nn.Conv2d(self.in_channels, self.channel_sz, 1, 1, 0)
@@ -59,14 +61,12 @@ class TargetEmbedding(FlatModule):
             layer_sz = (config.angle_samples // (2 ** (l + 1)), config.fft_len // (2 ** (l + 1)))
             self.encoder_reduce.append(nn.Sequential(
                 nn.Conv2d(prev_lev_enc, ch_lev_enc, 4, 2, 1),
-                nn.SiLU(),
+                nonlinearity,
             ))
             self.encoder_conv.append(nn.Sequential(
-                nn.Conv2d(ch_lev_enc, ch_lev_enc, 3, 1, 1),
-                nn.SiLU(),
-                nn.Conv2d(ch_lev_enc, ch_lev_enc, 3, 1, 1),
-                nn.SiLU(),
-                TFNO2d(n_modes_height=4, n_modes_width=2, in_channels=ch_lev_enc, out_channels=ch_lev_enc, hidden_channels=ch_lev_enc),
+                LKA(ch_lev_enc, (5, 3), dilation=12, activation=config.nonlinearity),
+                LKA(ch_lev_enc, (5, 5), dilation=6, activation=config.nonlinearity),
+                TFNO2d(n_modes_height=16, n_modes_width=16, in_channels=ch_lev_enc, out_channels=ch_lev_enc, hidden_channels=ch_lev_enc),
             ))
             prev_lev_enc = ch_lev_enc + 0
 
@@ -74,16 +74,16 @@ class TargetEmbedding(FlatModule):
         self.encoder_flatten = nn.Sequential(
             TFNO2d(n_modes_height=16, n_modes_width=16, in_channels=prev_lev_dec, out_channels=1, hidden_channels=prev_lev_dec),
             nn.Conv2d(1, 1, (out_sz[0], 1), 1, 0),
-            nn.SiLU(),
+            nonlinearity,
         )
         self.fc_z = nn.Sequential(
             nn.Linear(out_sz[1], self.latent_dim),
-            nn.SiLU(),
+            nonlinearity,
             nn.Linear(self.latent_dim, self.latent_dim),
         )
 
         self.decoder = DecoderHead(config.latent_dim, config.channel_sz, self.in_channels, out_sz,
-                                   (config.angle_samples, config.fft_len))
+                                   (config.angle_samples, config.fft_len), nonlinearity=nonlinearity, levels=levels)
 
         _xavier_init(self)
 
@@ -196,7 +196,8 @@ class TargetEmbedding(FlatModule):
 
 class DecoderHead(LightningModule):
 
-    def __init__(self, latent_dim: int, channel_sz: int, in_channels: int, out_sz: tuple, in_sz: tuple, *args: Any, **kwargs: Any):
+    def __init__(self, latent_dim: int, channel_sz: int, in_channels: int, out_sz: tuple, in_sz: tuple,
+                 nonlinearity: nn.Module, levels: int, *args: Any, **kwargs: Any):
         super().__init__(*args, **kwargs)
         self.latent_dim = latent_dim
         self.channel_sz = channel_sz
@@ -208,20 +209,21 @@ class DecoderHead(LightningModule):
 
         self.decoder_inflate = nn.Sequential(
             nn.ConvTranspose2d(1, inter_channels, (out_sz[0], 1), 1, 0),
-            nn.SiLU(),
+            nonlinearity,
         )
         self.z_fc = nn.Sequential(
             nn.Linear(self.latent_dim, self.latent_dim),
-            nn.SiLU(),
+            nonlinearity,
             nn.Linear(self.latent_dim, out_sz[1]),
-            nn.SiLU(),
+            nonlinearity,
         )
 
         self.dec_layers = nn.ModuleList()
-        for _ in range(1):
+        for _ in range(levels - 1):
             self.dec_layers.append(nn.Sequential(
                 nn.ConvTranspose2d(inter_channels, inter_channels, 4, 2, 1),
-                nn.SiLU(),
+                nonlinearity,
+                LKATranspose(inter_channels, (5, 5), dilation=6, activation='silu'),
             ))
         self.dec_layers.append(nn.Sequential(
             nn.ConvTranspose2d(inter_channels, in_channels, 4, 2, 1),

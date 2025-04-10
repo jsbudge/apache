@@ -18,7 +18,7 @@ mplib.use('TkAgg')
 import matplotlib.pyplot as plt
 from simulib.simulation_functions import db
 
-from utils import scale_normalize
+from utils import scale_normalize, get_radar_coeff
 
 pio.renderers.default = 'browser'
 
@@ -82,10 +82,11 @@ def genProfileFromMesh(a_obj_path, niters, a_mf_chirp, nbox_levels, a_points_to_
         for k, s in enumerate(standoff):
             m_near_range_s, poses, m_pan, m_tilt = calcPosBoresight(s)
             m_rxposes = poses + 0.0
-            m_single_rp = getRangeProfileFromScene(m_scene, m_sample_points, [poses.astype(_float)], [m_rxposes.astype(_float)],
-                                                 [m_pan.astype(_float)], [m_tilt.astype(_float)], radar_coeff,
-                                                 25 * DTR, 25 * DTR, nsam, cfig_generate['fc'], m_near_range_s,
-                                                 num_bounces=num_bounces, streams=a_streams)
+            m_single_rp = getRangeProfileFromScene(m_scene, m_sample_points, [poses.astype(_float)],
+                                                   [m_rxposes.astype(_float)], [m_pan.astype(_float)],
+                                                   [m_tilt.astype(_float)], radar_coeff, 25 * DTR, 25 * DTR, nsam,
+                                                   cfig_generate['fc'], m_near_range_s, fs=fs, num_bounces=num_bounces,
+                                                   streams=a_streams)
             msrp = m_single_rp[0] # + (np.random.randn(*m_single_rp[0].shape) + 1j * np.random.randn(*m_single_rp[0].shape)) * abs(m_single_rp[0][m_single_rp[0] > 0.]).mean() / 10
             block[k] = np.fft.fft(msrp, fft_len, axis=1) * a_mf_chirp[chirp_idx]
         yield msrp, block, m_i
@@ -121,39 +122,13 @@ def calcPosBoresight(a_standoff, a_pan=None, a_tilt=None):
                                   np.linspace(np.pi / 2 - .1, -np.pi / 2 + .1, n_el_samples))
         a_pan = m_pans.flatten()
         a_tilt = m_tilts.flatten()
-    boresights = -azelToVec(a_pan, a_tilt).T
+    boresights = azelToVec(a_pan, a_tilt).T
     poses = -boresights * a_standoff
     m_near_range_s = (a_standoff - 100.) / c0
     return m_near_range_s, poses, a_pan, a_tilt
 
 
-if __name__ == '__main__':
-    cuda.select_device(1)
-
-    rx_gain = 45  # dB
-    tx_gain = 45  # dB
-    rec_gain = 140  # dB
-    ant_transmit_power = 100  # watts
-    points_to_sample = 2**16
-    nsam = 6000
-    nstreams = 1
-
-    with open('./vae_config.yaml', 'r') as file:
-        try:
-            config = yaml.safe_load(file)
-        except yaml.YAMLError as exc:
-            print(exc)
-    cfig_settings = config['settings']
-    cfig_generate = config['generate_data_settings']
-
-    standoff = [config['apache_params']['vehicle_slant_range_min'], config['apache_params']['vehicle_slant_range_max']]
-    n_az_samples = cfig_generate['n_az_samples']
-    n_el_samples = cfig_generate['n_el_samples']
-    wavenumber = 2 * np.pi * cfig_generate['fc'] / c0
-
-    save_path = cfig_generate['local_path'] if (
-        config)['generate_data_settings']['use_local_storage'] else config['dataset_params']['data_path']
-
+def loadClutterFiles():
     with open('clutter_files.txt', 'r') as f:
         clt = [c.strip() for c in f.readlines()]
 
@@ -177,6 +152,38 @@ if __name__ == '__main__':
         else:
             print(f'{clut} does not meet the requirements of the clutter parser.')
             continue
+    return clutter_files
+
+
+if __name__ == '__main__':
+    cuda.select_device(0)
+
+    rx_gain = 40  # dB
+    tx_gain = 40  # dB
+    rec_gain = 100  # dB
+    ant_transmit_power = 100  # watts
+    points_to_sample = 2**16
+    nsam = 8192
+    nstreams = 1
+
+    with open('./vae_config.yaml', 'r') as file:
+        try:
+            config = yaml.safe_load(file)
+        except yaml.YAMLError as exc:
+            print(exc)
+    cfig_settings = config['settings']
+    cfig_generate = config['generate_data_settings']
+
+    standoff = [config['apache_params']['vehicle_slant_range_min'], config['apache_params']['vehicle_slant_range_max']]
+    n_az_samples = cfig_generate['n_az_samples']
+    n_el_samples = cfig_generate['n_el_samples']
+    wavenumber = 2 * np.pi * cfig_generate['fc'] / c0
+
+    save_path = cfig_generate['local_path'] if (
+        config)['generate_data_settings']['use_local_storage'] else config['dataset_params']['data_path']
+
+
+    clutter_files = loadClutterFiles()
 
     with open('./target_files.yaml', 'r') as file:
         try:
@@ -192,9 +199,7 @@ if __name__ == '__main__':
     fft_len = cfig_settings['fft_len']
 
     # This is all the constants in the radar equation for this simulation
-    radar_coeff = (
-                c0 ** 2 / cfig_generate['fc'] ** 2 * ant_transmit_power * 10 ** ((rx_gain + 2.15) / 10) * 10 ** ((tx_gain + 2.15) / 10) *
-                10 ** ((rec_gain + 2.15) / 10) / (4 * np.pi) ** 3)
+    radar_coeff = get_radar_coeff(cfig_generate['fc'], ant_transmit_power, rx_gain, tx_gain, rec_gain)
 
     # Generate chirps with random bandwidths, pulse lengths
     bws = 150e6 + np.random.rand(10) * 1e9
@@ -245,7 +250,8 @@ if __name__ == '__main__':
             # Generate a Nrange_samples x Nangles x fft_len block for the autoencoder, iterated niters times to get different
             # bandwidths and pulse lengths.
             if scaling > 0:
-                gen_iter = iter(genProfileFromMesh(obj_path, iterations, mf_chirp, cfig_generate['nbox_levels'], points_to_sample, scaling, streams, cfig_generate['num_bounces']))
+                gen_iter = iter(genProfileFromMesh(obj_path, iterations, mf_chirp, cfig_generate['nbox_levels'],
+                                                   points_to_sample, scaling, streams, cfig_generate['num_bounces']))
             else:
                 gen_iter = iter(genProfileFromVCS(obj_path, iterations, mf_chirp))
 
@@ -279,6 +285,9 @@ if __name__ == '__main__':
             print(f'Saving clutter spec for target {tobj}')
             if scaling > 0:
                 mesh = readCombineMeshFile(obj_path, points_to_sample, scale=1 / scaling)
+            else:
+                # TODO: Add in the VCS file clutter
+                continue
             for clut in clutter_files:
                 # Load the sar file that the clutter came from
                 sdr_ch = load(clut, use_jump_correction=False)
@@ -312,6 +321,11 @@ if __name__ == '__main__':
                     # We don't know where the ground is, let's just project it into the abyss
                     mpos = flight_path.mean(axis=0) + bore * ranges.mean()
 
+                # Get pulse data and modify accordingly
+                pulse = np.fft.fft(sdr_ch[0].cal_chirp, fft_len)
+                mfilt = sdr_ch.genMatchedFilter(0, fft_len=fft_len)
+                valids = mfilt != 0
+
                 # Locate the extrema to speed up the optimization
                 scene = Scene()
                 mesh = mesh.translate(mpos, relative=False)
@@ -323,11 +337,6 @@ if __name__ == '__main__':
                 max_pts = sdr_ch[0].frame_num[abs(pt_az - heading) < rp.az_half_bw]
                 pulse_lims = [min(max_pts), max(max_pts)]
                 pulse_lims[1] = min(pulse_lims[1], pulse_lims[0] + cfig_settings['cpi_len'] * cfig_generate['iterations'])
-
-                # Get pulse data and modify accordingly
-                pulse = np.fft.fft(sdr_ch[0].cal_chirp, fft_len)
-                mfilt = sdr_ch.genMatchedFilter(0, fft_len=fft_len)
-                valids = mfilt != 0
                 sample_points = scene.sample(points_to_sample, vecs[np.linspace(0, vecs.shape[0] - 1, min(128, vecs.shape[0])).astype(int)])
 
                 for frame in list(zip(*(iter(range(pulse_lims[0], pulse_lims[1] - cfig_settings['cpi_len'], cfig_settings['cpi_len'])),) * (nstreams + 1))):
@@ -341,13 +350,10 @@ if __name__ == '__main__':
                              range(nstreams)]
                     sdr_data = [sdr_ch.getPulses(sdr_ch[0].frame_num[frame[n]:frame[n] + cfig_settings['cpi_len']], 0)[1] for n in range(nstreams)]
                     if scaling > 0:
-                        single_rp = getRangeProfileFromScene(scene, sample_points, txposes, rxposes,
-                                                                                      pans,
-                                                                                      tilts,
-                                                                                      radar_coeff,
-                                                                                      rp.az_half_bw, rp.el_half_bw,
-                                                                                      downsample_nsam, cfig_generate['fc'], near_range_s, fs=downsample_fs,
-                                                                                      num_bounces=cfig_generate['num_bounces'], streams=streams)
+                        single_rp = getRangeProfileFromScene(scene, sample_points, txposes, rxposes, pans, tilts,
+                                                             radar_coeff, rp.az_half_bw, rp.el_half_bw, downsample_nsam,
+                                                             cfig_generate['fc'], near_range_s, fs=downsample_fs,
+                                                             num_bounces=cfig_generate['num_bounces'], streams=streams)
                         tpsds = [np.fft.fft(srp, fft_len, axis=1) * mfilt * pulse for srp in single_rp]
                     else:
                         # Load in the VCS file using the format reader

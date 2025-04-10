@@ -48,6 +48,13 @@ def scale_normalize(data):
     return ndata
 
 
+def get_radar_coeff(fc, ant_transmit_power, rx_gain, tx_gain, rec_gain):
+    return (
+            c0 ** 2 / fc ** 2 * ant_transmit_power * 10 ** ((rx_gain + 2.15) / 10) * 10 ** (
+                (tx_gain + 2.15) / 10) *
+            10 ** ((rec_gain + 2.15) / 10) / (4 * np.pi) ** 3)
+
+
 def get_pslr(a):
     """
     Gets Peak Sidelobe Ratio for a signal.

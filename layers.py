@@ -282,16 +282,17 @@ class Block1d(nn.Module):
 
 class LKA(nn.Module):
 
-    def __init__(self, channel_sz, kernel_sizes=(3, 3), dilation=6, *args: Any, **kwargs: Any):
+    def __init__(self, channel_sz, kernel_sizes=(3, 3), dilation=6, activation='gelu', *args: Any, **kwargs: Any):
         super().__init__(*args, **kwargs)
         padding = int(dilation * (kernel_sizes[1] - 1) // 2)
+        nonlinearity = nn.GELU() if activation == 'gelu' else nn.SiLU()
         self.kernel = nn.Sequential(
             nn.Conv2d(channel_sz, channel_sz, kernel_sizes[0], 1, int(kernel_sizes[0] // 2)),
-            nn.GELU(),
+            nonlinearity,
             nn.Conv2d(channel_sz, channel_sz, kernel_sizes[1], 1, padding, dilation=dilation),
-            nn.GELU(),
+            nonlinearity,
             nn.Conv2d(channel_sz, channel_sz, 1, 1, 0),
-            nn.GELU(),
+            nonlinearity,
         )
 
     def forward(self, x):
@@ -300,16 +301,17 @@ class LKA(nn.Module):
 
 class LKATranspose(nn.Module):
 
-    def __init__(self, channel_sz, kernel_sizes=(3, 3), dilation=6, *args: Any, **kwargs: Any):
+    def __init__(self, channel_sz, kernel_sizes=(3, 3), dilation=6, activation='gelu', *args: Any, **kwargs: Any):
         super().__init__(*args, **kwargs)
         padding = int(dilation * (kernel_sizes[1] - 1) // 2)
+        nonlinearity = nn.GELU() if activation == 'gelu' else nn.SiLU()
         self.kernel = nn.Sequential(
             nn.ConvTranspose2d(channel_sz, channel_sz, kernel_sizes[0], 1, int(kernel_sizes[0] // 2)),
-            nn.GELU(),
+            nonlinearity,
             nn.ConvTranspose2d(channel_sz, channel_sz, kernel_sizes[1], 1, padding, dilation=dilation),
-            nn.GELU(),
+            nonlinearity,
             nn.ConvTranspose2d(channel_sz, channel_sz, 1, 1, 0),
-            nn.GELU(),
+            nonlinearity,
         )
 
     def forward(self, x):
