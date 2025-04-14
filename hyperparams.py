@@ -4,8 +4,7 @@ from pytorch_lightning.callbacks import EarlyStopping, StochasticWeightAveraging
 import yaml
 
 from config import get_config
-from dataloaders import EncoderModule
-from models import init_weights, Encoder
+from models import init_weights
 import optuna
 import sys
 

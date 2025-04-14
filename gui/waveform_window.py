@@ -44,10 +44,10 @@ class WaveformGeneratorWindow(QMainWindow):
     win_height: int = 500
     win_full_width: int = 1200
     _model_fnme: str = None
-    _target_names_file: str = './target_files.yaml'
-    _target_ids_file: str = './data/target_ids.txt'
+    _target_names_file: str = '../target_files.yaml'
+    _target_ids_file: str = '../data/target_ids.txt'
     _target_mesh_path: str = '/home/jeff/Documents/target_meshes'
-    _model_path: str = './vae_config.yaml'
+    _model_path: str = '../vae_config.yaml'
 
     def __init__(self, model):
         super().__init__()
@@ -83,7 +83,7 @@ class WaveformGeneratorWindow(QMainWindow):
             Path(f'{self._target_mesh_path}/{t}') for t in target_ids]
         # Load mean tensors
         try:
-            self.patterns = torch.load('./data/target_tensors/target_embedding_means.pt')
+            self.patterns = torch.load('../data/target_tensors/target_embedding_means.pt')
         except Exception:
             self.patterns = []
         grid_layout.addWidget(QLabel("Target:"), 0, 0)
@@ -352,7 +352,7 @@ class WaveformGeneratorWindow(QMainWindow):
 
     def slot_reload_model(self):
         self.progress_bar.setText('Loading wavemodel configuration files...')
-        model_config = get_config('wave_exp', './vae_config.yaml')
+        model_config = get_config('wave_exp', self._model_path)
         self.progress_bar.setText('Loading wavemodel...')
         self.wave_mdl = GeneratorModel.load_from_checkpoint(f'{model_config.weights_path}/{model_config.model_name}.ckpt',
                                                        config=model_config, strict=False)
@@ -407,7 +407,7 @@ class WaveformGeneratorWindow(QMainWindow):
     def slot_updatePlot(self, wavedata):
         self.progress_bar.setText('Updating plots...')
         plot_waves = db(wavedata[0])
-        plot_freqs = np.fft.fftfreq(wavedata[0].shape[-1])
+        plot_freqs = np.fft.fftfreq(wavedata[0].shape[-1], 1 / fs) / 1e6
         self.plot_window.plot_basic_line(np.fft.fftshift(plot_freqs), np.fft.fftshift(plot_waves[0]), 'waveform')
         self.plot_window.setVisible(True)
 
@@ -486,13 +486,12 @@ def loadPulseData(sdr, frame_range, fft_len):
 # Main
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    spl_pix = QPixmap('./artemislogo.png')
+    spl_pix = QPixmap('../artemislogo.png')
     splash = QSplashScreen(spl_pix, Qt.WindowStaysOnTopHint)
     splash.show()
     splash.showMessage('Loading model configuration files...')
-    target_config = get_config('target_exp', './vae_config.yaml')
     splash.showMessage('Loading wavemodel configuration files...')
-    model_config = get_config('wave_exp', './vae_config.yaml')
+    model_config = get_config('wave_exp', '../vae_config.yaml')
     splash.showMessage('Loading wavemodel...')
     try:
         wave_mdl = GeneratorModel.load_from_checkpoint(f'{model_config.weights_path}/{model_config.model_name}.ckpt',

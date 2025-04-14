@@ -83,7 +83,7 @@ target_exp_params:
     channel_sz: 1
     label_sz: 25
     nonlinearity: silu
-    temperature: 1.0
+    temperature: 10.
     levels: 2
     # These values are taken from a sampling of data, should be the same as the dataset params
     mu: 0.

@@ -64,15 +64,17 @@ class TargetEmbedding(FlatModule):
                 nonlinearity,
             ))
             self.encoder_conv.append(nn.Sequential(
-                LKA(ch_lev_enc, (5, 3), dilation=12, activation=config.nonlinearity),
-                LKA(ch_lev_enc, (5, 5), dilation=6, activation=config.nonlinearity),
-                TFNO2d(n_modes_height=16, n_modes_width=16, in_channels=ch_lev_enc, out_channels=ch_lev_enc, hidden_channels=ch_lev_enc),
+                LKA(ch_lev_enc, (15, 3), dilation=12, activation=config.nonlinearity),
+                LKA(ch_lev_enc, (15, 5), dilation=6, activation=config.nonlinearity),
+                TFNO2d(n_modes_height=16, n_modes_width=16, in_channels=ch_lev_enc, out_channels=ch_lev_enc,
+                       hidden_channels=ch_lev_enc, non_linearity=nonlinearity),
             ))
             prev_lev_enc = ch_lev_enc + 0
 
         prev_lev_dec = prev_lev_enc
         self.encoder_flatten = nn.Sequential(
-            TFNO2d(n_modes_height=16, n_modes_width=16, in_channels=prev_lev_dec, out_channels=1, hidden_channels=prev_lev_dec),
+            TFNO2d(n_modes_height=16, n_modes_width=16, in_channels=prev_lev_dec, out_channels=1,
+                   hidden_channels=prev_lev_dec, non_linearity=nonlinearity),
             nn.Conv2d(1, 1, (out_sz[0], 1), 1, 0),
             nonlinearity,
         )
@@ -182,7 +184,7 @@ class TargetEmbedding(FlatModule):
         )'''
 
         # COMBINATION LOSS
-        cll = nll + rec_loss * .01
+        cll = rec_loss + nll * .01
 
         # Logging ranking metrics
         self.log_dict({f'{kind}_total_loss': cll, f'{kind}_rec_loss': rec_loss, f'{kind}_nll': nll,

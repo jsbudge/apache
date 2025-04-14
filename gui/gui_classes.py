@@ -38,13 +38,16 @@ class MplWidget(QWidget):
         self.ax.cla()  # clears the axis
         self.ax.plot(X, Y, label=label)
         self.ax.grid(True)
-        self.ax.legend()
+        # self.ax.legend()
+        self.ax.ylabel('Power (dB)')
+        self.ax.xlabel('Frequency (MHz)')
         # self.can.figure.tight_layout()
         self.can.draw()
 
     def plot_dopp_map(self, data):
         self.ax.cla()
         self.ax.imshow(data, aspect='auto')
+        self.ax.axis('off')
         # self.can.figure.tight_layout()
         self.can.draw()
 
