@@ -32,8 +32,8 @@ generate_data_settings:
   overwrite_files: True  # Don't set this to False without cleaning the folders first
   local_path: ./data
   obj_path: /home/jeff/Documents/target_meshes
-  run_target: False
-  run_clutter: True
+  run_target: True
+  run_clutter: False
   n_az_samples: 8
   n_el_samples: 8
   num_bounces: 1
@@ -45,9 +45,10 @@ generate_data_settings:
 # This is for setting up training of target embedding
 target_exp_params:
   training_params:
-    lr: 0.0001
+    lr: 0.01
     weight_decay: 0.0001
-    scheduler_gamma: 0.99
+    scheduler_gamma: 0.99  # Exponential decay
+    eta_min: .0000000001  # Cosine annealing
     betas: [ .9, .99 ]
     log_epoch: 1
     save_model: True
@@ -83,53 +84,8 @@ target_exp_params:
     channel_sz: 1
     label_sz: 25
     nonlinearity: silu
-    temperature: 10.
+    temperature: 1.
     levels: 2
-    # These values are taken from a sampling of data, should be the same as the dataset params
-    mu: 0.
-    var: 1.
-
-# This is for setting up training of pulse classifier
-pulse_exp_params:
-  training_params:
-    lr: 0.0014
-    weight_decay: 0.1
-    scheduler_gamma: 0.7
-    betas: [ .9, .99 ]
-    step_size: 1
-    swa_start: .7
-    log_epoch: 10
-    save_model: False
-    transform_data: False
-    warm_start: False
-    loss_landscape: False
-    max_epochs: 15
-    patience: 550
-  logging_params:
-    output_images: False
-    model_name: pulse_classifier
-    is_tuning: False
-    is_training: True
-    log_dir: ./logs
-    weights_path: ./model
-  dataset_params:
-    data_path: ./data/target_tensors
-    train_batch_size: 30
-    val_batch_size: 30
-    num_workers: 0
-    pin_memory: False
-    split: .7
-    single_example: False
-    # These values are taken from a sampling of data
-    mu: 0.
-    var: 1.
-    noise_level: 0.
-  model_params:
-    fft_len: 8192
-    in_channels: 1024
-    latent_dim: 1024
-    channel_sz: 32
-    label_sz: 15
     # These values are taken from a sampling of data, should be the same as the dataset params
     mu: 0.
     var: 1.
@@ -137,14 +93,14 @@ pulse_exp_params:
 # For training of wavemodel
 wave_exp_params:
   training_params:
-    lr: 0.00001
-    weight_decay: 0.05
+    lr: 0.000001
+    weight_decay: 0.01
     scheduler_gamma: 0.999
     swa_start: .6
     warm_start: False
     betas: [.9, .99]
-    step_size: 1
     log_epoch: 100
+    accumulation_steps: 16
     is_tuning: False
     save_model: True
     loss_landscape: False
@@ -178,7 +134,7 @@ wave_exp_params:
     num_workers: 0
     pin_memory: False
     split: .7
-    single_example: False
+    single_example: True
     # These values are taken from a sampling of data
     mu: 199926611.3141519
     var: 52500339516.69853

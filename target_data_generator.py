@@ -18,7 +18,7 @@ mplib.use('TkAgg')
 import matplotlib.pyplot as plt
 from simulib.simulation_functions import db
 
-from utils import scale_normalize, get_radar_coeff
+from utils import scale_normalize, get_radar_coeff, normalize
 
 pio.renderers.default = 'browser'
 
@@ -163,7 +163,7 @@ if __name__ == '__main__':
     rec_gain = 100  # dB
     ant_transmit_power = 100  # watts
     points_to_sample = 2**16
-    nsam = 8192
+    nsam = 4600
     nstreams = 1
 
     with open('./vae_config.yaml', 'r') as file:
@@ -261,9 +261,9 @@ if __name__ == '__main__':
                     print(f'Skipping on target {tidx}, pd {i}')
                     continue
                 # We want to normalize and scale this block, then format it to work with the autoencoder
-                # Don't scale pulses without anything there, this is a unit energy calculation
+                # Don't scale pulses without anything there, this is an energy calculation
                 pd_mask = np.sqrt(np.sum(pd * pd.conj(), axis=-1).real) > 0.
-                pd[pd_mask] = scale_normalize(pd[pd_mask])
+                pd[pd_mask] = normalize(pd[pd_mask]) * 1e2
                 pd_cat = np.concatenate([formatTargetClutterData(p, fft_len) for p in pd], axis=1)
 
                 if np.all(pd_cat == 0.):
@@ -285,9 +285,6 @@ if __name__ == '__main__':
             print(f'Saving clutter spec for target {tobj}')
             if scaling > 0:
                 mesh = readCombineMeshFile(obj_path, points_to_sample, scale=1 / scaling)
-            else:
-                # TODO: Add in the VCS file clutter
-                continue
             for clut in clutter_files:
                 # Load the sar file that the clutter came from
                 sdr_ch = load(clut, use_jump_correction=False)
@@ -326,18 +323,22 @@ if __name__ == '__main__':
                 mfilt = sdr_ch.genMatchedFilter(0, fft_len=fft_len)
                 valids = mfilt != 0
 
-                # Locate the extrema to speed up the optimization
-                scene = Scene()
-                mesh = mesh.translate(mpos, relative=False)
-                scene.add(Mesh(mesh))
-
                 vecs = np.array([mpos[0] - flight_path[:, 0], mpos[1] - flight_path[:, 1],
                                  mpos[2] - flight_path[:, 2]]).T
                 pt_az = np.arctan2(vecs[:, 0], vecs[:, 1])
                 max_pts = sdr_ch[0].frame_num[abs(pt_az - heading) < rp.az_half_bw]
                 pulse_lims = [min(max_pts), max(max_pts)]
-                pulse_lims[1] = min(pulse_lims[1], pulse_lims[0] + cfig_settings['cpi_len'] * cfig_generate['iterations'])
-                sample_points = scene.sample(points_to_sample, vecs[np.linspace(0, vecs.shape[0] - 1, min(128, vecs.shape[0])).astype(int)])
+                pulse_lims[1] = min(pulse_lims[1],
+                                    pulse_lims[0] + cfig_settings['cpi_len'] * cfig_generate['iterations'])
+
+                # Locate the extrema to speed up the optimization
+                if scaling > 0:
+                    scene = Scene()
+                    mesh = mesh.translate(mpos, relative=False)
+                    scene.add(Mesh(mesh))
+                    sample_points = scene.sample(points_to_sample,
+                                                 vecs[np.linspace(0, vecs.shape[0] - 1,
+                                                                  min(128, vecs.shape[0])).astype(int)])
 
                 for frame in list(zip(*(iter(range(pulse_lims[0], pulse_lims[1] - cfig_settings['cpi_len'], cfig_settings['cpi_len'])),) * (nstreams + 1))):
                     txposes = [rp.txpos(sdr_ch[0].pulse_time[frame[n]:frame[n] + cfig_settings['cpi_len']]).astype(_float) for n in
@@ -379,8 +380,8 @@ if __name__ == '__main__':
                         if tpsd[tpsd != 0].std() == 0 or sdata[sdata != 0].std() == 0:
                             continue
                         # Unit energy and scale to have std of one
-                        ntpsd = scale_normalize(tpsd)
-                        sdata = scale_normalize(sdata)
+                        ntpsd = normalize(tpsd) * 1e2
+                        sdata = normalize(sdata) * 1e2
                         # Shift the data so it's centered around zero (for the autoencoder)
                         if sdr_ch[0].baseband_fc != 0.:
                             shift_bin = int(sdr_ch[0].baseband_fc / sdr_ch[0].fs * fft_len)
@@ -388,12 +389,13 @@ if __name__ == '__main__':
                             sdata = np.roll(sdata, -shift_bin, 1)
                         ntpsd = formatTargetClutterData(ntpsd, fft_len)
                         sdata = formatTargetClutterData(sdata, fft_len)
-                        for nt, sd in zip(ntpsd, sdata):
-                            if not np.any(np.isnan(nt)) and not np.any(np.isnan(sd)):
-                                torch.save([torch.tensor(sd, dtype=torch.float32),
-                                            torch.tensor(nt, dtype=torch.float32), tidx],
-                                           f"{tensor_clutter_path}/tc_{abs_clutter_idx}.pt")
-                                abs_clutter_idx += 1
+                        if cfig_generate['save_files']:
+                            for nt, sd in zip(ntpsd, sdata):
+                                if not np.any(np.isnan(nt)) and not np.any(np.isnan(sd)):
+                                    torch.save([torch.tensor(sd, dtype=torch.float32),
+                                                torch.tensor(nt, dtype=torch.float32), tidx],
+                                               f"{tensor_clutter_path}/tc_{abs_clutter_idx}.pt")
+                                    abs_clutter_idx += 1
 
     with open(f'{save_path}/target_ids.txt', 'w') as f:
         for idx, tid in enumerate(target_id_list):

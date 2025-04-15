@@ -29,8 +29,8 @@ if __name__ == '__main__':
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     # torch.cuda.empty_cache()
 
-    seed_everything(np.random.randint(1, 2048), workers=True)
-    # seed_everything(17, workers=True)
+    # seed_everything(np.random.randint(1, 2048), workers=True)
+    seed_everything(107, workers=True)
 
     config = get_config('wave_exp', './vae_config.yaml')
 
@@ -110,8 +110,8 @@ if __name__ == '__main__':
             plt.plot(freqs, db(np.fft.fftshift(waves[0, 0])))
             if wave_mdl.n_ants > 1:
                 plt.plot(freqs, db(np.fft.fftshift(waves[0, 1])))
-            plt.plot(freqs, db(targets[0]), linestyle='--', linewidth=.3)
-            plt.plot(freqs, db(clutter[0]), linestyle=':', linewidth=.3)
+            plt.plot(freqs, db(targets[0]), linestyle='--', linewidth=.7)
+            plt.plot(freqs, db(clutter[0]), linestyle=':', linewidth=.7)
             if wave_mdl.n_ants > 1:
                 plt.legend(['Waveform 1', 'Waveform 2', 'Target', 'Clutter'])
             else:
@@ -211,3 +211,13 @@ plt.figure()
 plt.plot(db(rp_mf))
 plt.plot(db(rp_old_mf[0]))'''
 
+'''culprits = []
+losses = []
+resultses = []
+for step, dt in enumerate(tqdm(data.train_dataloader())):
+    if step in [399, 400, 401, 402, 1699, 1700, 1701, 1702, 3199, 3200, 3201]:
+        bd = [b.to(wave_mdl.device) for b in dt]
+        results = wave_mdl(bd[0], bd[2], bd[3], bd[4])
+        resultses.append(wave_mdl(bd[0], bd[2], bd[3], bd[4]).to('cpu'))
+        losses.append(wave_mdl.loss_function(results, *bd)['target_loss'].to('cpu'))
+        culprits.append(dt)'''

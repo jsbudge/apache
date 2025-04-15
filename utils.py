@@ -44,7 +44,10 @@ def getRange(alt, theta_el):
 
 def scale_normalize(data):
     ndata = data / np.expand_dims(np.sqrt(np.sum(data * data.conj(), axis=-1).real), axis=len(data.shape) - 1)
-    ndata[ndata != 0] = (ndata[ndata != 0] - abs(ndata[ndata != 0]).mean()) / ndata[ndata != 0].std()
+    mask = ndata != 0
+    mus = np.mean(abs(ndata), where=mask, axis=-1)
+    sigs = np.std(ndata, where=mask, axis=-1)
+    ndata = (ndata - mask * mus[..., None]) / sigs[..., None]
     return ndata
 
 

@@ -62,10 +62,6 @@ class FlatModule(LightningModule):
             for name, param in self.named_parameters()
         ]
 
-    def on_before_optimizer_step(self, optimizer: Optimizer) -> None:
-        norms = grad_norm(self, norm_type=2)  # Compute 2-norm for each layer
-        self.log_dict(norms)
-
 
 class GeneratorModel(FlatModule):
     def __init__(self,
@@ -310,12 +306,16 @@ class GeneratorModel(FlatModule):
         return gen_waveform
 
     def training_step(self, batch, batch_idx):
-        opt = self.optimizers()
         train_loss = self.train_val_get(batch, batch_idx)
-        opt.zero_grad()
         self.manual_backward(train_loss['loss'])
-        # self.clip_gradients(opt, gradient_clip_val=0.5, gradient_clip_algorithm="norm")
+        opt = self.optimizers()
         opt.step()
+        opt.zero_grad()
+        # self.clip_gradients(opt, gradient_clip_val=0.5, gradient_clip_algorithm="norm")
+        '''if self.global_step % self.config.accumulation_steps == 0:
+            opt = self.optimizers()
+            opt.step()
+            opt.zero_grad()'''
         self.log_dict(train_loss, sync_dist=True,
                       prog_bar=True, rank_zero_only=True, on_epoch=True)
 
@@ -360,3 +360,12 @@ class GeneratorModel(FlatModule):
         train_loss['loss'] = torch.sqrt(torch.abs(
             train_loss['target_loss'] * (1 + train_loss['sidelobe_loss'] + train_loss['ortho_loss'])))# + train_loss['bandwidth_loss']
         return train_loss
+
+    def on_before_optimizer_step(self, optimizer: Optimizer) -> None:
+        if self.global_step % self.config.log_epoch == 0:
+            # norms = grad_norm(self, norm_type=2)  # Compute 2-norm for each layer
+            norms = {**grad_norm(self.clutter_encoder, norm_type=2),
+                     **grad_norm(self.clutter_squash, norm_type=2),
+                     **grad_norm(self.clutter_target_init, norm_type=2),
+                     **grad_norm(self.wave_decoder, norm_type=2)}
+            self.log_dict(norms)

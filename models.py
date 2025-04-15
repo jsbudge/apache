@@ -8,6 +8,7 @@ from torch import nn, optim, Tensor
 from torch.nn import functional as tf
 import numpy as np
 
+from cbam import CBAM
 from config import Config
 from layers import LKA, LKATranspose, LKA1d, LKATranspose1d
 from pytorch_lightning import LightningModule
@@ -52,7 +53,11 @@ class TargetEmbedding(FlatModule):
         nonlinearity = nn.SiLU() if config.nonlinearity == 'silu' else nn.GELU() if config.nonlinearity == 'gelu' else nn.SELU()
 
         # Encoder
-        self.encoder_inflate = nn.Conv2d(self.in_channels, self.channel_sz, 1, 1, 0)
+        # self.encoder_inflate = nn.Conv2d(self.in_channels, self.channel_sz, 1, 1, 0)
+        self.encoder_inflate = nn.Sequential(
+            nn.Conv2d(self.in_channels, self.channel_sz, 1, 1, 0),
+            nonlinearity,
+        )
         prev_lev_enc = self.channel_sz
         self.encoder_reduce = nn.ModuleList()
         self.encoder_conv = nn.ModuleList()
@@ -62,6 +67,7 @@ class TargetEmbedding(FlatModule):
             self.encoder_reduce.append(nn.Sequential(
                 nn.Conv2d(prev_lev_enc, ch_lev_enc, 4, 2, 1),
                 nonlinearity,
+                CBAM(ch_lev_enc, reduction_factor=1, kernel_size=7),
             ))
             self.encoder_conv.append(nn.Sequential(
                 LKA(ch_lev_enc, (15, 3), dilation=12, activation=config.nonlinearity),
@@ -144,8 +150,9 @@ class TargetEmbedding(FlatModule):
                                       eps=1e-7)
         if self.config.scheduler_gamma is None:
             return optimizer
-        scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=self.config.scheduler_gamma,
-                                                           verbose=True)
+        '''scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=self.config.scheduler_gamma,
+                                                           verbose=True)'''
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, 100, eta_min=self.config.eta_min)
         '''scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, cooldown=self.params['step_size'],
                                                          factor=self.params['scheduler_gamma'], threshold=1e-5)'''
 
@@ -190,7 +197,8 @@ class TargetEmbedding(FlatModule):
         self.log_dict({f'{kind}_total_loss': cll, f'{kind}_rec_loss': rec_loss, f'{kind}_nll': nll,
                        f"{kind}_acc_top1": (sim_argsort == 0).float().mean(),
                        f"{kind}_acc_top5": (sim_argsort < 5).float().mean(),
-                       f"{kind}_acc_mean_pos": 1 + sim_argsort.float().mean()}, on_epoch=True,
+                       f"{kind}_acc_mean_pos": 1 + sim_argsort.float().mean(),
+                       'lr': self.lr_schedulers().get_last_lr()[0]}, on_epoch=True,
                       prog_bar=True, rank_zero_only=True)
 
         return cll
@@ -225,7 +233,7 @@ class DecoderHead(LightningModule):
             self.dec_layers.append(nn.Sequential(
                 nn.ConvTranspose2d(inter_channels, inter_channels, 4, 2, 1),
                 nonlinearity,
-                LKATranspose(inter_channels, (5, 5), dilation=6, activation='silu'),
+                LKATranspose(inter_channels, (15, 5), dilation=6, activation='silu'),
             ))
         self.dec_layers.append(nn.Sequential(
             nn.ConvTranspose2d(inter_channels, in_channels, 4, 2, 1),
