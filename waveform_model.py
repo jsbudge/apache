@@ -85,7 +85,7 @@ class GeneratorModel(FlatModule):
 
         '''TRANSFORMER'''
         # self.predict_lstm = nn.LSTM(self.target_latent_size, self.target_latent_size, self.lstm_layers, batch_first=True)
-        self.predict_decoder = nn.Transformer(self.target_latent_size, num_decoder_layers=5, num_encoder_layers=5, nhead=16,
+        self.predict_decoder = nn.Transformer(self.target_latent_size, num_decoder_layers=7, num_encoder_layers=7, nhead=8,
                                               batch_first=True, activation=nn.SiLU())
         # self.predict_decoder.apply(init_weights)
 
@@ -182,9 +182,6 @@ class GeneratorModel(FlatModule):
             x = tl(torch.cat([x, target.unsqueeze(1)], dim=1))
         x = self.wave_decoder(torch.cat([x, bw_info, pl_info], dim=1))
         x = self.plength(x, pulse_length) * self.bw_generate(bandwidth)
-        '''bump_range = torch.linspace(-1, 1, self.fft_len, device=self.device)[None, :] / (bandwidth / 2)[:, None]
-        bump = torch.exp(1 / (bump_range.unsqueeze(1) ** 40 - 1)) / EXP_1
-        bump[bump > 1.] = 0.  # Remove asymptotes outside bandwidth range'''
         x = x.view(-1, self.n_ants, 2, self.fft_len)#  * bump
         return x
 
@@ -236,8 +233,6 @@ class GeneratorModel(FlatModule):
             torch.abs(torch.fft.ifft(target_spectrum.unsqueeze(1) * mfiltered, dim=2)), dim=1)
         clut_ac = torch.sum(
             torch.abs(torch.fft.ifft(clutter_spectrum.unsqueeze(1) * mfiltered, dim=2)), dim=1)
-        '''ratio = clut_ac / (EPS + targ_ac) * torch.fft.fftshift(torch.signal.windows.gaussian(self.fft_len, std=self.fft_len / 8., device=self.device))
-        target_loss = ratio.nanmean()'''
         target_loss = torch.nanmean(clut_ac / (EPS + targ_ac))
         # target_loss = torch.nanmean(nn_func.cosine_similarity(targ_ac, clut_ac)**2)
 

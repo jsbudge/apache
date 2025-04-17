@@ -61,7 +61,7 @@ if __name__ == '__main__':
     else:
         trainer = Trainer(logger=logger, max_epochs=config.max_epochs, num_sanity_val_steps=0,
                           default_root_dir=config.weights_path,
-                          log_every_n_steps=config.log_epoch, devices=[0], callbacks=
+                          log_every_n_steps=config.log_epoch, devices=[1], callbacks=
                           [EarlyStopping(monitor='target_loss', patience=config.patience, check_finite=True),
                            StochasticWeightAveraging(swa_lrs=expected_lr, swa_epoch_start=config.swa_start),
                            ModelCheckpoint(monitor='loss_epoch')])

@@ -52,7 +52,37 @@ class MplWidget(QWidget):
         self.can.draw()
 
 
-# __all__ = ['ArcBall', 'ArcBallUtil']
+class FileSelectWidget(QWidget):
+
+    def __init__(self, parent=None, label_name='File:', file_types=None):
+        super().__init__(parent)
+        layout = QHBoxLayout()
+
+        layout.addWidget(QLabel(label_name), 2, 0)
+        self.line_edit = QLineEdit(self)
+        self.line_edit = QLineEdit(self)
+        self.line_edit.setAcceptDrops(True)
+        self.line_edit.setReadOnly(True)
+
+        self.browse_btn = QPushButton("Browse", self)
+        self.browse_btn.clicked.connect(self.browse_output_folder)
+
+        self.file_types = file_types
+
+        layout.addWidget(self.line_edit)
+        layout.addWidget(self.browse_btn)
+        self.setLayout(layout)
+
+    def browse_output_folder(self):
+        if self.file_types is None:
+            if _path := QFileDialog.getExistingDirectory(
+                    self, "Select Output Folder"
+            ):
+                self.line_edit.setText(_path)
+        else:
+            _path, _ = QFileDialog.getOpenFileName(self, "Select File", "", self.file_types)
+        self.line_edit.setText(_path)
+
 
 
 class ArcBall:
@@ -96,10 +126,6 @@ class ArcBall:
             # In the quaternion values, w is cosine (theta / 2), where theta
             # is rotation angle
             NewRot[3] = np.dot(self.StVec, self.EnVec)
-        else:  # if its zero
-            # The begin and end vectors coincide, so return an identity
-            # transform
-            pass
         return NewRot
 
     def _mapToSphere(self, NewPt, NewVec):
@@ -134,6 +160,7 @@ class ArcBall:
 
 class ArcBallUtil(ArcBall):
     def __init__(self, NewWidth: float, NewHeight: float):
+        self.ThisQuat = None
         self.Transform = np.identity(4, 'f4')
         self.LastRot = np.identity(3, 'f4')
         self.ThisRot = np.identity(3, 'f4')
@@ -189,8 +216,7 @@ class ArcBallUtil(ArcBall):
         scale = np.linalg.norm(NewObj[:3, :3], ord='fro') / np.sqrt(3)
 
         NewObj[0:3, 0:3] = m3x3 * scale
-        scaled_NewObj = NewObj
-        return scaled_NewObj
+        return NewObj
 
     def Matrix3fSetRotationFromQuat4f(self, q1):
         if np.sum(np.dot(q1, q1)) < self.Epsilon:

@@ -8,7 +8,7 @@ from torch import nn, optim, Tensor
 from torch.nn import functional as tf
 import numpy as np
 
-from cbam import CBAM
+from cbam import CBAM, GETheta
 from config import Config
 from layers import LKA, LKATranspose, LKA1d, LKATranspose1d
 from pytorch_lightning import LightningModule
@@ -57,6 +57,7 @@ class TargetEmbedding(FlatModule):
         self.encoder_inflate = nn.Sequential(
             nn.Conv2d(self.in_channels, self.channel_sz, 1, 1, 0),
             nonlinearity,
+            CBAM(self.channel_sz, reduction_factor=1, kernel_size=15),
         )
         prev_lev_enc = self.channel_sz
         self.encoder_reduce = nn.ModuleList()
@@ -67,18 +68,16 @@ class TargetEmbedding(FlatModule):
             self.encoder_reduce.append(nn.Sequential(
                 nn.Conv2d(prev_lev_enc, ch_lev_enc, 4, 2, 1),
                 nonlinearity,
-                CBAM(ch_lev_enc, reduction_factor=1, kernel_size=7),
             ))
             self.encoder_conv.append(nn.Sequential(
-                LKA(ch_lev_enc, (15, 3), dilation=12, activation=config.nonlinearity),
-                LKA(ch_lev_enc, (15, 5), dilation=6, activation=config.nonlinearity),
-                TFNO2d(n_modes_height=16, n_modes_width=16, in_channels=ch_lev_enc, out_channels=ch_lev_enc,
-                       hidden_channels=ch_lev_enc, non_linearity=nonlinearity),
+                LKA(ch_lev_enc, (15, 5), dilation=3, activation=config.nonlinearity),
+                LKA(ch_lev_enc, (3, 3), dilation=6, activation=config.nonlinearity),
             ))
             prev_lev_enc = ch_lev_enc + 0
 
         prev_lev_dec = prev_lev_enc
         self.encoder_flatten = nn.Sequential(
+            GETheta(prev_lev_dec, extent=6, reduction_factor=1),
             TFNO2d(n_modes_height=16, n_modes_width=16, in_channels=prev_lev_dec, out_channels=1,
                    hidden_channels=prev_lev_dec, non_linearity=nonlinearity),
             nn.Conv2d(1, 1, (out_sz[0], 1), 1, 0),
@@ -164,26 +163,6 @@ class TargetEmbedding(FlatModule):
         feats = self.encode(img)
         reconstructions = self.decoder(feats)
 
-        # COSINE SIMILARITY
-        cos_sim = tf.cosine_similarity(feats[:, None, :], feats[None, :, :], dim=-1)
-        # Mask out cosine similarity to itself
-        self_mask = torch.eye(cos_sim.shape[0], dtype=torch.bool, device=cos_sim.device)
-        cos_sim.masked_fill_(self_mask, -9e15)
-        # Find positive example -> batch_size//2 away from the original example
-        pos_mask = self_mask.roll(shifts=cos_sim.shape[0] // 2, dims=0)
-        # InfoNCE loss
-        cos_sim = cos_sim / self.temperature
-        nll = -cos_sim[pos_mask] + torch.logsumexp(cos_sim, dim=-1)
-        nll = nll.mean()
-
-
-        # Get ranking position of positive example
-        comb_sim = torch.cat(
-            [cos_sim[pos_mask][:, None], cos_sim.masked_fill(pos_mask, -9e15)],  # First position positive example
-            dim=-1,
-        )
-        sim_argsort = comb_sim.argsort(dim=-1, descending=True).argmin(dim=-1)
-
         # RECONSTRUCTION LOSS
         rec_loss = torch.mean(torch.square(img - reconstructions))
         '''rec_loss = sum(
@@ -191,13 +170,10 @@ class TargetEmbedding(FlatModule):
         )'''
 
         # COMBINATION LOSS
-        cll = rec_loss + nll * .01
+        cll = rec_loss + torch.mean(torch.abs(img - reconstructions)) * .01
 
         # Logging ranking metrics
-        self.log_dict({f'{kind}_total_loss': cll, f'{kind}_rec_loss': rec_loss, f'{kind}_nll': nll,
-                       f"{kind}_acc_top1": (sim_argsort == 0).float().mean(),
-                       f"{kind}_acc_top5": (sim_argsort < 5).float().mean(),
-                       f"{kind}_acc_mean_pos": 1 + sim_argsort.float().mean(),
+        self.log_dict({f'{kind}_total_loss': cll, f'{kind}_rec_loss': rec_loss,
                        'lr': self.lr_schedulers().get_last_lr()[0]}, on_epoch=True,
                       prog_bar=True, rank_zero_only=True)
 
@@ -213,7 +189,7 @@ class DecoderHead(LightningModule):
         self.channel_sz = channel_sz
         self.in_channels = in_channels
         self.out_sz = out_sz
-        inter_channels = 6
+        inter_channels = 12
 
         n_dec_layers = int(in_sz[0] / out_sz[0])
 
@@ -234,6 +210,7 @@ class DecoderHead(LightningModule):
                 nn.ConvTranspose2d(inter_channels, inter_channels, 4, 2, 1),
                 nonlinearity,
                 LKATranspose(inter_channels, (15, 5), dilation=6, activation='silu'),
+                LKATranspose(inter_channels, (3, 3), dilation=6, activation='silu'),
             ))
         self.dec_layers.append(nn.Sequential(
             nn.ConvTranspose2d(inter_channels, in_channels, 4, 2, 1),

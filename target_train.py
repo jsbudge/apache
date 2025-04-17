@@ -66,7 +66,7 @@ if __name__ == '__main__':
 
         # Snag the first 50 batches
         batch_sz = target_config.val_batch_size
-        embeddings = []
+        '''embeddings = []
         samples = []
         file_idx = []
         val_gen = iter(data.val_dataloader())
@@ -85,7 +85,7 @@ if __name__ == '__main__':
         model.to('cpu')
 
         plt.figure()
-        plt.plot(embeddings[::batch_sz].T)
+        plt.plot(embeddings[::batch_sz].T)'''
 
         example = torch.load('/home/jeff/repo/apache/data/target_tensors/target_2/target_2_24.pt', weights_only=True)
         model.to('cuda:0')

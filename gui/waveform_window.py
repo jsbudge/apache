@@ -194,7 +194,8 @@ class WaveformGeneratorWindow(QMainWindow):
 
         self.mview = QGLControllerWidget(self)
         grid_layout.addWidget(self.mview, 7, 0, 1, 4)
-        self.mview.updateGL()
+        # self.mview.initializeGL()
+        # self.mview.updateGL()
 
         # Matplotlib waveform and sar selection
         self.plot_window = MplWidget(self, figsize=(25, 150))

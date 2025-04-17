@@ -105,13 +105,10 @@ class TargetDataset(Dataset):
         # Load in data
         self.datapath = datapath
         targets = [o for o in os.listdir(datapath) if 'target_' in o and 'embedding' not in o]
-        file_sizes = [0 for _ in targets]
-        for d in targets:
-            ntarg = int(d[7:])
-            nfiles = glob(f'{datapath}/{d}/target_*_*.pt')
-            file_sizes[ntarg] = len(nfiles)
-        file_idx = np.concatenate([np.ones(s) * i for i, s in enumerate(file_sizes)])
-        sz = min(file_sizes)
+        self.file_idx = np.sort(np.concatenate(
+            [list(glob(f'{datapath}/{d}/target_*_*.pt')) for d in targets]
+        ))
+        sz = len(self.file_idx)
         # file_sizes = [s.shape[0] for s in solo_load]
 
         if split < 1:
@@ -121,12 +118,11 @@ class TargetDataset(Dataset):
         else:
             Xt = np.arange(sz)
             Xs = np.arange(sz)
-        valids = np.concatenate([(Xs if is_val else Xt) + sum(file_sizes[:f]) for f in range(len(file_sizes))])
-        self.file_idx = file_idx[valids]
-        self.file_list = [list(valids[np.where(self.file_idx == n)[0]].astype(int)) for n in range(len(file_sizes))]
+        valids = Xs if is_val else Xt
+        self.file_idx = self.file_idx[valids]
 
     def __getitem__(self, idx):
-        sample, label = torch.load(f'{self.datapath}/target_{idx[1]}/target_{idx[1]}_{idx[0]}.pt', weights_only=True)
+        sample, label = torch.load(self.file_idx[idx], weights_only=True)
         return sample, label
 
     def __len__(self):
@@ -399,10 +395,10 @@ class TargetEncoderModule(BaseModule):
     def setup(self, stage: Optional[str] = None) -> None:
         self.train_dataset = TargetDataset(self.data_path, self.split, self.single_example, mu=self.mu,
                                           var=self.var)
-        self.val_dataset = TargetDataset(self.data_path, split=1 - self.split if self.split < 1 else 1.,
+        self.val_dataset = TargetDataset(self.data_path, split=self.split if self.split < 1 else 1.,
                                          is_val=True, mu=self.mu, var=self.var)
-        self.train_sampler = BatchListSampler(self.train_dataset.file_list, batch_size=self.train_batch_size, drop_last=False)
-        self.val_sampler = BatchListSampler(self.val_dataset.file_list, batch_size=self.val_batch_size, drop_last=False)
+        # self.train_sampler = BatchListSampler(self.train_dataset.file_list, batch_size=self.train_batch_size, drop_last=False)
+        # self.val_sampler = BatchListSampler(self.val_dataset.file_list, batch_size=self.val_batch_size, drop_last=False)
 
 
 if __name__ == '__main__':
