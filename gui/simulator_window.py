@@ -2,9 +2,11 @@ from PyQt5 import QtWidgets, QtCore, uic
 from PyQt5.QtCore import QThread
 from PyQt5.QtGui import QIcon
 from OpenGL.GLUT import *
-from PyQt5.QtWidgets import QAction, QHBoxLayout, QVBoxLayout, QGridLayout, QWidget
+from PyQt5.QtWidgets import QAction, QHBoxLayout, QVBoxLayout, QGridLayout, QWidget, QDoubleSpinBox, QLabel
 from sdrparse.SDRParsing import SDRBase
+from superqt import QLargeIntSpinBox
 
+from gui.gui_classes import FileSelectWidget
 from mesh_viewer import QGLControllerWidget
 import gui_utils as f
 import argparse
@@ -43,8 +45,26 @@ class MainWindow(QtWidgets.QMainWindow):
         timer.timeout.connect(self.openGL.updateGL)
         timer.start()
 
+        self.mesh_file = FileSelectWidget(self, 'Select Mesh')
+        self.sdr_file = FileSelectWidget(self, 'Select SDR File')
 
+        position_layout = QGridLayout()
 
+        self.x_pos_spinbox = QDoubleSpinBox(self)
+        self.y_pos_spinbox = QDoubleSpinBox(self)
+        self.z_pos_spinbox = QDoubleSpinBox(self)
+        self.azimuth_spinbox = QLargeIntSpinBox(self)
+        self.elevation_spinbox = QLargeIntSpinBox(self)
+        position_layout.addWidget(self.x_pos_spinbox, 0, 1)
+        position_layout.addWidget(self.y_pos_spinbox, 0, 3)
+        position_layout.addWidget(self.z_pos_spinbox, 0, 5)
+        position_layout.addWidget(self.azimuth_spinbox, 1, 1)
+        position_layout.addWidget(self.elevation_spinbox, 1, 3)
+        position_layout.addWidget(QLabel('X:'), 0, 0)
+        position_layout.addWidget(QLabel('Y:'), 0, 2)
+        position_layout.addWidget(QLabel('Z:'), 0, 4)
+        position_layout.addWidget(QLabel('# Az:'), 1, 0)
+        position_layout.addWidget(QLabel('# El:'), 1, 2)
         # Main layout
         main_layout = QHBoxLayout()
 
@@ -53,6 +73,10 @@ class MainWindow(QtWidgets.QMainWindow):
         main_layout.addLayout(grid_layout)
 
         main_layout.addWidget(self.openGL, 0, 0, 3, 3)
+        main_layout.addWidget(self.mesh_file, 0, 4)
+        main_layout.addWidget(self.sdr_file, 1, 4)
+        main_layout.addLayout(position_layout, 2, 4)
+
         container = QWidget()
         container.setLayout(main_layout)
         self.setCentralWidget(container)

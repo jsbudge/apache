@@ -5,7 +5,6 @@ from PyQt5 import QtOpenGL, QtWidgets, QtCore
 import numpy as np
 from pyrr import Matrix44
 import open3d as o3d
-from pyrr.matrix44 import create_perspective_projection_matrix_from_bounds
 from gui_classes import ArcBallUtil
 # from resource import shaders
 
