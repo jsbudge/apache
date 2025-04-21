@@ -19,6 +19,8 @@ import yaml
 from scipy.signal import sawtooth
 from scipy.linalg import convolution_matrix
 from waveform_model import GeneratorModel
+import matplotlib as mplib
+mplib.use('TkAgg')
 
 pio.renderers.default = 'browser'
 
@@ -126,17 +128,14 @@ if __name__ == '__main__':
     mfilts = [fft_chirp.conj() * taytay for fft_chirp, taytay in zip(chirps, taytays)]
     pdd = np.fft.fftshift(np.fft.fft(genChirp(nr, fs, fc, settings['bandwidth']), wave_fft_len))
     pulse_data = np.stack([pdd.real, pdd.imag])
-    print('Setting up embedding model...')
-    target_config = get_config('target_exp', './vae_config.yaml')
-    embedding = TargetEmbedding.load_from_checkpoint(f'{target_config.weights_path}/{target_config.model_name}.ckpt',
-                                                     config=target_config, strict=False)
     print('Setting up wavemodel...')
     model_config = get_config('wave_exp', './vae_config.yaml')
     wave_mdl = GeneratorModel.load_from_checkpoint(f'{model_config.weights_path}/{model_config.model_name}.ckpt',
-                                                   config=model_config, embedding=embedding, strict=False)
+                                                   config=model_config, strict=False)
     # wave_mdl.to(device)
     print('Wavemodel loaded.')
-    patterns = torch.tensor(torch.load('/home/jeff/repo/apache/data/target_tensors/target_embedding_means.pt')[2], dtype=torch.float32)
+    patterns = torch.tensor(torch.load('/home/jeff/repo/apache/data/target_tensors/target_embedding_means.pt')[2],
+                            dtype=torch.float32)
 
     # Calculate out points on the ground
     gx, gy, gz = bg.getGrid(settings['origin'], settings['grid_width'], settings['grid_height'], *nbpj_pts,
@@ -217,7 +216,7 @@ if __name__ == '__main__':
     pulse_data = np.stack([pdd.real, pdd.imag])
 
     wave_mdl.to(device)
-    waves = wave_mdl.full_forward(pulse_data, patterns.squeeze(0).to(device), nr)
+    waves = wave_mdl.full_forward(pulse_data, patterns.squeeze(0).to(device), nr, settings['bandwidth'] / fs)
     wave_mdl.to('cpu')
     waves = np.fft.fft(np.fft.ifft(waves, axis=1)[:, :nr], fft_len, axis=1) * 1e6
     chirps = [waves for _ in rps]
@@ -227,7 +226,13 @@ if __name__ == '__main__':
     for idx, ts in enumerate(data_t):
         # Modify the pulse
         ex_chirps.append(chirps)
-        # _, chirps, mfilts = genChirpAndMatchedFilters(waves, rps, bwidth, fs, 0., fft_len)
+        wave_mdl.to(device)
+        waves = wave_mdl.full_forward(pulse_data, patterns.squeeze(0).to(device), nr, settings['bandwidth'] / fs)
+        wave_mdl.to('cpu')
+        waves = np.fft.fft(np.fft.ifft(waves, axis=1)[:, :nr], fft_len, axis=1) * 1e6
+        chirps = [waves for _ in rps]
+        taytays = [genTaylorWindow(fc % fs, settings['bandwidth'] / 2, fs, fft_len)]
+        mfilts = [fft_chirp.conj() * taytay for fft_chirp, taytay in zip(chirps, taytays)]
         txposes = [rp.txpos(ts).astype(np.float32) for rp in rps]
         rxposes = [rp.rxpos(ts).astype(np.float32) for rp in rps]
         pans = [rp.pan(ts).astype(np.float32) for rp in rps]

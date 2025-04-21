@@ -1,85 +1,277 @@
+from functools import partial
+
 from PyQt5 import QtWidgets, QtCore, uic
-from PyQt5.QtCore import QThread
+from PyQt5.QtCore import QThread, QSettings
 from PyQt5.QtGui import QIcon
 from OpenGL.GLUT import *
-from PyQt5.QtWidgets import QAction, QHBoxLayout, QVBoxLayout, QGridLayout, QWidget, QDoubleSpinBox, QLabel
-from sdrparse.SDRParsing import SDRBase
+from PyQt5.QtWidgets import QAction, QHBoxLayout, QVBoxLayout, QGridLayout, QWidget, QDoubleSpinBox, QLabel, \
+    QRadioButton, QButtonGroup, QPushButton
+from sdrparse.SDRParsing import SDRBase, load
+from simulib.grid_helper import SDREnvironment
+from simulib.mesh_functions import readCombineMeshFile
+from simulib.platform_helper import SDRPlatform
 from superqt import QLargeIntSpinBox
 
 from gui.gui_classes import FileSelectWidget
 from mesh_viewer import QGLControllerWidget
 import gui_utils as f
 import argparse
+import numpy as np
 
 
 class MainWindow(QtWidgets.QMainWindow):
     patterns: list
     thread: QThread = None
     sdr: SDRBase = None
+    _bg: SDREnvironment = None
+    elevation_map: np.array = None
+    virtual_pos: np.array = np.array([0., 0., 0.])
+    _ntris: int = 10000
+    _scaling: float = 7.
     win_width: int = 500
     win_height: int = 500
     win_full_width: int = 1200
     _model_fnme: str = None
-    _target_names_file: str = '../target_files.yaml'
-    _target_ids_file: str = '../data/target_ids.txt'
-    _target_mesh_path: str = '/home/jeff/Documents/target_meshes'
-    _model_path: str = '../vae_config.yaml'
+    _mesh_path: str = None
+    _mode: str = 'Profile'
 
     def __init__(self):
-        # Load UI file
         QtWidgets.QMainWindow.__init__(self)
 
-        self.setWindowTitle("Waveform Generator")
+        self.setWindowTitle("Simulator")
         self.setGeometry(200, 200, self.win_width, self.win_height)
-        self.setFixedSize(self.win_width, self.win_height)
-        menu_bar = self.menuBar()
-        new_window_action = QAction("Settings", self)
-        new_window_action.triggered.connect(self.open_settings_window)
-        menu_bar.addAction(new_window_action)
+        # self.setFixedSize(self.win_width, self.win_height)
+        # menu_bar = self.menuBar()
+        # new_window_action = QAction("Settings", self)
+        # new_window_action.triggered.connect(self.open_settings_window)
+        # menu_bar.addAction(new_window_action)
+
+        main_layout = QGridLayout()
 
         # Create openGL context
         self.openGL = QGLControllerWidget(self)
-        self.openGL.setGeometry(0, 37, 870, 731)
-        timer = QtCore.QTimer(self)
-        timer.setInterval(20)  # refresh speed in milliseconds
-        timer.timeout.connect(self.openGL.updateGL)
-        timer.start()
+        main_layout.addWidget(self.openGL, 0, 0, 5, 3)
+        self.simulate_button = QPushButton('Simulate!')
+        main_layout.addWidget(self.simulate_button, 6, 3)
 
-        self.mesh_file = FileSelectWidget(self, 'Select Mesh')
-        self.sdr_file = FileSelectWidget(self, 'Select SDR File')
+
+        self.mesh_file = FileSelectWidget(self, 'Select Mesh', file_types="GLTF Files (*.gltf);OBJ Files (*.obj);All Files (*)")
+        self.mesh_file.signal_btn_clicked.connect(self.loadMesh)
+        self.sdr_file = FileSelectWidget(self, 'Select SDR File', file_types="SAR Files (*.sar)")
+        self.sdr_file.signal_btn_clicked.connect(self.loadSAR)
 
         position_layout = QGridLayout()
 
         self.x_pos_spinbox = QDoubleSpinBox(self)
+        self.x_pos_spinbox.setRange(-10000., 10000.)
         self.y_pos_spinbox = QDoubleSpinBox(self)
+        self.y_pos_spinbox.setRange(-10000., 10000.)
         self.z_pos_spinbox = QDoubleSpinBox(self)
+        self.z_pos_spinbox.setRange(-10000., 10000.)
+        self.x_pos_spinbox.valueChanged.connect(self.setPosition)
+        self.y_pos_spinbox.valueChanged.connect(self.setPosition)
+        self.z_pos_spinbox.valueChanged.connect(self.setPosition)
         self.azimuth_spinbox = QLargeIntSpinBox(self)
+        self.azimuth_spinbox.setValue(32)
         self.elevation_spinbox = QLargeIntSpinBox(self)
+        self.elevation_spinbox.setValue(32)
+        self.range_spinbox = QDoubleSpinBox(self)
+        self.range_spinbox.setValue(500.)
+        self.azimuth_spinbox.valueChanged.connect(self.updateGrid)
+        self.elevation_spinbox.valueChanged.connect(self.updateGrid)
+        self.range_spinbox.valueChanged.connect(self.updateGrid)
         position_layout.addWidget(self.x_pos_spinbox, 0, 1)
         position_layout.addWidget(self.y_pos_spinbox, 0, 3)
         position_layout.addWidget(self.z_pos_spinbox, 0, 5)
         position_layout.addWidget(self.azimuth_spinbox, 1, 1)
         position_layout.addWidget(self.elevation_spinbox, 1, 3)
+        position_layout.addWidget(self.range_spinbox, 1, 5)
         position_layout.addWidget(QLabel('X:'), 0, 0)
         position_layout.addWidget(QLabel('Y:'), 0, 2)
         position_layout.addWidget(QLabel('Z:'), 0, 4)
         position_layout.addWidget(QLabel('# Az:'), 1, 0)
         position_layout.addWidget(QLabel('# El:'), 1, 2)
-        # Main layout
-        main_layout = QHBoxLayout()
+        position_layout.addWidget(QLabel('Range:'), 1, 4)
+
+        self.mode_target = QRadioButton('Profile')
+        self.mode_train = QRadioButton('SDR Train')
+        self.mode_buttons = QButtonGroup()
+        self.mode_buttons.addButton(self.mode_target)
+        self.mode_buttons.addButton(self.mode_train)
+        self.mode_buttons.buttonToggled.connect(self.setMode)
+        mode_layout = QHBoxLayout()
+        mode_layout.addWidget(self.mode_target)
+        mode_layout.addWidget(self.mode_train)
+
+        mesh_param_layout = QHBoxLayout()
+        self.triangle_spinbox = QLargeIntSpinBox()
+        self.triangle_spinbox.setRange(10, 5e6)
+        self.triangle_spinbox.valueChanged.connect(self.loadMesh)
+        self.scaling_spinbox = QDoubleSpinBox()
+        self.scaling_spinbox.setRange(.01, 1000)
+        self.scaling_spinbox.valueChanged.connect(self.loadMesh)
+        mesh_param_layout.addWidget(QLabel('# Tris:'))
+        mesh_param_layout.addWidget(self.triangle_spinbox)
+        mesh_param_layout.addWidget(QLabel('Scaling Factor:'))
+        mesh_param_layout.addWidget(self.scaling_spinbox)
+
+        sdr_param_layout = QHBoxLayout()
+        self.grid_width = QDoubleSpinBox()
+        self.grid_width.setRange(1., 100.)
+        self.grid_height = QDoubleSpinBox()
+        self.grid_height.setRange(1., 100.)
+        self.grid_nrows = QLargeIntSpinBox()
+        self.grid_nrows.setRange(10, 100)
+        self.grid_ncols = QLargeIntSpinBox()
+        self.grid_ncols.setRange(10, 100)
+        self.grid_width.valueChanged.connect(self.loadElevationMap)
+        self.grid_height.valueChanged.connect(self.loadElevationMap)
+        self.grid_nrows.valueChanged.connect(self.loadElevationMap)
+        self.grid_ncols.valueChanged.connect(self.loadElevationMap)
+        sdr_param_layout.addWidget(QLabel('Width:'))
+        sdr_param_layout.addWidget(self.grid_width)
+        sdr_param_layout.addWidget(QLabel('Height:'))
+        sdr_param_layout.addWidget(self.grid_height)
+        sdr_param_layout.addWidget(QLabel('Rows:'))
+        sdr_param_layout.addWidget(self.grid_nrows)
+        sdr_param_layout.addWidget(QLabel('Cols:'))
+        sdr_param_layout.addWidget(self.grid_ncols)
 
         # Grid layout for the widgets
-        grid_layout = QGridLayout()
-        main_layout.addLayout(grid_layout)
-
-        main_layout.addWidget(self.openGL, 0, 0, 3, 3)
-        main_layout.addWidget(self.mesh_file, 0, 4)
-        main_layout.addWidget(self.sdr_file, 1, 4)
-        main_layout.addLayout(position_layout, 2, 4)
+        main_layout.addWidget(QLabel('Simulation Mode'), 0, 3)
+        main_layout.addLayout(mode_layout, 1, 3)
+        main_layout.addWidget(self.mesh_file, 2, 3)
+        main_layout.addLayout(mesh_param_layout, 3, 3)
+        main_layout.addWidget(self.sdr_file, 4, 3)
+        main_layout.addLayout(sdr_param_layout, 5, 3)
+        main_layout.addLayout(position_layout, 6, 0)
 
         container = QWidget()
         container.setLayout(main_layout)
         self.setCentralWidget(container)
+
+        timer = QtCore.QTimer(self)
+        timer.setInterval(20)  # refresh speed in milliseconds
+        timer.timeout.connect(self.openGL.updateGL)
+        timer.start()
+
+        self.loadPersistentSettings()
+
+    def loadMesh(self, mesh_path=None):
+        if isinstance(mesh_path, str):
+            self._mesh_path = mesh_path
+        try:
+            mesh = readCombineMeshFile(self._mesh_path, self.triangle_spinbox.value(), scale=1 / self.scaling_spinbox.value())
+            self.openGL.set_mesh(mesh)
+            self.updateGrid()
+        except:
+            pass
+
+    def loadSAR(self, sdr_path):
+        try:
+            self.sdr = load(sdr_path)
+            self._bg = SDREnvironment(self.sdr)
+            self.loadElevationMap()
+            self.updateGrid()
+        except:
+            print('SAR not loaded.')
+
+    def loadElevationMap(self):
+        gx, gy, gz = self._bg.getGrid(self._bg.ref, self.grid_width.value(), self.grid_height.value(),
+                                self.grid_nrows.value(), self.grid_ncols.value())
+        self.updatePosition(gx.mean(), gy.mean(), gz.mean())
+        self.elevation_map = np.dstack([gx.flatten(), gy.flatten(), gz.flatten()])
+
+
+    def setMode(self):
+        self._mode = self.mode_buttons.checkedButton().text()
+        if self._mode == 'Profile':
+            self.openGL.grid_mode = 0
+            self.grid_ncols.setEnabled(False)
+            self.grid_nrows.setEnabled(False)
+            self.grid_width.setEnabled(False)
+            self.grid_height.setEnabled(False)
+            self.sdr_file.setEnabled(False)
+            self.x_pos_spinbox.setEnabled(False)
+            self.y_pos_spinbox.setEnabled(False)
+            self.z_pos_spinbox.setEnabled(False)
+            self.azimuth_spinbox.setEnabled(True)
+            self.elevation_spinbox.setEnabled(True)
+            self.range_spinbox.setEnabled(True)
+        else:
+            self.openGL.grid_mode = 1
+            self.grid_ncols.setEnabled(True)
+            self.grid_nrows.setEnabled(True)
+            self.grid_width.setEnabled(True)
+            self.grid_height.setEnabled(True)
+            self.sdr_file.setEnabled(True)
+            self.x_pos_spinbox.setEnabled(True)
+            self.y_pos_spinbox.setEnabled(True)
+            self.z_pos_spinbox.setEnabled(True)
+            self.azimuth_spinbox.setEnabled(False)
+            self.elevation_spinbox.setEnabled(False)
+            self.range_spinbox.setEnabled(False)
+        self.updateGrid()
+
+    def updateGrid(self):
+        if self._mode == 'Profile':
+            self.openGL.update_grid_param(self.range_spinbox.value(), az_samples=self.azimuth_spinbox.value(),
+                                          el_samples=self.elevation_spinbox.value())
+        else:
+            self.openGL.update_grid_param(el_map=self.elevation_map - self.virtual_pos)
+
+    def updatePosition(self, x, y, z):
+        self.virtual_pos = np.array([x, y, z])
+        self.x_pos_spinbox.setValue(x)
+        self.y_pos_spinbox.setValue(y)
+        self.z_pos_spinbox.setValue(z)
+
+    def setPosition(self):
+        self.updatePosition(self.x_pos_spinbox.value(), self.y_pos_spinbox.value(), self.z_pos_spinbox.value())
+        self.updateGrid()
+
+
+    def loadPersistentSettings(self):
+        settings = QSettings("ARTEMIS_SIM", "Simulator")
+        self.triangle_spinbox.setValue(int(settings.value("mesh_ntris", 10000)))
+        self.scaling_spinbox.setValue(float(settings.value("mesh_scaling", 7.)))
+        self.grid_ncols.setValue(int(settings.value("grid_ncols", 10)))
+        self.grid_nrows.setValue(int(settings.value("grid_nrows", 10)))
+        self.grid_height.setValue(float(settings.value("grid_height", 10.)))
+        self.grid_width.setValue(float(settings.value("grid_width", 10.)))
+        self.azimuth_spinbox.setValue(int(settings.value("az_samples", 32)))
+        self.elevation_spinbox.setValue(int(settings.value("el_samples", 32)))
+        self.range_spinbox.setValue(float(settings.value("range", 500.)))
+        self.sdr_file.line_edit.setText(settings.value("sar_file", ""))
+        self.mesh_file.line_edit.setText(settings.value("mesh_path", ""))
+        mode = settings.value("sim_mode", '')
+        if mode == 'Profile':
+            self.mode_target.setChecked(True)
+            self.loadMesh(self.mesh_file.line_edit.text())
+        elif mode == 'SDR Train':
+            self.mode_train.setChecked(True)
+            self.loadSAR(self.sdr_file.line_edit.text())
+
+    def savePersistentSettings(self):
+        settings = QSettings("ARTEMIS_SIM", "Simulator")
+        settings.setValue('mesh_ntris', self.triangle_spinbox.value())
+        settings.setValue('mesh_scaling', self.scaling_spinbox.value())
+        settings.setValue('grid_ncols', self.grid_ncols.value())
+        settings.setValue('grid_nrows', self.grid_nrows.value())
+        settings.setValue('grid_width', self.grid_width.value())
+        settings.setValue('grid_height', self.grid_height.value())
+        settings.setValue('az_samples', self.azimuth_spinbox.value())
+        settings.setValue('el_samples', self.elevation_spinbox.value())
+        settings.setValue('range', self.range_spinbox.value())
+        settings.setValue('sar_file', self.sdr_file.line_edit.text())
+        settings.setValue('mesh_path', self.mesh_file.line_edit.text())
+        settings.setValue('sim_mode', self._mode)
+
+    def closeEvent(self, a_event, **kwargs):
+        self.savePersistentSettings()
+        a_event.accept()
+
+
 
 if __name__ == '__main__':
     app = QtWidgets.QApplication(sys.argv)

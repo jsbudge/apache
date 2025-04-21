@@ -54,13 +54,13 @@ if __name__ == '__main__':
     expected_lr = max((config.lr * config.scheduler_gamma ** (config.max_epochs * config.swa_start)), 1e-9)
     if config.distributed:
         trainer = Trainer(logger=logger, max_epochs=config.max_epochs, num_sanity_val_steps=0, default_root_dir=config.weights_path,
-                          log_every_n_steps=config.log_epoch, devices=[0, 1], strategy='ddp', callbacks=
+                          log_every_n_steps=config.log_epoch, check_val_every_n_epoch=1000, devices=[0, 1], strategy='ddp', callbacks=
                           [EarlyStopping(monitor='target_loss', patience=config.patience, check_finite=True),
                            StochasticWeightAveraging(swa_lrs=expected_lr, swa_epoch_start=config.swa_start),
                            ModelCheckpoint(monitor='loss_epoch')])
     else:
         trainer = Trainer(logger=logger, max_epochs=config.max_epochs, num_sanity_val_steps=0,
-                          default_root_dir=config.weights_path,
+                          default_root_dir=config.weights_path, check_val_every_n_epoch=1000,
                           log_every_n_steps=config.log_epoch, devices=[1], callbacks=
                           [EarlyStopping(monitor='target_loss', patience=config.patience, check_finite=True),
                            StochasticWeightAveraging(swa_lrs=expected_lr, swa_epoch_start=config.swa_start),

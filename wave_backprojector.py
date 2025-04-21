@@ -61,10 +61,10 @@ if __name__ == '__main__':
     plp = .75
     fdelay = 10.
     upsample = 8
-    num_bounces = 1
+    num_bounces = 2
     nbox_levels = 5
     nstreams = 1
-    points_to_sample = 2 ** 19
+    points_to_sample = 2 ** 17
     num_mesh_triangles = 1000000
     max_pts_per_run = 2 ** 17
     grid_origin = (40.139343, -111.663541, 1360.10812)
@@ -97,6 +97,7 @@ if __name__ == '__main__':
 
     sdr_f = load(fnme)
     bg, rp = getRadarAndEnvironment(sdr_f)
+    rp.fs = fs
     nsam, nr, ranges, ranges_sampled, near_range_s, granges, fft_len, up_fft_len = (
         rp.getRadarParams(0., plp, upsample))
     idx_t = sdr_f[0].frame_num[sdr_f[0].nframes // 2: sdr_f[0].nframes // 2 + npulses]
@@ -152,7 +153,7 @@ if __name__ == '__main__':
     car = car.rotate(car.get_rotation_matrix_from_xyz(np.array([np.pi / 2, 0, 0])))
     car = car.rotate(car.get_rotation_matrix_from_xyz(np.array([0, 0, -42.51 * DTR])))
     mesh_extent = car.get_max_bound() - car.get_min_bound()
-    car = car.translate(np.array([gx.mean() - 50, gy.mean() - 1.5, gz.mean() + mesh_extent[2] / 2 - 16]),
+    car = car.translate(np.array([gx.mean() + 100, gy.mean() - 1.5, gz.mean() + mesh_extent[2] / 2 - 9]),
                         relative=False)
     msigmas = [2. for _ in range(np.asarray(car.triangle_material_ids).max() + 1)]
     msigmas[0] = msigmas[15] = .5  # seats
@@ -262,7 +263,7 @@ if __name__ == '__main__':
                                       [rp.tilt(data_t).astype(_float)],
                                       radar_coeff,
                                       rp.az_half_bw, rp.el_half_bw,
-                                      nsam, fc, near_range_s,
+                                      nsam, fc, near_range_s, rp.fs,
                                       num_bounces=num_bounces,
                                       debug=True, streams=streams) for sam in sample_points]
     single_rp = outputs[0][0]
@@ -296,14 +297,14 @@ if __name__ == '__main__':
         pans = [rp.pan(sdr_f[0].pulse_time[frame[n]:frame[n] + npulses]).astype(_float) for n in range(nstreams)]
         tilts = [rp.tilt(sdr_f[0].pulse_time[frame[n]:frame[n] + npulses]).astype(_float) for n in range(nstreams)]
         trp = [getRangeProfileFromScene(scene, sam, txposes, rxposes, pans, tilts,
-                                        radar_coeff, rp.az_half_bw, rp.el_half_bw, nsam, fc, near_range_s,
+                                        radar_coeff, rp.az_half_bw, rp.el_half_bw, nsam, fc, near_range_s, rp.fs,
                                         num_bounces=num_bounces, streams=streams) for sam in sample_points]
         trp = [sum(i) for i in zip(*trp)]
         mf_pulses = [np.ascontiguousarray(
             upsamplePulse(addNoise(range_profile, fft_chirp, noise_power, mf_chirp, fft_len), fft_len, upsample,
                           is_freq=True, time_len=nsam).T, dtype=np.complex128) for range_profile in trp]
         bpj_grid += backprojectPulseStream(mf_pulses, pans, tilts, rxposes, txposes, gz.astype(_float),
-                                           c0 / fc, near_range_s, fs * upsample, rp.az_half_bw, rp.el_half_bw,
+                                           c0 / fc, near_range_s, rp.fs * upsample, rp.az_half_bw, rp.el_half_bw,
                                            gx=gx.astype(_float), gy=gy.astype(_float), streams=streams)
         pulse_data = np.fft.fftshift(np.fft.fft(np.fft.ifft(mf_pulses[0].T[:10, :]), wfft_len), axes=0)
         mf_chirp, fft_chirp = buildWave(pulse_data, wfft_len)

@@ -53,13 +53,13 @@ class MplWidget(QWidget):
 
 
 class FileSelectWidget(QWidget):
+    signal_btn_clicked = pyqtSignal(str)
 
     def __init__(self, parent=None, label_name='File:', file_types=None):
         super().__init__(parent)
         layout = QHBoxLayout()
 
-        layout.addWidget(QLabel(label_name), 2, 0)
-        self.line_edit = QLineEdit(self)
+        layout.addWidget(QLabel(label_name))
         self.line_edit = QLineEdit(self)
         self.line_edit.setAcceptDrops(True)
         self.line_edit.setReadOnly(True)
@@ -82,6 +82,7 @@ class FileSelectWidget(QWidget):
         else:
             _path, _ = QFileDialog.getOpenFileName(self, "Select File", "", self.file_types)
         self.line_edit.setText(_path)
+        self.signal_btn_clicked.emit(_path)
 
 
 
