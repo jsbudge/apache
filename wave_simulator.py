@@ -219,7 +219,7 @@ if __name__ == '__main__':
     waves = wave_mdl.full_forward(pulse_data, patterns.squeeze(0).to(device), nr, settings['bandwidth'] / fs)
     wave_mdl.to('cpu')
     waves = np.fft.fft(np.fft.ifft(waves, axis=1)[:, :nr], fft_len, axis=1) * 1e6
-    chirps = [waves for _ in rps]
+    chirps = [np.roll(waves, -3277) for _ in rps]
     taytays = [genTaylorWindow(fc % fs, settings['bandwidth'] / 2, fs, fft_len)]
     mfilts = [fft_chirp.conj() * taytay for fft_chirp, taytay in zip(chirps, taytays)]
 
@@ -230,7 +230,7 @@ if __name__ == '__main__':
         waves = wave_mdl.full_forward(pulse_data, patterns.squeeze(0).to(device), nr, settings['bandwidth'] / fs)
         wave_mdl.to('cpu')
         waves = np.fft.fft(np.fft.ifft(waves, axis=1)[:, :nr], fft_len, axis=1) * 1e6
-        chirps = [waves for _ in rps]
+        chirps = [np.roll(waves, -3277) for _ in rps]
         taytays = [genTaylorWindow(fc % fs, settings['bandwidth'] / 2, fs, fft_len)]
         mfilts = [fft_chirp.conj() * taytay for fft_chirp, taytay in zip(chirps, taytays)]
         txposes = [rp.txpos(ts).astype(np.float32) for rp in rps]

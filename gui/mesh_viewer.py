@@ -26,7 +26,7 @@ def grid(size, steps):
     return np.dot(new_grid, rotation_matrix)
 
 
-def ball(size, az_samples, el_samples):
+def ball(size, az_samples, el_samples, rotate=True):
     m_pans, m_tilts = np.meshgrid(np.linspace(0, 2 * np.pi, az_samples, endpoint=False),
                                   np.linspace(np.pi / 2 - .1, -np.pi / 2 + .1, el_samples))
     a_pan = m_pans.flatten()
@@ -34,7 +34,7 @@ def ball(size, az_samples, el_samples):
     boresights = azelToVec(a_pan, a_tilt).T
     new_grid = -boresights * size
 
-    return np.dot(new_grid, rotation_matrix)
+    return np.dot(new_grid, rotation_matrix) if rotate else new_grid
 
 
 class QGLControllerWidget(QtOpenGL.QGLWidget):

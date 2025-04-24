@@ -64,7 +64,7 @@ if __name__ == '__main__':
     num_bounces = 2
     nbox_levels = 5
     nstreams = 1
-    points_to_sample = 2 ** 17
+    points_to_sample = 2 ** 16
     num_mesh_triangles = 1000000
     max_pts_per_run = 2 ** 17
     grid_origin = (40.139343, -111.663541, 1360.10812)
@@ -394,7 +394,9 @@ if __name__ == '__main__':
     plt.subplot(2, 1, 1)
     plt.plot(db(mf_chirp))
     plt.plot(db(fft_chirp))
+    plt.legend(['Matched Filter', 'FFT Chirp'])
     plt.subplot(2, 1, 2)
+    plt.title('Autocorrelation')
     plt.plot(db(np.fft.ifft(fft_chirp * mf_chirp)))
 
     '''tri_pcd = o3d.geometry.PointCloud()

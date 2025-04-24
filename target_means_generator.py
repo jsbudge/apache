@@ -1,23 +1,15 @@
 from glob import glob
 import os
 import numpy as np
-from pathlib import Path
-from numba import cuda
-from simulib.mesh_objects import Scene, Mesh
-from simulib.simulation_functions import db, azelToVec, genChirp, getElevation, enu2llh
-from simulib.mesh_functions import readCombineMeshFile, getRangeProfileFromScene, _float
-from simulib.platform_helper import SDRPlatform
-from scipy.signal.windows import taylor
 import matplotlib.pyplot as plt
 import plotly.io as pio
 from tqdm import tqdm
 import yaml
-from models import TargetEmbedding, load
+from models import TargetEmbedding
 from config import get_config
-from sdrparse.SDRParsing import load, loadXMLFile
 import torch
-
-from utils import scale_normalize
+import matplotlib as mplib
+mplib.use('TkAgg')
 
 # pio.renderers.default = 'svg'
 pio.renderers.default = 'browser'
@@ -47,11 +39,19 @@ if __name__ == '__main__':
     embedding.eval()
     embedding.to('cuda')
 
+    plt.figure()
     for t_dir in os.listdir(root_path):
         if 'target' in t_dir:
             files = glob(f'{root_path}/{t_dir}/*.pt')
             for f in tqdm(files):
                 sample, label = torch.load(f)
-                tmeans[label] += embedding.encode(sample.unsqueeze(0).to(embedding.device)).squeeze(0).cpu().data.numpy() / len(files)
+                emb = embedding.encode(sample.unsqueeze(0).to(embedding.device)).squeeze(0).cpu().data.numpy()
+                tmeans[label] += emb / len(files)
+                plt.plot(emb)
 
     torch.save(tmeans, f'{root_path}/target_embedding_means.pt')
+
+    plt.figure()
+    for m in tmeans[:23]:
+        plt.plot(m)
+    plt.show()

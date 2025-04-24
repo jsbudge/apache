@@ -341,6 +341,7 @@ class GeneratorModel(FlatModule):
         if self.config.scheduler_gamma is None:
             return optimizer
         scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=self.config.scheduler_gamma)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, 100, eta_min=1e-9)
         '''scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, cooldown=self.params['step_size'],
                                                          factor=self.params['scheduler_gamma'], threshold=1e-5)'''
 

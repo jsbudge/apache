@@ -15,6 +15,7 @@ from sdrparse.SDRParsing import load, loadXMLFile
 import torch
 import matplotlib as mplib
 mplib.use('TkAgg')
+from sklearn.decomposition import TruncatedSVD
 import matplotlib.pyplot as plt
 from simulib.simulation_functions import db
 
@@ -80,15 +81,7 @@ def genProfileFromMesh(a_obj_path, niters, a_mf_chirp, nbox_levels, a_points_to_
         chirp_idx = np.random.randint(0, len(a_mf_chirp))
         block = np.zeros((len(standoff), poses.shape[0], fft_len), dtype=np.complex64)
         for k, s in enumerate(standoff):
-            m_near_range_s, poses, m_pan, m_tilt = calcPosBoresight(s)
-            m_rxposes = poses + 0.0
-            m_single_rp = getRangeProfileFromScene(m_scene, m_sample_points, [poses.astype(_float)],
-                                                   [m_rxposes.astype(_float)], [m_pan.astype(_float)],
-                                                   [m_tilt.astype(_float)], radar_coeff, 25 * DTR, 25 * DTR, nsam,
-                                                   cfig_generate['fc'], m_near_range_s, fs=fs, num_bounces=num_bounces,
-                                                   streams=a_streams)
-            msrp = m_single_rp[0] # + (np.random.randn(*m_single_rp[0].shape) + 1j * np.random.randn(*m_single_rp[0].shape)) * abs(m_single_rp[0][m_single_rp[0] > 0.]).mean() / 10
-            block[k] = np.fft.fft(msrp, fft_len, axis=1) * a_mf_chirp[chirp_idx]
+            msrp, block[k] = getTargetProfile(m_scene, m_sample_points, s, a_streams, num_bounces, a_mf_chirp[chirp_idx])
         yield msrp, block, m_i
 
 
@@ -155,6 +148,139 @@ def loadClutterFiles():
     return clutter_files
 
 
+def loadClutterTargetSpectrum(a_clut, a_mesh=None):
+    sdr_ch = load(a_clut, use_jump_correction=False)
+    rp = SDRPlatform(sdr_ch)
+    nsam, nr, ranges, ranges_sampled, near_range_s, granges, full_fft_len, up_fft_len = (
+        rp.getRadarParams(0., .5, 1))
+
+    downsample_rate = full_fft_len // fft_len
+    downsample_fs = fs / downsample_rate
+    downsample_nsam = nsam // downsample_rate
+
+    flight_path = rp.rxpos(sdr_ch[0].pulse_time)
+    bore = rp.boresight(rp.gpst).mean(axis=0)
+    heading = np.arctan2(bore[0], bore[1])
+    # The XML is not guaranteed to have a flight line, so we check for that
+    try:
+        flight_alt = sdr_ch.xml['Flight_Line']['Flight_Line_Altitude_M']
+        gnd_exp_alt = flight_path.mean(axis=0)[2] - flight_alt
+        mpos = flight_path.mean(axis=0) + bore * ranges.min()
+        mpos[2] = gnd_exp_alt
+        mrng = np.linalg.norm(mpos)
+        mang = -np.arcsin(mpos[2] / mrng)
+        m_it = 1
+        while not ((ranges.max() > mrng > ranges.min()) and (
+                rp.dep_ang + rp.el_half_bw > mang > rp.dep_ang - rp.el_half_bw)):
+            mpos = flight_path.mean(axis=0) + bore * (ranges.min() + m_it)
+            mpos[2] = gnd_exp_alt
+            mrng = np.linalg.norm(mpos)
+            mang = -np.arcsin(mpos[2] / mrng)
+            m_it += 1
+    except KeyError:
+        # We don't know where the ground is, let's just project it into the abyss
+        mpos = flight_path.mean(axis=0) + bore * ranges.mean()
+
+    # Get pulse data and modify accordingly
+    pulse = np.fft.fft(sdr_ch[0].cal_chirp, fft_len)
+    mfilt = sdr_ch.genMatchedFilter(0, fft_len=fft_len)
+
+    vecs = np.array([mpos[0] - flight_path[:, 0], mpos[1] - flight_path[:, 1],
+                     mpos[2] - flight_path[:, 2]]).T
+    pt_az = np.arctan2(vecs[:, 0], vecs[:, 1])
+    max_pts = sdr_ch[0].frame_num[abs(pt_az - heading) < rp.az_half_bw]
+    pulse_lims = [min(max_pts), max(max_pts)]
+    pulse_lims[1] = min(pulse_lims[1],
+                        pulse_lims[0] + cfig_settings['cpi_len'] * cfig_generate['iterations'])
+
+    # Locate the extrema to speed up the optimization
+    if scaling > 0:
+        scene = Scene()
+        mmesh = a_mesh.translate(mpos, relative=False)
+        scene.add(Mesh(mmesh))
+        sample_points = scene.sample(points_to_sample,
+                                     vecs[np.linspace(0, vecs.shape[0] - 1,
+                                                      min(128, vecs.shape[0])).astype(int)])
+
+    for frame in list(
+            zip(*(iter(range(pulse_lims[0], pulse_lims[1] - cfig_settings['cpi_len'], cfig_settings['cpi_len'])),) * (
+                    nstreams + 1))):
+        txposes = [rp.txpos(sdr_ch[0].pulse_time[frame[n]:frame[n] + cfig_settings['cpi_len']]).astype(_float) for n in
+                   range(nstreams)]
+        rxposes = [rp.rxpos(sdr_ch[0].pulse_time[frame[n]:frame[n] + cfig_settings['cpi_len']]).astype(_float) for n in
+                   range(nstreams)]
+        pans = [rp.pan(sdr_ch[0].pulse_time[frame[n]:frame[n] + cfig_settings['cpi_len']]).astype(_float) for n in
+                range(nstreams)]
+        tilts = [rp.tilt(sdr_ch[0].pulse_time[frame[n]:frame[n] + cfig_settings['cpi_len']]).astype(_float) for n in
+                 range(nstreams)]
+        sdr_data = [sdr_ch.getPulses(sdr_ch[0].frame_num[frame[n]:frame[n] + cfig_settings['cpi_len']], 0)[1] for n in
+                    range(nstreams)]
+        if scaling > 0:
+            single_rp = getRangeProfileFromScene(scene, sample_points, txposes, rxposes, pans, tilts,
+                                                 radar_coeff, rp.az_half_bw, rp.el_half_bw, downsample_nsam,
+                                                 cfig_generate['fc'], near_range_s, fs=downsample_fs,
+                                                 num_bounces=cfig_generate['num_bounces'], streams=streams)
+            tpsds = [np.fft.fft(srp, fft_len, axis=1) * mfilt * pulse for srp in single_rp]
+        else:
+            # Load in the VCS file using the format reader
+            scat_data, angles = readVCS(obj_path)
+
+            # Generate target profile on CPU
+            tpsds = []
+            for txpos, rxpos, pan, tilt in zip(txposes, rxposes, pans, tilts):
+                bore_ang = np.array([pan, tilt]).T
+                pd = np.zeros((txpos.shape[0], nsam), dtype=np.complex128)
+                for n in range(txpos.shape[0]):
+                    bl = scat_data[np.argmin(np.linalg.norm(angles - bore_ang[n], axis=1))]
+                    rvec = bl[:, :3] - txpos[n] + mpos
+                    ranges = np.linalg.norm(rvec, axis=1)
+                    rng_bin = (ranges * 2 / c0 - 2 * near_range_s) * fs
+                    but = rng_bin.astype(int)
+                    pd[n, but] += np.exp(-1j * wavenumber * ranges * 2) * np.max(bl[:, 3:], axis=1)
+                tpsds.append(np.fft.fft(pd, fft_len, axis=1) * mfilt * pulse)
+        for sdrd, tpsd in zip(sdr_data, tpsds):
+            if len(tpsd[tpsd != 0]) == 0:
+                continue
+            sdata = np.fft.fft(sdrd, fft_len, axis=0).T * mfilt
+            if tpsd[tpsd != 0].std() == 0 or sdata[sdata != 0].std() == 0:
+                continue
+            # Unit energy and scale to have std of one
+            ntpsd = normalize(tpsd) * 1e2
+            sdata = normalize(sdata) * 1e2
+            # Shift the data so it's centered around zero (for the autoencoder)
+            if sdr_ch[0].baseband_fc != 0.:
+                shift_bin = int(sdr_ch[0].baseband_fc / sdr_ch[0].fs * fft_len)
+                ntpsd = np.roll(ntpsd, -shift_bin, 1)
+                sdata = np.roll(sdata, -shift_bin, 1)
+            ntpsd = formatTargetClutterData(ntpsd, fft_len)
+            sdata = formatTargetClutterData(sdata, fft_len)
+            yield ntpsd, sdata
+
+
+def getTargetProfile(a_scene, a_sample_points, a_standoff, a_streams, a_num_bounces, a_mf_chirp):
+    m_near_range_s, poses, m_pan, m_tilt = calcPosBoresight(a_standoff)
+    m_rxposes = poses + 0.0
+    m_single_rp = getRangeProfileFromScene(a_scene, a_sample_points, [poses.astype(_float)],
+                                           [m_rxposes.astype(_float)], [m_pan.astype(_float)],
+                                           [m_tilt.astype(_float)], radar_coeff, 25 * DTR, 25 * DTR, nsam,
+                                           cfig_generate['fc'], m_near_range_s, fs=fs, num_bounces=a_num_bounces,
+                                           streams=a_streams)
+    msrp = m_single_rp[
+        0]  # + (np.random.randn(*m_single_rp[0].shape) + 1j * np.random.randn(*m_single_rp[0].shape)) * abs(m_single_rp[0][m_single_rp[0] > 0.]).mean() / 10
+    return msrp, np.fft.fft(msrp, fft_len, axis=1) * a_mf_chirp
+
+
+def processTargetProfile(a_pd, a_fft_len, a_tsvd):
+    pd_mask = np.sqrt(np.sum(a_pd * a_pd.conj(), axis=-1).real) > 0.
+    a_pd[pd_mask] = normalize(a_pd[pd_mask]) * 1e2
+    ppd_cat = np.concatenate([formatTargetClutterData(p, a_fft_len) for p in a_pd], axis=1)
+
+    if np.all(ppd_cat == 0.):
+        return None
+
+    return np.stack([a_tsvd.fit_transform(t) for t in ppd_cat[:, :, abs(ppd_cat[0, 0]) > 0].swapaxes(0, 1)])
+
+
 if __name__ == '__main__':
     cuda.select_device(0)
 
@@ -192,6 +318,8 @@ if __name__ == '__main__':
             print(exc)
             exit()
     target_id_list = []
+
+    tsvd = TruncatedSVD(n_components=cfig_generate['n_el_samples'] * cfig_generate['n_az_samples'])
 
     streams = [cuda.stream() for _ in range(nstreams)]
 
@@ -260,21 +388,15 @@ if __name__ == '__main__':
                 if np.all(pd == 0):
                     print(f'Skipping on target {tidx}, pd {i}')
                     continue
-                # We want to normalize and scale this block, then format it to work with the autoencoder
-                # Don't scale pulses without anything there, this is an energy calculation
-                pd_mask = np.sqrt(np.sum(pd * pd.conj(), axis=-1).real) > 0.
-                pd[pd_mask] = normalize(pd[pd_mask]) * 1e2
-                pd_cat = np.concatenate([formatTargetClutterData(p, fft_len) for p in pd], axis=1)
 
-                if np.all(pd_cat == 0.):
-                    continue
+                pd_cat = processTargetProfile(pd, fft_len, tsvd)
 
                 # Append to master target list
-                if cfig_generate['save_files']:
+                if cfig_generate['save_files'] and pd_cat is not None:
                     if i == 0:
                         target_id_list.append(tobj)
                     # Save the block out to a torch file for the dataloader later
-                    torch.save([torch.tensor(pd_cat.swapaxes(0, 1), dtype=torch.float32), tidx],
+                    torch.save([torch.tensor(pd_cat, dtype=torch.float32), tidx],
                                f"{tensor_target_path}/target_{tidx}_{abs_idx}.pt")
                     abs_idx += 1
 
@@ -287,7 +409,15 @@ if __name__ == '__main__':
                 mesh = readCombineMeshFile(obj_path, points_to_sample, scale=1 / scaling)
             for clut in clutter_files:
                 # Load the sar file that the clutter came from
-                sdr_ch = load(clut, use_jump_correction=False)
+                for ntpsd, sdata in loadClutterTargetSpectrum(clut, mesh):
+                    if cfig_generate['save_files']:
+                        for nt, sd in zip(ntpsd, sdata):
+                            if not np.any(np.isnan(nt)) and not np.any(np.isnan(sd)):
+                                torch.save([torch.tensor(sd, dtype=torch.float32),
+                                            torch.tensor(nt, dtype=torch.float32), tidx],
+                                           f"{tensor_clutter_path}/tc_{abs_clutter_idx}.pt")
+                                abs_clutter_idx += 1
+                '''sdr_ch = load(clut, use_jump_correction=False)
                 rp = SDRPlatform(sdr_ch)
                 nsam, nr, ranges, ranges_sampled, near_range_s, granges, full_fft_len, up_fft_len = (
                     rp.getRadarParams(0., .5, 1))
@@ -395,7 +525,7 @@ if __name__ == '__main__':
                                     torch.save([torch.tensor(sd, dtype=torch.float32),
                                                 torch.tensor(nt, dtype=torch.float32), tidx],
                                                f"{tensor_clutter_path}/tc_{abs_clutter_idx}.pt")
-                                    abs_clutter_idx += 1
+                                    abs_clutter_idx += 1'''
 
     with open(f'{save_path}/target_ids.txt', 'w') as f:
         for idx, tid in enumerate(target_id_list):

@@ -45,15 +45,15 @@ generate_data_settings:
 # This is for setting up training of target embedding
 target_exp_params:
   training_params:
-    lr: 0.001
-    weight_decay: 0.001
+    lr: 0.0001
+    weight_decay: 0.00000
     scheduler_gamma: 0.99  # Exponential decay
-    eta_min: .0000000001  # Cosine annealing
+    eta_min: .0000001  # Cosine annealing
     betas: [ .9, .99 ]
     log_epoch: 1
     save_model: True
     transform_data: False
-    warm_start: True
+    warm_start: False
     loss_landscape: False
     max_epochs: 10000
     patience: 10
@@ -67,8 +67,8 @@ target_exp_params:
     weights_path: ./model
   dataset_params:
     data_path: ./data/target_tensors
-    train_batch_size: 15
-    val_batch_size: 15
+    train_batch_size: 5
+    val_batch_size: 5
     num_workers: 0
     pin_memory: False
     split: .7
@@ -81,11 +81,11 @@ target_exp_params:
     fft_len: 8192
     range_samples: 2
     latent_dim: 1024
-    channel_sz: 4
+    channel_sz: 8
     label_sz: 25
     nonlinearity: silu
     temperature: 1.
-    levels: 2
+    levels: 1
     # These values are taken from a sampling of data, should be the same as the dataset params
     mu: 0.
     var: 1.
@@ -97,12 +97,12 @@ wave_exp_params:
     weight_decay: 0.01
     scheduler_gamma: 0.999
     swa_start: .6
-    warm_start: False
+    warm_start: True
     betas: [.9, .99]
     log_epoch: 100
     accumulation_steps: 16
     is_tuning: False
-    save_model: True
+    save_model: False
     loss_landscape: False
     max_epochs: 1200
     patience: 500

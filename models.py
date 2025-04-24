@@ -48,7 +48,8 @@ class TargetEmbedding(FlatModule):
 
         # Parameters for normalizing data correctly
         levels = config.levels
-        out_sz = (config.angle_samples // (2 ** levels), config.fft_len // (2 ** levels))
+        # out_sz = (config.angle_samples // (2 ** levels), config.fft_len // (2 ** levels))
+        out_sz = (config.angle_samples // (2 ** levels), config.angle_samples // (2 ** levels))
 
         nonlinearity = nn.SiLU() if config.nonlinearity == 'silu' else nn.GELU() if config.nonlinearity == 'gelu' else nn.SELU()
 
@@ -57,7 +58,7 @@ class TargetEmbedding(FlatModule):
         self.encoder_inflate = nn.Sequential(
             nn.Conv2d(self.in_channels, self.channel_sz, 1, 1, 0),
             nonlinearity,
-            CBAM(self.channel_sz, reduction_factor=1, kernel_size=15),
+            CBAM(self.channel_sz, reduction_factor=1, kernel_size=9),
         )
         prev_lev_enc = self.channel_sz
         self.encoder_reduce = nn.ModuleList()
@@ -70,14 +71,14 @@ class TargetEmbedding(FlatModule):
                 nonlinearity,
             ))
             self.encoder_conv.append(nn.Sequential(
-                LKA(ch_lev_enc, (15, 5), dilation=3, activation=config.nonlinearity),
+                LKA(ch_lev_enc, (5, 5), dilation=3, activation=config.nonlinearity),
                 LKA(ch_lev_enc, (3, 3), dilation=6, activation=config.nonlinearity),
+                LKA(ch_lev_enc, (5, 3), dilation=6, activation=config.nonlinearity),
             ))
             prev_lev_enc = ch_lev_enc + 0
 
         prev_lev_dec = prev_lev_enc
         self.encoder_flatten = nn.Sequential(
-            GETheta(prev_lev_dec, extent=6, reduction_factor=1),
             TFNO2d(n_modes_height=16, n_modes_width=16, in_channels=prev_lev_dec, out_channels=1,
                    hidden_channels=prev_lev_dec, non_linearity=nonlinearity),
             nn.Conv2d(1, 1, (out_sz[0], 1), 1, 0),
@@ -159,18 +160,19 @@ class TargetEmbedding(FlatModule):
 
     def train_val_get(self, batch, batch_idx, kind='train'):
         img, idx = batch
+        n_img = (img - torch.mean(img)) / torch.std(img)
 
-        feats = self.encode(img)
+        feats = self.encode(n_img)
         reconstructions = self.decoder(feats)
 
         # RECONSTRUCTION LOSS
-        rec_loss = torch.mean(torch.square(img - reconstructions))
+        rec_loss = torch.mean(torch.square(n_img - reconstructions))
         '''rec_loss = sum(
             torch.mean(torch.abs(i - r)) for i, r in zip(img, reconstructions)
         )'''
 
         # COMBINATION LOSS
-        cll = rec_loss + torch.mean(torch.abs(img - reconstructions)) * .01
+        cll = rec_loss + torch.mean(torch.abs(n_img - reconstructions)) * .01
 
         # Logging ranking metrics
         self.log_dict({f'{kind}_total_loss': cll, f'{kind}_rec_loss': rec_loss,
@@ -189,7 +191,7 @@ class DecoderHead(LightningModule):
         self.channel_sz = channel_sz
         self.in_channels = in_channels
         self.out_sz = out_sz
-        inter_channels = 12
+        inter_channels = 6
 
         n_dec_layers = int(in_sz[0] / out_sz[0])
 
@@ -209,8 +211,9 @@ class DecoderHead(LightningModule):
             self.dec_layers.append(nn.Sequential(
                 nn.ConvTranspose2d(inter_channels, inter_channels, 4, 2, 1),
                 nonlinearity,
-                LKATranspose(inter_channels, (15, 5), dilation=6, activation='silu'),
+                LKATranspose(inter_channels, (5, 5), dilation=3, activation='silu'),
                 LKATranspose(inter_channels, (3, 3), dilation=6, activation='silu'),
+                LKATranspose(inter_channels, (3, 3), dilation=12, activation='silu'),
             ))
         self.dec_layers.append(nn.Sequential(
             nn.ConvTranspose2d(inter_channels, in_channels, 4, 2, 1),

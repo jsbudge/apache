@@ -1,7 +1,8 @@
 from functools import partial
 
+import torch
 from PyQt5 import QtWidgets, QtCore, uic
-from PyQt5.QtCore import QThread, QSettings
+from PyQt5.QtCore import QThread, QSettings, pyqtSignal
 from PyQt5.QtGui import QIcon
 from OpenGL.GLUT import *
 from PyQt5.QtWidgets import QAction, QHBoxLayout, QVBoxLayout, QGridLayout, QWidget, QDoubleSpinBox, QLabel, \
@@ -13,16 +14,18 @@ from simulib.platform_helper import SDRPlatform
 from superqt import QLargeIntSpinBox
 
 from gui.gui_classes import FileSelectWidget
-from mesh_viewer import QGLControllerWidget
+from mesh_viewer import QGLControllerWidget, ball
 import gui_utils as f
 import argparse
 import numpy as np
+
+from target_data_generator import loadClutterTargetSpectrum, getTargetProfile, processTargetProfile
 
 
 class MainWindow(QtWidgets.QMainWindow):
     patterns: list
     thread: QThread = None
-    sdr: SDRBase = None
+    _rp: SDRPlatform = None
     _bg: SDREnvironment = None
     elevation_map: np.array = None
     virtual_pos: np.array = np.array([0., 0., 0.])
@@ -50,8 +53,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Create openGL context
         self.openGL = QGLControllerWidget(self)
-        main_layout.addWidget(self.openGL, 0, 0, 5, 3)
+        self.openGL.setFixedSize(500, 500)
+        main_layout.addWidget(self.openGL, 0, 0, 15, 3)
         self.simulate_button = QPushButton('Simulate!')
+        self.simulate_button.clicked.connect(self.run_simulation)
         main_layout.addWidget(self.simulate_button, 6, 3)
 
 
@@ -64,10 +69,13 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.x_pos_spinbox = QDoubleSpinBox(self)
         self.x_pos_spinbox.setRange(-10000., 10000.)
+        self.x_pos_spinbox.setFixedWidth(70)
         self.y_pos_spinbox = QDoubleSpinBox(self)
         self.y_pos_spinbox.setRange(-10000., 10000.)
+        self.y_pos_spinbox.setFixedWidth(70)
         self.z_pos_spinbox = QDoubleSpinBox(self)
         self.z_pos_spinbox.setRange(-10000., 10000.)
+        self.z_pos_spinbox.setFixedWidth(70)
         self.x_pos_spinbox.valueChanged.connect(self.setPosition)
         self.y_pos_spinbox.valueChanged.connect(self.setPosition)
         self.z_pos_spinbox.valueChanged.connect(self.setPosition)
@@ -144,7 +152,7 @@ class MainWindow(QtWidgets.QMainWindow):
         main_layout.addLayout(mesh_param_layout, 3, 3)
         main_layout.addWidget(self.sdr_file, 4, 3)
         main_layout.addLayout(sdr_param_layout, 5, 3)
-        main_layout.addLayout(position_layout, 6, 0)
+        main_layout.addLayout(position_layout, 16, 0)
 
         container = QWidget()
         container.setLayout(main_layout)
@@ -169,8 +177,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def loadSAR(self, sdr_path):
         try:
-            self.sdr = load(sdr_path)
-            self._bg = SDREnvironment(self.sdr)
+            sdr = load(sdr_path)
+            self._bg = SDREnvironment(sdr)
+            self._rp = SDRPlatform(sdr, self._bg.ref)
             self.loadElevationMap()
             self.updateGrid()
         except:
@@ -270,6 +279,43 @@ class MainWindow(QtWidgets.QMainWindow):
     def closeEvent(self, a_event, **kwargs):
         self.savePersistentSettings()
         a_event.accept()
+
+    def run_simulation(self):
+        if self._mode == 'Profile':
+            flight_path = ball(self.range_spinbox.value(), self.azimuth_spinbox.value(),
+                               self.elevation_spinbox.value(), False)
+        elif self._mode == 'SDR Train':
+            flight_path = self._rp.txpos()
+
+
+class SimulationThread(QThread):
+    signal_update_progress = pyqtSignal(str)
+    signal_update_percentage = pyqtSignal(int)
+    signal_waveform_generated = pyqtSignal(object)
+
+    def __init__(self, mode, mesh, clutter_file_path, tensor_clutter_path, tensor_target_path, save_files):
+        super().__init__()
+        self.mesh = mesh
+        self.clut = clutter_file_path
+        self.tensor_clutter_path = tensor_clutter_path
+        self.tensor_target_path = tensor_target_path
+        self.save_files = save_files
+        self.mode = 0 if mode == 'Profile' else 1
+
+    def run(self):
+        if self.mode == 1:
+            abs_clutter_idx = 0
+            for ntpsd, sdata in loadClutterTargetSpectrum(self.clut, self.mesh):
+                if self.save_files:
+                    for nt, sd in zip(ntpsd, sdata):
+                        if not np.any(np.isnan(nt)) and not np.any(np.isnan(sd)):
+                            torch.save([torch.tensor(sd, dtype=torch.float32),
+                                        torch.tensor(nt, dtype=torch.float32), 0],
+                                       f"{self.tensor_clutter_path}/tc_{abs_clutter_idx}.pt")
+                            abs_clutter_idx += 1
+        elif self.mode == 0:
+            _, data = getTargetProfile()
+            proc_data = processTargetProfile(data, 8192, tsvd)
 
 
 

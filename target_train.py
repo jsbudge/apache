@@ -87,7 +87,7 @@ if __name__ == '__main__':
         plt.figure()
         plt.plot(embeddings[::batch_sz].T)'''
 
-        example = torch.load('/home/jeff/repo/apache/data/target_tensors/target_2/target_2_24.pt', weights_only=True)
+        example = torch.load('/home/jeff/repo/apache/data/target_tensors/target_3/target_3_34.pt', weights_only=True)
         model.to('cuda:0')
         reconstruction = model(example[0].unsqueeze(0).to(model.device)).squeeze(0).cpu().data.numpy()
         example_data = example[0].cpu().data.numpy()
