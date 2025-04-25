@@ -10,7 +10,7 @@ import numpy as np
 
 from cbam import CBAM, GETheta
 from config import Config
-from layers import LKA, LKATranspose, LKA1d, LKATranspose1d
+from layers import LKA, LKATranspose, LKA1d, LKATranspose1d, Block2d, Block2dTranspose
 from pytorch_lightning import LightningModule
 import matplotlib.pyplot as plt
 
@@ -58,7 +58,7 @@ class TargetEmbedding(FlatModule):
         self.encoder_inflate = nn.Sequential(
             nn.Conv2d(self.in_channels, self.channel_sz, 1, 1, 0),
             nonlinearity,
-            CBAM(self.channel_sz, reduction_factor=1, kernel_size=9),
+            # CBAM(self.channel_sz, reduction_factor=1, kernel_size=9),
         )
         prev_lev_enc = self.channel_sz
         self.encoder_reduce = nn.ModuleList()
@@ -71,16 +71,16 @@ class TargetEmbedding(FlatModule):
                 nonlinearity,
             ))
             self.encoder_conv.append(nn.Sequential(
-                LKA(ch_lev_enc, (5, 5), dilation=3, activation=config.nonlinearity),
-                LKA(ch_lev_enc, (3, 3), dilation=6, activation=config.nonlinearity),
-                LKA(ch_lev_enc, (5, 3), dilation=6, activation=config.nonlinearity),
+                CBAM(ch_lev_enc, reduction_factor=4, kernel_size=3),
+                Block2d(ch_lev_enc, 3, 1, 1, nonlinearity=nonlinearity),
+                # LKA(ch_lev_enc, (5, 3), dilation=3, activation=config.nonlinearity),
             ))
             prev_lev_enc = ch_lev_enc + 0
 
         prev_lev_dec = prev_lev_enc
         self.encoder_flatten = nn.Sequential(
-            TFNO2d(n_modes_height=16, n_modes_width=16, in_channels=prev_lev_dec, out_channels=1,
-                   hidden_channels=prev_lev_dec, non_linearity=nonlinearity),
+            nn.Conv2d(prev_lev_enc, 1, 1, 1, 0),
+            nonlinearity,
             nn.Conv2d(1, 1, (out_sz[0], 1), 1, 0),
             nonlinearity,
         )
@@ -150,9 +150,9 @@ class TargetEmbedding(FlatModule):
                                       eps=1e-7)
         if self.config.scheduler_gamma is None:
             return optimizer
-        '''scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=self.config.scheduler_gamma,
-                                                           verbose=True)'''
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, 100, eta_min=self.config.eta_min)
+        scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=self.config.scheduler_gamma,
+                                                           verbose=True)
+        # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, 100, eta_min=self.config.eta_min)
         '''scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, cooldown=self.params['step_size'],
                                                          factor=self.params['scheduler_gamma'], threshold=1e-5)'''
 
@@ -160,19 +160,19 @@ class TargetEmbedding(FlatModule):
 
     def train_val_get(self, batch, batch_idx, kind='train'):
         img, idx = batch
-        n_img = (img - torch.mean(img)) / torch.std(img)
+        # n_img = (img - torch.mean(img)) / torch.std(img)
 
-        feats = self.encode(n_img)
+        feats = self.encode(img)
         reconstructions = self.decoder(feats)
 
         # RECONSTRUCTION LOSS
-        rec_loss = torch.mean(torch.square(n_img - reconstructions))
+        rec_loss = torch.mean(torch.square(img - reconstructions))
         '''rec_loss = sum(
             torch.mean(torch.abs(i - r)) for i, r in zip(img, reconstructions)
         )'''
 
         # COMBINATION LOSS
-        cll = rec_loss + torch.mean(torch.abs(n_img - reconstructions)) * .01
+        cll = rec_loss + torch.mean(torch.abs(img - reconstructions)) * .01
 
         # Logging ranking metrics
         self.log_dict({f'{kind}_total_loss': cll, f'{kind}_rec_loss': rec_loss,
@@ -191,7 +191,7 @@ class DecoderHead(LightningModule):
         self.channel_sz = channel_sz
         self.in_channels = in_channels
         self.out_sz = out_sz
-        inter_channels = 6
+        inter_channels = channel_sz // (2**levels)
 
         n_dec_layers = int(in_sz[0] / out_sz[0])
 
@@ -207,14 +207,16 @@ class DecoderHead(LightningModule):
         )
 
         self.dec_layers = nn.ModuleList()
-        for _ in range(levels - 1):
+        for l in range(levels - 1):
+            inc = inter_channels * 2
             self.dec_layers.append(nn.Sequential(
-                nn.ConvTranspose2d(inter_channels, inter_channels, 4, 2, 1),
+                nn.ConvTranspose2d(inter_channels, inc, 4, 2, 1),
                 nonlinearity,
-                LKATranspose(inter_channels, (5, 5), dilation=3, activation='silu'),
-                LKATranspose(inter_channels, (3, 3), dilation=6, activation='silu'),
-                LKATranspose(inter_channels, (3, 3), dilation=12, activation='silu'),
+                # LKATranspose(inc, (5, 3), dilation=3, activation='silu'),
+                Block2dTranspose(inc, 3, 1, 1, nonlinearity=nn.SiLU()),
+                CBAM(inc, reduction_factor=4, kernel_size=3),
             ))
+            inter_channels = inc
         self.dec_layers.append(nn.Sequential(
             nn.ConvTranspose2d(inter_channels, in_channels, 4, 2, 1),
         ))

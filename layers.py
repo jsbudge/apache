@@ -227,18 +227,38 @@ class AttentionConv(nn.Module):
 
 class Block2d(nn.Module):
 
-    def __init__(self, channel_sz):
+    def __init__(self, channel_sz, kernel, stride, padding, nonlinearity=nn.GELU()):
         super(Block2d, self).__init__()
         self.channel_sz = channel_sz
         self.block = nn.Sequential(
-            nn.Conv2d(channel_sz, channel_sz, (5, 1), 1, (2, 0)),
-            nn.GELU(),
-            nn.Conv2d(channel_sz, channel_sz, (3, 1), 1, (1, 0)),
-            nn.GELU(),
-            nn.Conv2d(channel_sz, channel_sz, (3, 1), 1, (1, 0)),
-            nn.GELU(),
-            nn.Conv2d(channel_sz, channel_sz, (3, 1), 1, (1, 0)),
-            nn.GELU(),
+            nn.Conv2d(channel_sz, channel_sz, kernel, stride, padding),
+            nonlinearity,
+            nn.Conv2d(channel_sz, channel_sz, kernel, stride, padding),
+            nonlinearity,
+            nn.Conv2d(channel_sz, channel_sz, kernel, stride, padding),
+            nonlinearity,
+            nn.Conv2d(channel_sz, channel_sz, kernel, stride, padding),
+            nonlinearity,
+            nn.BatchNorm2d(channel_sz),
+        )
+
+    def forward(self, x):
+        return self.block(x)
+
+class Block2dTranspose(nn.Module):
+
+    def __init__(self, channel_sz, kernel, stride, padding, nonlinearity=nn.GELU()):
+        super(Block2dTranspose, self).__init__()
+        self.channel_sz = channel_sz
+        self.block = nn.Sequential(
+            nn.ConvTranspose2d(channel_sz, channel_sz, kernel, stride, padding),
+            nonlinearity,
+            nn.ConvTranspose2d(channel_sz, channel_sz, kernel, stride, padding),
+            nonlinearity,
+            nn.ConvTranspose2d(channel_sz, channel_sz, kernel, stride, padding),
+            nonlinearity,
+            nn.ConvTranspose2d(channel_sz, channel_sz, kernel, stride, padding),
+            nonlinearity,
             nn.BatchNorm2d(channel_sz),
         )
 
