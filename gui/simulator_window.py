@@ -1,25 +1,29 @@
 from functools import partial
 
+import pandas as pd
 import torch
 from PyQt5 import QtWidgets, QtCore, uic
 from PyQt5.QtCore import QThread, QSettings, pyqtSignal
 from PyQt5.QtGui import QIcon
 from OpenGL.GLUT import *
 from PyQt5.QtWidgets import QAction, QHBoxLayout, QVBoxLayout, QGridLayout, QWidget, QDoubleSpinBox, QLabel, \
-    QRadioButton, QButtonGroup, QPushButton
+    QRadioButton, QButtonGroup, QPushButton, QComboBox
 from sdrparse.SDRParsing import SDRBase, load
 from simulib.grid_helper import SDREnvironment
 from simulib.mesh_functions import readCombineMeshFile
 from simulib.platform_helper import SDRPlatform
+from simulib.simulation_functions import genChirp
+from sklearn.decomposition import TruncatedSVD
 from superqt import QLargeIntSpinBox
-
-from gui.gui_classes import FileSelectWidget
+from utils import get_radar_coeff
+from numba import cuda
+from gui.gui_classes import FileSelectWidget, ProgressBarWithText
 from mesh_viewer import QGLControllerWidget, ball
 import gui_utils as f
 import argparse
 import numpy as np
 
-from target_data_generator import loadClutterTargetSpectrum, getTargetProfile, processTargetProfile
+from target_data_generator import loadClutterTargetSpectrum, getTargetProfile, processTargetProfile, genProfileFromMesh
 
 
 class MainWindow(QtWidgets.QMainWindow):
@@ -29,6 +33,7 @@ class MainWindow(QtWidgets.QMainWindow):
     _bg: SDREnvironment = None
     elevation_map: np.array = None
     virtual_pos: np.array = np.array([0., 0., 0.])
+    radar_coeff: float = 0.
     _ntris: int = 10000
     _scaling: float = 7.
     win_width: int = 500
@@ -49,6 +54,8 @@ class MainWindow(QtWidgets.QMainWindow):
         # new_window_action.triggered.connect(self.open_settings_window)
         # menu_bar.addAction(new_window_action)
 
+        self.target_info = pd.read_csv('../data/target_info.csv')
+
         main_layout = QGridLayout()
 
         # Create openGL context
@@ -57,11 +64,12 @@ class MainWindow(QtWidgets.QMainWindow):
         main_layout.addWidget(self.openGL, 0, 0, 15, 3)
         self.simulate_button = QPushButton('Simulate!')
         self.simulate_button.clicked.connect(self.run_simulation)
-        main_layout.addWidget(self.simulate_button, 6, 3)
 
+        self.target_combo_box = QComboBox(self)
+        self.target_combo_box.addItems(self.target_info['name'])
+        # self.target_combo_box.lineEdit().setReadOnly(True)
+        self.target_combo_box.currentIndexChanged.connect(self.loadMesh)
 
-        self.mesh_file = FileSelectWidget(self, 'Select Mesh', file_types="GLTF Files (*.gltf);OBJ Files (*.obj);All Files (*)")
-        self.mesh_file.signal_btn_clicked.connect(self.loadMesh)
         self.sdr_file = FileSelectWidget(self, 'Select SDR File', file_types="SAR Files (*.sar)")
         self.sdr_file.signal_btn_clicked.connect(self.loadSAR)
 
@@ -85,6 +93,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.elevation_spinbox.setValue(32)
         self.range_spinbox = QDoubleSpinBox(self)
         self.range_spinbox.setValue(500.)
+        self.range_spinbox.setRange(1., 25000.)
         self.azimuth_spinbox.valueChanged.connect(self.updateGrid)
         self.elevation_spinbox.valueChanged.connect(self.updateGrid)
         self.range_spinbox.valueChanged.connect(self.updateGrid)
@@ -145,14 +154,75 @@ class MainWindow(QtWidgets.QMainWindow):
         sdr_param_layout.addWidget(QLabel('Cols:'))
         sdr_param_layout.addWidget(self.grid_ncols)
 
+        # File saving
+        self.target_save_path = FileSelectWidget(self, 'Target Profile Save Path',
+                                          read_only=False)
+        self.clutter_save_path = FileSelectWidget(self, 'SAR Train Save Path',
+                                                 read_only=False)
+
+        # Radar parameters
+        rparam_layout = QHBoxLayout()
+        rparam_sec_layout = QHBoxLayout()
+        self.fc_spinbox = QDoubleSpinBox()
+        self.fc_spinbox.setValue(9600)
+        self.fc_spinbox.setRange(8000, 10000)
+        rparam_layout.addWidget(QLabel('FC (MHz):'))
+        rparam_layout.addWidget(self.fc_spinbox)
+        self.tx_power_spinbox = QDoubleSpinBox()
+        self.tx_power_spinbox.setValue(50)
+        self.tx_power_spinbox.setRange(10, 100)
+        rparam_layout.addWidget(QLabel('Tx Power (dB):'))
+        rparam_layout.addWidget(self.tx_power_spinbox)
+        self.tx_gain_spinbox = QDoubleSpinBox()
+        self.tx_gain_spinbox.setValue(1)
+        self.tx_gain_spinbox.setRange(1, 500)
+        rparam_sec_layout.addWidget(QLabel('Tx Gain (dB):'))
+        rparam_sec_layout.addWidget(self.tx_gain_spinbox)
+        self.rx_gain_spinbox = QDoubleSpinBox()
+        self.rx_gain_spinbox.setValue(1)
+        self.rx_gain_spinbox.setRange(1, 500)
+        rparam_sec_layout.addWidget(QLabel('Rx Gain (dB):'))
+        rparam_sec_layout.addWidget(self.rx_gain_spinbox)
+        self.rec_gain_spinbox = QDoubleSpinBox()
+        self.rec_gain_spinbox.setValue(1)
+        self.rec_gain_spinbox.setRange(1, 500)
+        rparam_layout.addWidget(QLabel('Rec Gain (dB):'))
+        rparam_layout.addWidget(self.rec_gain_spinbox)
+        self.fc_spinbox.valueChanged.connect(self.slot_set_radar_coeff)
+        self.tx_power_spinbox.valueChanged.connect(self.slot_set_radar_coeff)
+        self.tx_gain_spinbox.valueChanged.connect(self.slot_set_radar_coeff)
+        self.rx_gain_spinbox.valueChanged.connect(self.slot_set_radar_coeff)
+        self.rec_gain_spinbox.valueChanged.connect(self.slot_set_radar_coeff)
+
+        # Simulation Iteration
+        self.iteration_spinbox = QLargeIntSpinBox()
+        self.iteration_spinbox.setValue(5)
+        self.iteration_spinbox.setRange(1, 100)
+        rparam_sec_layout.addWidget(QLabel('# Files to Generate:'))
+        rparam_sec_layout.addWidget(self.iteration_spinbox)
+
+
+
+        # Progress Bar
+        self.progress_bar = ProgressBarWithText(self)
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setText('Waiting...')
+
         # Grid layout for the widgets
         main_layout.addWidget(QLabel('Simulation Mode'), 0, 3)
         main_layout.addLayout(mode_layout, 1, 3)
-        main_layout.addWidget(self.mesh_file, 2, 3)
+        main_layout.addWidget(self.target_combo_box, 2, 3)
         main_layout.addLayout(mesh_param_layout, 3, 3)
         main_layout.addWidget(self.sdr_file, 4, 3)
         main_layout.addLayout(sdr_param_layout, 5, 3)
-        main_layout.addLayout(position_layout, 16, 0)
+        main_layout.addWidget(self.target_save_path, 6, 3)
+        main_layout.addWidget(self.clutter_save_path, 7, 3)
+        main_layout.addLayout(rparam_layout, 8, 3)
+        main_layout.addWidget(self.progress_bar, 16, 3)
+        main_layout.addWidget(self.simulate_button, 17, 3)
+        main_layout.addWidget(QLabel('Simulation Parameters'), 16, 0)
+        main_layout.addLayout(position_layout, 17, 0)
 
         container = QWidget()
         container.setLayout(main_layout)
@@ -165,9 +235,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.loadPersistentSettings()
 
-    def loadMesh(self, mesh_path=None):
-        if isinstance(mesh_path, str):
-            self._mesh_path = mesh_path
+    def loadMesh(self):
+        tinfo = self.target_info.loc[self.target_combo_box.currentIndex()]
+        self._mesh_path = f"/home/jeff/Documents/target_meshes/{tinfo['filename']}"
         try:
             mesh = readCombineMeshFile(self._mesh_path, self.triangle_spinbox.value(), scale=1 / self.scaling_spinbox.value())
             self.openGL.set_mesh(mesh)
@@ -207,6 +277,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.azimuth_spinbox.setEnabled(True)
             self.elevation_spinbox.setEnabled(True)
             self.range_spinbox.setEnabled(True)
+            self.clutter_save_path.setEnabled(False)
+            self.target_save_path.setEnabled(True)
         else:
             self.openGL.grid_mode = 1
             self.grid_ncols.setEnabled(True)
@@ -220,6 +292,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.azimuth_spinbox.setEnabled(False)
             self.elevation_spinbox.setEnabled(False)
             self.range_spinbox.setEnabled(False)
+            self.clutter_save_path.setEnabled(True)
+            self.target_save_path.setEnabled(False)
         self.updateGrid()
 
     def updateGrid(self):
@@ -248,15 +322,23 @@ class MainWindow(QtWidgets.QMainWindow):
         self.grid_nrows.setValue(int(settings.value("grid_nrows", 10)))
         self.grid_height.setValue(float(settings.value("grid_height", 10.)))
         self.grid_width.setValue(float(settings.value("grid_width", 10.)))
+        self.target_combo_box.setCurrentIndex(int(settings.value("current_target", 0)))
         self.azimuth_spinbox.setValue(int(settings.value("az_samples", 32)))
         self.elevation_spinbox.setValue(int(settings.value("el_samples", 32)))
         self.range_spinbox.setValue(float(settings.value("range", 500.)))
         self.sdr_file.line_edit.setText(settings.value("sar_file", ""))
-        self.mesh_file.line_edit.setText(settings.value("mesh_path", ""))
+        self.target_save_path.line_edit.setText(settings.value('target_save_path', ""))
+        self.clutter_save_path.line_edit.setText(settings.value('clutter_save_path', ""))
+        self.iteration_spinbox.setValue(settings.value('n_iters', 5))
+        self.fc_spinbox.setValue(settings.value('fc', 5))
+        self.rx_gain_spinbox.setValue(settings.value('rx_gain', 5))
+        self.tx_gain_spinbox.setValue(settings.value('tx_gain', 5))
+        self.tx_power_spinbox.setValue(settings.value('tx_power', 5))
+        self.rec_gain_spinbox.setValue(settings.value('rec_gain', 5))
         mode = settings.value("sim_mode", '')
         if mode == 'Profile':
             self.mode_target.setChecked(True)
-            self.loadMesh(self.mesh_file.line_edit.text())
+            self.loadMesh()
         elif mode == 'SDR Train':
             self.mode_train.setChecked(True)
             self.loadSAR(self.sdr_file.line_edit.text())
@@ -273,7 +355,15 @@ class MainWindow(QtWidgets.QMainWindow):
         settings.setValue('el_samples', self.elevation_spinbox.value())
         settings.setValue('range', self.range_spinbox.value())
         settings.setValue('sar_file', self.sdr_file.line_edit.text())
-        settings.setValue('mesh_path', self.mesh_file.line_edit.text())
+        settings.setValue('current_target', self.target_combo_box.currentIndex())
+        settings.setValue('target_save_path', self.target_save_path.line_edit.text())
+        settings.setValue('clutter_save_path', self.clutter_save_path.line_edit.text())
+        settings.setValue('n_iters', self.iteration_spinbox.value())
+        settings.setValue('fc', self.fc_spinbox.value())
+        settings.setValue('tx_gain', self.tx_gain_spinbox.value())
+        settings.setValue('rx_gain', self.rx_gain_spinbox.value())
+        settings.setValue('rec_gain', self.rec_gain_spinbox.value())
+        settings.setValue('tx_power', self.tx_power_spinbox.value())
         settings.setValue('sim_mode', self._mode)
 
     def closeEvent(self, a_event, **kwargs):
@@ -281,11 +371,29 @@ class MainWindow(QtWidgets.QMainWindow):
         a_event.accept()
 
     def run_simulation(self):
-        if self._mode == 'Profile':
-            flight_path = ball(self.range_spinbox.value(), self.azimuth_spinbox.value(),
-                               self.elevation_spinbox.value(), False)
-        elif self._mode == 'SDR Train':
-            flight_path = self._rp.txpos()
+        mesh = readCombineMeshFile(self._mesh_path, self.triangle_spinbox.value(),
+                                   scale=1 / self.scaling_spinbox.value())
+        self.thread = SimulationThread(self._mode, mesh, self.sdr_file.line_edit.text(), self.clutter_save_path.line_edit.text(),
+                                       self.target_save_path.line_edit.text(), True, self.scaling_spinbox.value(), self.target_combo_box.currentIndex(),
+                                       TruncatedSVD(n_components=self.azimuth_spinbox.value() * self.elevation_spinbox.value()),
+                                       self.azimuth_spinbox.value(), self.elevation_spinbox.value(), self.radar_coeff,
+                                       n_iters=self.iteration_spinbox.value(), fft_len=8192)
+        self.thread.signal_update_progress.connect(self.slot_update_progress)
+        self.thread.signal_update_percentage.connect(self.slot_update_percentage)
+        # self.thread.signal_waveform_generated.connect(self.slot_updatePlot)
+        # self.thread.finished.connect(lambda: self.toggleGUIElements(True))
+        self.thread.start()
+
+    def slot_update_progress(self, value):
+        self.progress_bar.setText(value)
+
+    def slot_update_percentage(self, value):
+        self.progress_bar.setValue(value)
+
+    def slot_set_radar_coeff(self):
+        self.radar_coeff = get_radar_coeff(self.fc_spinbox.value(), self.tx_power_spinbox.value(),
+                                           self.rx_gain_spinbox.value(), self.tx_gain_spinbox.value(),
+                                           self.rec_gain_spinbox.value())
 
 
 class SimulationThread(QThread):
@@ -293,7 +401,8 @@ class SimulationThread(QThread):
     signal_update_percentage = pyqtSignal(int)
     signal_waveform_generated = pyqtSignal(object)
 
-    def __init__(self, mode, mesh, clutter_file_path, tensor_clutter_path, tensor_target_path, save_files):
+    def __init__(self, mode, mesh, clutter_file_path, tensor_clutter_path, tensor_target_path, save_files, scaling,
+                 target_index, tsvd, n_az_samples, n_el_samples, radar_coeff, n_iters=5, fft_len=8192):
         super().__init__()
         self.mesh = mesh
         self.clut = clutter_file_path
@@ -301,21 +410,55 @@ class SimulationThread(QThread):
         self.tensor_target_path = tensor_target_path
         self.save_files = save_files
         self.mode = 0 if mode == 'Profile' else 1
+        self.scaling = scaling
+        self.tidx = target_index
+        self.tsvd = tsvd
+        self.fft_len = fft_len
+        self.n_az_samples = n_az_samples
+        self.n_el_samples = n_el_samples
+        self.radar_coeff = radar_coeff
+        self.n_iters = n_iters
 
     def run(self):
         if self.mode == 1:
             abs_clutter_idx = 0
-            for ntpsd, sdata in loadClutterTargetSpectrum(self.clut, self.mesh):
+            self.signal_update_progress.emit('Loading clutter and target spectra...')
+            for ntpsd, sdata in loadClutterTargetSpectrum(self.clut, self.radar_coeff, self.mesh, self.scaling):
+                self.signal_update_progress.emit('Running simulation...')
                 if self.save_files:
                     for nt, sd in zip(ntpsd, sdata):
                         if not np.any(np.isnan(nt)) and not np.any(np.isnan(sd)):
                             torch.save([torch.tensor(sd, dtype=torch.float32),
-                                        torch.tensor(nt, dtype=torch.float32), 0],
+                                        torch.tensor(nt, dtype=torch.float32), self.tidx],
                                        f"{self.tensor_clutter_path}/tc_{abs_clutter_idx}.pt")
                             abs_clutter_idx += 1
+                            self.signal_update_percentage.emit(abs_clutter_idx * 20)
         elif self.mode == 0:
-            _, data = getTargetProfile()
-            proc_data = processTargetProfile(data, 8192, tsvd)
+            mf_chirp = np.fft.fft(genChirp(4300, 2e9, 9.6e9, 400e6), self.fft_len)
+            mf_chirp = mf_chirp * mf_chirp.conj()
+            streams = [cuda.stream() for _ in range(1)]
+            self.signal_update_progress.emit('Loading mesh parameters...')
+            gen_iter = iter(genProfileFromMesh('', self.n_iters, mf_chirp, 4,
+                                               2**16, self.scaling, streams, [500., 25000.], self.fft_len,
+                                               self.radar_coeff, 4600, 2e9, 9.6e9, 1, a_mesh=self.mesh,
+                                               a_naz=self.n_az_samples, a_nel=self.n_el_samples))
+            self.signal_update_progress.emit('Running simulation...')
+            abs_idx = 0
+            for rprof, pd, i in gen_iter:
+                if np.all(pd == 0):
+                    print(f'Skipping on target {self.tidx}, pd {i}')
+                    continue
+
+                pd_cat = processTargetProfile(pd, self.fft_len, self.tsvd)
+
+                # Append to master target list
+                if self.save_files and pd_cat is not None:
+                    # Save the block out to a torch file for the dataloader later
+                    torch.save([torch.tensor(pd_cat, dtype=torch.float32), self.tidx],
+                               f"{self.tensor_target_path}/target_{self.tidx}_{abs_idx}.pt")
+                    abs_idx += 1
+                self.signal_update_percentage.emit(abs_idx * 20)
+        self.signal_update_progress.emit('Done simulating.')
 
 
 

@@ -8,8 +8,7 @@ Main window GUI for generating waveforms.
 @author: John Rocco <jrocco@artemisinc.net>
 """
 
-from pathlib import Path
-import yaml
+import pandas as pd
 from sdrparse.SDRParsing import SDRBase
 from simulib.mesh_functions import readCombineMeshFile
 from simulib.simulation_functions import db
@@ -25,7 +24,6 @@ from superqt import QRangeSlider
 from sdrparse import load
 import numpy as np
 from config import get_config
-from models import TargetEmbedding
 import os
 import sys
 
@@ -41,17 +39,17 @@ class WaveformGeneratorWindow(QMainWindow):
     thread: QThread = None
     sdr: SDRBase = None
     win_width: int = 500
-    win_height: int = 500
+    win_height: int = 700
     win_full_width: int = 1200
     _model_fnme: str = None
-    _target_names_file: str = '../target_files.yaml'
-    _target_ids_file: str = '../data/target_ids.txt'
+    _target_info_file: str = '../data/target_info.csv'
     _target_mesh_path: str = '/home/jeff/Documents/target_meshes'
     _model_path: str = '../vae_config.yaml'
 
     def __init__(self, model):
         super().__init__()
 
+        self.settings_window = None
         self.setWindowTitle("Waveform Generator")
         self.setGeometry(200, 200, self.win_width, self.win_height)
         self.setFixedSize(self.win_width, self.win_height)
@@ -70,26 +68,16 @@ class WaveformGeneratorWindow(QMainWindow):
         settings_layout.addLayout(grid_layout)
 
         # Target combo box and information
-        # Load files in from ids.txt
-        with open(self._target_names_file, 'r') as file:
-            try:
-                self.target_scalings = list(yaml.safe_load(file).items())
-            except yaml.YAMLError as exc:
-                print(exc)
-                exit()
-        with open(self._target_ids_file, 'r') as f:
-            target_ids = [t.strip().split(":")[1][1:] for t in f.readlines()]
-        self.target_files = [
-            Path(f'{self._target_mesh_path}/{t}') for t in target_ids]
+        self.target_info = pd.read_csv(self._target_info_file)
         # Load mean tensors
         try:
             self.patterns = torch.load('../data/target_tensors/target_embedding_means.pt')
-        except Exception:
+        except FileNotFoundError:
             self.patterns = []
         grid_layout.addWidget(QLabel("Target:"), 0, 0)
         self.target_combo_box = QComboBox(self)
         grid_layout.addWidget(self.target_combo_box, 0, 1, 1, 2)
-        self.target_combo_box.addItems(target_ids)
+        self.target_combo_box.addItems(self.target_info['name'])
         self.target_combo_box.setStyleSheet("background-color: white;")
         self.target_combo_box.setEditable(True)
         self.target_combo_box.lineEdit().setAlignment(Qt.AlignCenter)
@@ -192,7 +180,7 @@ class WaveformGeneratorWindow(QMainWindow):
         # Load the persistent settings
         self.loadPersistentSettings()
 
-        self.mview = QGLControllerWidget(self)
+        self.mview = QGLControllerWidget(self, grid_mode=7)
         grid_layout.addWidget(self.mview, 7, 0, 1, 4)
         # self.mview.initializeGL()
         # self.mview.updateGL()
@@ -247,7 +235,7 @@ class WaveformGeneratorWindow(QMainWindow):
             self.slot_updatePlot((np.zeros(self.wave_mdl.fft_len), doppler_wave))
 
     def open_settings_window(self):
-        self.settings_window = SettingsWindow(self._target_mesh_path, self._target_names_file, self._target_ids_file,
+        self.settings_window = SettingsWindow(self._target_mesh_path, self._target_info_file,
                                               self._model_path)
         self.settings_window.signal_save.connect(self.slot_reload_model)
         self.settings_window.show()
@@ -289,14 +277,14 @@ class WaveformGeneratorWindow(QMainWindow):
         self.pulse_length_spin_box.setValue(float(settings.value("pulse_length_us", 0)))
         self.bandwidth_spin_box.setValue(float(settings.value("bandwidth_mhz", 0)))
         self._target_mesh_path = settings.value("target_mesh_path", "")
-        self._target_ids_file = settings.value("target_ids_file", "")
-        self._target_names_file = settings.value("target_names_file", "")
+        self._target_info_file = settings.value("target_info_file", "")
         self._model_path = settings.value("model_path", "")
 
     def target_selected(self, index):
+        tinfo = self.target_info.loc[index]
         mesh = readCombineMeshFile(
-            str(self.target_files[index]), 10000,
-            scale=1 / self.target_scalings[index][1])
+            f"{self._target_mesh_path}/{tinfo['filename']}", 10000,
+            scale=1 / tinfo['scaling'])
         self.mview.set_mesh(mesh)
 
     def sar_file_drop_event(self, event):
@@ -332,8 +320,7 @@ class WaveformGeneratorWindow(QMainWindow):
         settings.setValue("pulse_length_us", self.pulse_length_spin_box.value())
         settings.setValue("bandwidth_mhz", self.bandwidth_spin_box.value())
         settings.setValue("target_mesh_path", self._target_mesh_path)
-        settings.setValue("target_ids_file", self._target_ids_file)
-        settings.setValue("target_names_file", self._target_names_file)
+        settings.setValue("target_info_file", self._target_info_file)
         settings.setValue("model_path", self._model_path)
 
     def show_message(self, a_message):
@@ -351,11 +338,14 @@ class WaveformGeneratorWindow(QMainWindow):
     def slot_update_percentage(self, value):
         self.progress_bar.setValue(value)
 
-    def slot_reload_model(self):
+    def slot_reload_model(self, mesh_path, info_path, model_path):
+        self._model_path = model_path
+        self._target_mesh_path = mesh_path
+        self._target_info_file = info_path
         self.progress_bar.setText('Loading wavemodel configuration files...')
         model_config = get_config('wave_exp', self._model_path)
         self.progress_bar.setText('Loading wavemodel...')
-        self.wave_mdl = GeneratorModel.load_from_checkpoint(f'{model_config.weights_path}/{model_config.model_name}.ckpt',
+        self.wave_mdl = GeneratorModel.load_from_checkpoint(f'../model/{model_config.model_name}.ckpt',
                                                        config=model_config, strict=False)
         self.wave_mdl.eval()
         self.progress_bar.setText('Wavemodel loaded.')
@@ -487,18 +477,19 @@ def loadPulseData(sdr, frame_range, fft_len):
 # Main
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+    mdl_cnfg = get_config('wave_exp', '../vae_config.yaml')
     spl_pix = QPixmap('../artemislogo.png')
     splash = QSplashScreen(spl_pix, Qt.WindowStaysOnTopHint)
     splash.show()
     splash.showMessage('Loading model configuration files...')
     splash.showMessage('Loading wavemodel configuration files...')
-    model_config = get_config('wave_exp', '../vae_config.yaml')
+    mdl_cnfg = get_config('wave_exp', '../vae_config.yaml')
     splash.showMessage('Loading wavemodel...')
     try:
-        wave_mdl = GeneratorModel.load_from_checkpoint(f'{model_config.weights_path}/{model_config.model_name}.ckpt',
-                                                            config=model_config, strict=False)
+        wave_mdl = GeneratorModel.load_from_checkpoint(f'../model/{mdl_cnfg.model_name}.ckpt',
+                                                       config=mdl_cnfg, strict=False)
         wave_mdl.eval()
-    except Exception:
+    except FileNotFoundError:
         print('Wavemodel not loaded.')
         wave_mdl = None
     splash.showMessage('Done.')

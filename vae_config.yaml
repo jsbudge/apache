@@ -32,8 +32,8 @@ generate_data_settings:
   overwrite_files: True  # Don't set this to False without cleaning the folders first
   local_path: ./data
   obj_path: /home/jeff/Documents/target_meshes
-  run_target: True
-  run_clutter: False
+  run_target: False
+  run_clutter: True
   n_az_samples: 16
   n_el_samples: 8
   num_bounces: 1
@@ -53,11 +53,11 @@ target_exp_params:
     log_epoch: 1
     save_model: True
     transform_data: False
-    warm_start: False
+    warm_start: True
     loss_landscape: False
     max_epochs: 10000
     patience: 10
-    angle_samples: 64
+    angle_samples: 128
   logging_params:
     output_images: False
     model_name: target_encoder
@@ -80,8 +80,8 @@ target_exp_params:
   model_params:
     fft_len: 8192
     range_samples: 2
-    latent_dim: 1024
-    channel_sz: 256
+    latent_dim: 684
+    channel_sz: 512
     label_sz: 25
     nonlinearity: silu
     temperature: 1.

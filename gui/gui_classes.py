@@ -31,38 +31,40 @@ class MplWidget(QWidget):
         layout.addWidget(self.can)
 
         # here you can set up your figure/axis
-        self.ax = self.can.figure.add_subplot(111)
+        self.ax = None
 
     def plot_basic_line(self, X, Y, label):
         # plot a basic line plot from x and y values.
+        self.ax = self.can.figure.add_axes([.1, .2, .8, .6])
         self.ax.cla()  # clears the axis
         self.ax.plot(X, Y, label=label)
         self.ax.grid(True)
         # self.ax.legend()
-        self.ax.ylabel('Power (dB)')
-        self.ax.xlabel('Frequency (MHz)')
+        self.ax.set_ylabel('Power (dB)')
+        self.ax.set_xlabel('Frequency (MHz)')
         # self.can.figure.tight_layout()
         self.can.draw()
 
     def plot_dopp_map(self, data):
+        self.ax = self.can.figure.add_subplot(111)
         self.ax.cla()
         self.ax.imshow(data, aspect='auto')
         self.ax.axis('off')
-        # self.can.figure.tight_layout()
+        self.can.figure.tight_layout()
         self.can.draw()
 
 
 class FileSelectWidget(QWidget):
     signal_btn_clicked = pyqtSignal(str)
 
-    def __init__(self, parent=None, label_name='File:', file_types=None):
+    def __init__(self, parent=None, label_name='File:', file_types=None, read_only=True):
         super().__init__(parent)
         layout = QHBoxLayout()
 
         layout.addWidget(QLabel(label_name))
         self.line_edit = QLineEdit(self)
         self.line_edit.setAcceptDrops(True)
-        self.line_edit.setReadOnly(True)
+        self.line_edit.setReadOnly(read_only)
 
         self.browse_btn = QPushButton("Browse", self)
         self.browse_btn.clicked.connect(self.browse_output_folder)

@@ -36,7 +36,7 @@ def setupTrainer(a_gpu_num, tconf, do_logs=True, **trainer_args):
 
 if __name__ == '__main__':
     torch.set_float32_matmul_precision('medium')
-    gpu_num = 0
+    gpu_num = 1
     device = f'cuda:{gpu_num}' if torch.cuda.is_available() else 'cpu'
     seed_everything(np.random.randint(1, 2048), workers=True)
     # seed_everything(43, workers=True)
@@ -66,26 +66,6 @@ if __name__ == '__main__':
 
         # Snag the first 50 batches
         batch_sz = target_config.val_batch_size
-        '''embeddings = []
-        samples = []
-        file_idx = []
-        val_gen = iter(data.val_dataloader())
-        for i, sam in tqdm(enumerate(val_gen)):
-            samples.append(sam[0])
-            embeddings.append(model.encode(sam[0].to(model.device)).cpu().data.numpy())
-            file_idx.append(sam[1])
-            if i >= batch_sz - 1:
-                break
-        embeddings = np.concatenate(embeddings, axis=0)
-        file_idx = np.concatenate(file_idx)
-        svd_t = KernelPCA(kernel='rbf', n_components=3).fit_transform(embeddings)
-
-        ax = plt.figure('Embedding Distances').add_subplot(projection='3d')
-        ax.scatter(svd_t[:, 0], svd_t[:, 1], svd_t[:, 2], c=file_idx / file_idx.max())
-        model.to('cpu')
-
-        plt.figure()
-        plt.plot(embeddings[::batch_sz].T)'''
 
         example = torch.load('/home/jeff/repo/apache/data/target_tensors/target_3/target_3_34.pt', weights_only=True)
         model.to('cuda:0')
