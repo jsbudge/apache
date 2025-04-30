@@ -1,14 +1,11 @@
 import torch
 from pytorch_lightning import Trainer, loggers, seed_everything
 from simulib.simulation_functions import db
-
 from config import get_config
 from dataloaders import TargetEncoderModule
-from models import TargetEmbedding, PulseClassifier
-from sklearn.decomposition import KernelPCA
+from models import TargetEmbedding
 import matplotlib.pyplot as plt
 import numpy as np
-from tqdm import tqdm
 
 
 def setupTrainer(a_gpu_num, tconf, do_logs=True, **trainer_args):

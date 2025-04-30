@@ -46,14 +46,14 @@ generate_data_settings:
 target_exp_params:
   training_params:
     lr: 0.0001
-    weight_decay: 0.00001
-    scheduler_gamma: 0.9999  # Exponential decay
+    weight_decay: 0.0001
+    scheduler_gamma: 0.999  # Exponential decay
     eta_min: .000000001  # Cosine annealing
     betas: [ .9, .99 ]
     log_epoch: 1
     save_model: True
     transform_data: False
-    warm_start: True
+    warm_start: False
     loss_landscape: False
     max_epochs: 10000
     patience: 10
@@ -67,8 +67,8 @@ target_exp_params:
     weights_path: ./model
   dataset_params:
     data_path: ./data/target_tensors
-    train_batch_size: 25
-    val_batch_size: 25
+    train_batch_size: 10
+    val_batch_size: 10
     num_workers: 0
     pin_memory: False
     split: .8
@@ -80,10 +80,10 @@ target_exp_params:
   model_params:
     fft_len: 8192
     range_samples: 2
-    latent_dim: 684
-    channel_sz: 512
+    latent_dim: 1024
+    channel_sz: 352
     label_sz: 25
-    nonlinearity: silu
+    nonlinearity: leaky
     temperature: 1.
     levels: 2
     # These values are taken from a sampling of data, should be the same as the dataset params
@@ -97,7 +97,7 @@ wave_exp_params:
     weight_decay: 0.01
     scheduler_gamma: 0.999
     swa_start: .6
-    warm_start: True
+    warm_start: False
     betas: [.9, .99]
     log_epoch: 100
     accumulation_steps: 16
@@ -121,7 +121,7 @@ wave_exp_params:
     target_channels: 128
     waveform_channels: 128
     target_latent_size: 1024
-    n_fourier_modes: 18
+    n_fourier_modes: 64
     bandwidth: 400000000.
   logging_params:
     log_dir: ./logs

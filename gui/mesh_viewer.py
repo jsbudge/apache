@@ -3,6 +3,7 @@ import math
 import moderngl
 from PyQt5 import QtOpenGL, QtWidgets, QtCore
 import numpy as np
+from moderngl import Context, Program
 from pyrr import Matrix44
 import open3d as o3d
 from simulib.simulation_functions import azelToVec
@@ -38,6 +39,11 @@ def ball(size, az_samples, el_samples, rotate=True):
 
 
 class QGLControllerWidget(QtOpenGL.QGLWidget):
+    ctx: Context = None
+    prog: Program = None
+    vbo = None
+    vao = None
+    vaos: list = []
     def __init__(self, parent=None, grid_mode=0):
         self.mesh = None
         self.parent = parent
@@ -55,19 +61,9 @@ class QGLControllerWidget(QtOpenGL.QGLWidget):
         self.wheelEvent = self.update_zoom
         self.is_wireframe = False
         self.texture = None
-        self.cell = 50
-        self.size = 20
-        if self.grid_mode == 0:
-            self.grid = ball(self.size, 64, 64)
-        elif self.grid_mode == 1:
-            pass
-        else:
-            self.grid = grid(self.size, self.cell)
-        self.grid_alpha_value = 1.0
+        self.grid_alpha_value = 1.
 
     def initializeGL(self):
-
-
         # Create a new OpenGL context
         self.ctx = moderngl.create_context()
 
@@ -117,8 +113,6 @@ class QGLControllerWidget(QtOpenGL.QGLWidget):
 
         # Setting mesh parameters
         self.mesh = None
-        self.vbo = self.ctx.buffer(self.grid.astype('f4'))
-        self.vao2 = self.ctx.simple_vertex_array(self.prog, self.vbo, 'in_position')
 
         # Setting ArcBall parameters
         if self.arc_ball is None:
@@ -126,26 +120,6 @@ class QGLControllerWidget(QtOpenGL.QGLWidget):
         self.center = np.zeros(3)
         self.scale = 1.0
         self.ctx.point_size = 5.
-
-
-    def set_scene(self):
-        # Setting shader parameters
-        self.light = self.prog['Light']
-        self.color = self.prog['Color']
-        self.mvp = self.prog['Mvp']
-        # self.prog["Texture"].value = 0
-        self.light.value = (1.0, 1.0, 1.0)
-        self.color.value = (1.0, 1.0, 1.0, 1.0)
-
-        # Setting mesh parameters
-        self.mesh = None
-        self.vbo = self.ctx.buffer(self.grid.astype('f4'))
-        self.vao2 = self.ctx.simple_vertex_array(self.prog, self.vbo, 'in_position')
-
-        # Setting ArcBall parameters
-        self.arc_ball = ArcBallUtil(self.width(), self.height())
-        self.center = np.zeros(3)
-        self.scale = 1.0
 
     def paintGL(self):
         # OpenGL loop
@@ -160,9 +134,9 @@ class QGLControllerWidget(QtOpenGL.QGLWidget):
         self.aspect_ratio = self.width() / max(1.0, self.height())
         proj = Matrix44.perspective_projection(self.fov, self.aspect_ratio, 0.1, 1000.0)
         lookat = Matrix44.look_at(
-            (0.0, 0.0, self.camera_zoom),
+            (0.0, self.camera_zoom, 0.0),
             (0.0, 0.0, 0.0),
-            (0.0, 1.0, 0.0),
+            (0.0, 0.0, 1.0),
         )
         self.arc_ball.Transform[3, :3] = -self.arc_ball.Transform[:3, :3].T @ self.center
         self.mvp.write((proj * lookat * self.arc_ball.Transform).astype('f4'))
@@ -173,11 +147,8 @@ class QGLControllerWidget(QtOpenGL.QGLWidget):
 
         # Render grid loop
         self.color.value = (1.0, 1.0, 1.0, self.grid_alpha_value)
-        self.vao2.render(moderngl.POINTS)
-        '''if self.grid_mode == 0:
-            self.vao2.render(moderngl.POINTS)
-        else:
-            self.vao2.render(moderngl.LINES)'''
+        for v in self.vaos:
+            v[0].render(v[1])
         self.color.value = self.new_color
 
     def set_mesh(self, new_mesh):
@@ -193,17 +164,22 @@ class QGLControllerWidget(QtOpenGL.QGLWidget):
         self.vao = self.ctx.vertex_array(self.prog, vao_content, index_buffer, 4)
         self.init_arcball()
 
-    def move_mesh(self, pos):
-        self.mesh.translate(pos, relative=False)
+    def modify_mesh(self, pos=None, att=None):
+        if pos is not None:
+            self.mesh.translate(pos, relative=False)
+        if att is not None:
+            self.mesh.rotate(self.mesh.get_rotation_matrix_from_xyz(att))
 
         # Creates an index buffer
         index_buffer = self.ctx.buffer(np.asarray(self.mesh.triangles, dtype="u4").tobytes())
 
         # Creates a list of vertex buffer objects (VBOs)
         vao_content = [(self.ctx.buffer(np.asarray(self.mesh.vertices, dtype="f4").tobytes()), '3f', 'in_position'),
-                       (self.ctx.buffer(np.asarray(self.mesh.vertex_normals, dtype="f4").tobytes()), '3f', 'in_normal')]
+                       (self.ctx.buffer(np.asarray(self.mesh.vertex_normals, dtype="f4").tobytes()), '3f',
+                        'in_normal')]
         self.vao = self.ctx.vertex_array(self.prog, vao_content, index_buffer, 4)
         self.init_arcball()
+
 
     def init_arcball(self):
         # Create ArcBall
@@ -240,34 +216,29 @@ class QGLControllerWidget(QtOpenGL.QGLWidget):
         self.camera_zoom = self.camera_distance(num)
         self.update()
 
+    def zoom_to(self, camera_pos):
+        self.aspect_ratio = self.width() / max(1.0, self.height())
+        proj = Matrix44.perspective_projection(self.fov, self.aspect_ratio, 0.1, 1000.0)
+        lookat = Matrix44.look_at(
+            camera_pos,
+            (0.0, 0.0, 0.0),
+            (0.0, 0.0, 1.0),
+        )
+        self.arc_ball.Transform[3, :3] = -self.arc_ball.Transform[:3, :3].T @ self.center
+        self.mvp.write((proj * lookat * self.arc_ball.Transform).astype('f4'))
+
     @staticmethod
     def camera_distance(num):
         return 1 / (math.tan(math.radians(num / 2)))
 
-    def update_grid_cell(self, cells):
-        self.cell = cells
-        self.grid = grid(self.size, self.cell)
-        self.update_grid()
+    def update_grid(self, vao_idx, pts, render_type=moderngl.POINTS):
+        assert vao_idx < len(self.vaos), "index is out of range for vao"
+        vbo = self.ctx.buffer(np.dot(pts, rotation_matrix).astype('f4'))
+        self.vaos[vao_idx] = [self.ctx.simple_vertex_array(self.prog, vbo, 'in_position'), render_type]
 
-    def update_grid_size(self, size):
-        self.size = size
-        self.grid = grid(self.size, self.cell)
-        self.update_grid()
-
-    def update_grid_param(self, size=None, cell=None, az_samples=None, el_samples=None, el_map=None):
-        if self.grid_mode == 0:
-            self.grid = ball(size, az_samples, el_samples)
-        elif self.grid_mode == 1:
-            self.grid = np.dot(el_map, rotation_matrix)
-        else:
-            self.cells = self.cell if cell is None else cell
-            self.size = self.size if size is None else size
-            self.grid = grid(self.size, self.cell)
-        self.update_grid()
-
-    def update_grid(self):
-        self.vbo = self.ctx.buffer(self.grid.astype('f4'))
-        self.vao2 = self.ctx.simple_vertex_array(self.prog, self.vbo, 'in_position')
+    def add_grid(self, pts, render_type=moderngl.POINTS):
+        vbo = self.ctx.buffer(np.dot(pts, rotation_matrix).astype('f4'))
+        self.vaos.append([self.ctx.simple_vertex_array(self.prog, vbo, 'in_position'), render_type])
 
     def resizeGL(self, width, height):
         width = max(2, width)

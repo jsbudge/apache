@@ -1,25 +1,18 @@
 from glob import glob
-import os
 import numpy as np
 import matplotlib.pyplot as plt
 import plotly.io as pio
 from tqdm import tqdm
-import yaml
 from models import TargetEmbedding
 from config import get_config
 import torch
+import os
 import matplotlib as mplib
 mplib.use('TkAgg')
+import yaml
 
 # pio.renderers.default = 'svg'
 pio.renderers.default = 'browser'
-
-c0 = 299792458.0
-TAC = 125e6
-DTR = np.pi / 180
-inch_to_m = .0254
-TARGET_PROFILE_MIN_BEAMWIDTH = 0.19634954
-fs = 2e9
 
 
 if __name__ == '__main__':

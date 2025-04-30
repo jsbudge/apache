@@ -113,6 +113,7 @@ class GeneratorModel(FlatModule):
             TFNO1d(n_modes_height=self.n_fourier_modes, in_channels=self.flowthrough_channels + 2,
                    out_channels=self.waveform_channels, non_linearity=nn.SiLU(),
                    hidden_channels=self.waveform_channels),
+            LKA1d(self.waveform_channels, kernel_sizes=(129, 65), dilation=6, activation='silu'),
             TFNO1d(n_modes_height=self.n_fourier_modes, in_channels=self.waveform_channels,
                    out_channels=self.flowthrough_channels, non_linearity=nn.SiLU(), hidden_channels=self.waveform_channels),
             ))
@@ -126,6 +127,12 @@ class GeneratorModel(FlatModule):
 
         self.wave_decoder = nn.Sequential(
             TFNO1d(n_modes_height=self.n_fourier_modes, in_channels=self.flowthrough_channels + 2,
+                   out_channels=self.wave_decoder_channels, non_linearity=nn.SiLU(),
+                   hidden_channels=self.wave_decoder_channels),
+            TFNO1d(n_modes_height=self.n_fourier_modes, in_channels=self.wave_decoder_channels,
+                   out_channels=self.wave_decoder_channels, non_linearity=nn.SiLU(),
+                   hidden_channels=self.wave_decoder_channels),
+            TFNO1d(n_modes_height=self.n_fourier_modes, in_channels=self.wave_decoder_channels,
                    out_channels=self.wave_decoder_channels, non_linearity=nn.SiLU(),
                    hidden_channels=self.wave_decoder_channels),
             TFNO1d(n_modes_height=self.n_fourier_modes, in_channels=self.wave_decoder_channels, non_linearity=nn.SiLU(),

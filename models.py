@@ -1,35 +1,19 @@
-import contextlib
 import pickle
 from typing import Any
-
 import torch
 from neuralop import TFNO1d, TFNO2d
 from torch import nn, optim, Tensor
-from torch.nn import functional as tf
 import numpy as np
-
-from cbam import CBAM, GETheta
+from cbam import CBAM
 from config import Config
 from layers import LKA, LKATranspose, LKA1d, LKATranspose1d, Block2d, Block2dTranspose
 from pytorch_lightning import LightningModule
-import matplotlib.pyplot as plt
-
 from utils import _xavier_init
 from waveform_model import FlatModule
 
 
 def calc_conv_size(inp_sz, kernel_sz, stride, padding):
     return np.floor((inp_sz - kernel_sz + 2 * padding) / stride) + 1
-
-
-def init_weights(m):
-    with contextlib.suppress(ValueError):
-        if hasattr(m, 'weight'):
-            torch.nn.init.xavier_normal_(m.weight)
-        # sourcery skip: merge-nested-ifs
-        if hasattr(m, 'bias'):
-            if m.bias is not None:
-                m.bias.data.fill_(.01)
 
 
 class TargetEmbedding(FlatModule):
@@ -51,7 +35,8 @@ class TargetEmbedding(FlatModule):
         # out_sz = (config.angle_samples // (2 ** levels), config.fft_len // (2 ** levels))
         out_sz = (config.angle_samples // (2 ** levels), config.angle_samples // (2 ** levels))
 
-        nonlinearity = nn.SiLU() if config.nonlinearity == 'silu' else nn.GELU() if config.nonlinearity == 'gelu' else nn.SELU()
+        nonlinearity = nn.SiLU() if config.nonlinearity == 'silu' else nn.GELU() \
+            if config.nonlinearity == 'gelu' else nn.SELU() if config.nonlinearity == 'selu' else nn.LeakyReLU()
 
         # Encoder
         # self.encoder_inflate = nn.Conv2d(self.in_channels, self.channel_sz, 1, 1, 0)
@@ -71,8 +56,8 @@ class TargetEmbedding(FlatModule):
                 nonlinearity,
             ))
             self.encoder_conv.append(nn.Sequential(
-                CBAM(ch_lev_enc, reduction_factor=4, kernel_size=3),
-                Block2d(ch_lev_enc, 3, 1, 1, nonlinearity=nonlinearity),
+                CBAM(ch_lev_enc, reduction_factor=4, kernel_size=7 - l * 2),
+                Block2d(ch_lev_enc, 7 - l * 2, 1, 3 - l, nonlinearity=nonlinearity),
                 # LKA(ch_lev_enc, (5, 3), dilation=3, activation=config.nonlinearity),
             ))
             prev_lev_enc = ch_lev_enc + 0
@@ -160,7 +145,6 @@ class TargetEmbedding(FlatModule):
 
     def train_val_get(self, batch, batch_idx, kind='train'):
         img, idx = batch
-        # n_img = (img - torch.mean(img)) / torch.std(img)
 
         feats = self.encode(img)
         reconstructions = self.decoder(feats)
@@ -213,8 +197,8 @@ class DecoderHead(LightningModule):
                 nn.ConvTranspose2d(inter_channels, inc, 4, 2, 1),
                 nonlinearity,
                 # LKATranspose(inc, (5, 3), dilation=3, activation='silu'),
-                Block2dTranspose(inc, 3, 1, 1, nonlinearity=nn.SiLU()),
-                CBAM(inc, reduction_factor=4, kernel_size=3),
+                Block2dTranspose(inc, 3 + l * 2, 1, 1 + l, nonlinearity=nonlinearity),
+                CBAM(inc, reduction_factor=4, kernel_size=3 + l * 2),
             ))
             inter_channels = inc
         self.dec_layers.append(nn.Sequential(
@@ -227,117 +211,6 @@ class DecoderHead(LightningModule):
         for l in self.dec_layers:
             x = l(x)
         return x
-
-
-
-
-
-class PulseClassifier(LightningModule):
-    def __init__(self, config: Config, embedding_model: LightningModule = None, *args, **kwargs) -> None:
-
-        super().__init__(*args, **kwargs)
-        self.config = config
-        self.channel_sz = config.channel_sz
-        self.in_channels = config.in_channels
-        self.label_sz = config.label_sz
-        self.automatic_optimization = False
-        self.embedding_model = embedding_model
-        self.embedding_model.eval()
-        for param in self.embedding_model.parameters():
-            param.requires_grad = False
-        self.embedding_model.to(self.device)
-
-        self.first_layer = nn.Sequential(
-            nn.Linear(self.in_channels, self.in_channels),
-            nn.GELU(),
-        )
-        self.feedthrough = nn.Sequential(
-            nn.Conv1d(1, self.channel_sz, 1, 1, 0),
-            nn.GELU(),
-            nn.Conv1d(self.channel_sz, self.channel_sz, 15, 1, 7),
-            nn.GELU(),
-            nn.MaxPool1d(2),
-            nn.Conv1d(self.channel_sz, self.channel_sz, 33, 1, 16),
-            nn.GELU(),
-            nn.Conv1d(self.channel_sz, 1, 1, 1, 0),
-            nn.GELU(),
-        )
-        self.final_layer = nn.Sequential(
-            nn.Linear(self.in_channels // 2, self.label_sz),
-            nn.Sigmoid()
-        )
-
-        _xavier_init(self)
-
-    def forward(self, inp: Tensor, **kwargs) -> Tensor:
-        with torch.no_grad():
-            self.embedding_model.eval()
-            inp = self.embedding_model(inp)
-        inp = self.first_layer(inp)
-        inp = inp.view(-1, 1, self.in_channels)
-        inp = self.feedthrough(inp)
-        inp = inp.view(-1, self.in_channels // 2)
-        inp = self.final_layer(inp)
-        return inp
-
-    def on_fit_start(self) -> None:
-        if self.trainer.is_global_zero and self.logger:
-            self.logger.log_graph(self, self.example_input_array)
-
-    def training_step(self, batch, batch_idx):
-        opt = self.optimizers()
-        train_loss = self.train_val_get(batch, batch_idx)
-        opt.zero_grad()
-        self.manual_backward(train_loss)
-        opt.step()
-
-    def validation_step(self, batch, batch_idx):
-        self.train_val_get(batch, batch_idx, 'val')
-
-    def on_after_backward(self) -> None:
-        if self.trainer.is_global_zero and self.global_step % 100 == 0 and self.logger:
-            for name, params in self.named_parameters():
-                self.logger.experiment.add_histogram(name, params, self.global_step)
-
-    def on_validation_epoch_end(self) -> None:
-        self.log('lr', self.lr_schedulers().get_last_lr()[0], prog_bar=True, rank_zero_only=True)
-
-    def on_train_epoch_end(self) -> None:
-        sch = self.lr_schedulers()
-
-        # If the selected scheduler is a ReduceLROnPlateau scheduler.
-        if isinstance(sch, torch.optim.lr_scheduler.ReduceLROnPlateau):
-            sch.step(self.trainer.callback_metrics["val_loss"])
-        else:
-            sch.step()
-        if self.trainer.is_global_zero and not self.config.is_tuning and self.config.loss_landscape:
-            self.optim_path.append(self.get_flat_params())
-
-    def configure_optimizers(self):
-        optimizer = torch.optim.AdamW(self.parameters(),
-                                      lr=self.config.lr,
-                                      weight_decay=self.config.weight_decay,
-                                      betas=self.config.betas,
-                                      eps=1e-7)
-        if self.config.scheduler_gamma is None:
-            return optimizer
-        scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=self.config.scheduler_gamma,
-                                                           verbose=True)
-        '''scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, cooldown=self.params['step_size'],
-                                                         factor=self.params['scheduler_gamma'], threshold=1e-5)'''
-
-        return {'optimizer': optimizer, 'lr_scheduler': scheduler}
-
-    def train_val_get(self, batch, batch_idx, kind='train'):
-        img, idx = batch
-        randidxes = torch.randperm(img.shape[0])
-        feats = self.forward(img[randidxes])
-        nll = tf.binary_cross_entropy(feats, tf.one_hot(idx[randidxes]).float())
-
-        # Logging ranking metrics
-        self.log_dict({f'{kind}_loss': nll}, on_epoch=True,
-                      prog_bar=True, rank_zero_only=True)
-        return nll
 
 def load(mdl, param_file):
     try:

@@ -138,6 +138,17 @@ if __name__ == '__main__':
             plt.xlabel('Lag')
             plt.ylabel('Power (dB)')
 
+            plt.figure('Target-Clutter Correlations')
+            comb_corr = np.fft.ifft(
+                np.fft.fftshift(targets[0] + clutter[0]) * waves[0, 0] * waves[0, 0].conj())
+            truth_corr = np.fft.ifft(
+                np.fft.fftshift(targets[0] + clutter[0]))
+            plt.plot(db(comb_corr))
+            plt.plot(db(truth_corr))
+            plt.legend(['Comb', 'Truth'])
+            plt.xlabel('Lag')
+            plt.ylabel('Power (dB)')
+
             # Save the model structure out to a PNG
             # plot_model(mdl, to_file='./mdl_plot.png', show_shapes=True)
             # waveforms = np.fft.fftshift(waveforms, axes=2)
