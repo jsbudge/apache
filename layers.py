@@ -155,12 +155,10 @@ class WindowGenerate(nn.Module):
 
     def forward(self, bandwidth):
         windowSize = torch.floor(bandwidth * self.fft_len).to(torch.int)#.squeeze(1)
-        ret = torch.zeros((bandwidth.shape[0], self.n_ants, self.fft_len), device=bandwidth.device)
+        ret = torch.zeros((bandwidth.shape[0], self.n_ants * 2, self.fft_len), device=bandwidth.device)
         for n, w in enumerate(windowSize):
             ws = w if w % 2 == 0 else w + 1
-            for a in range(self.n_ants):
-                win = torch.hann_window(ws, device=bandwidth.device) * self.n_ants
-                ret[n, a, self.fft_len // 2 - ws // 2:self.fft_len // 2 + ws // 2] = win
+            ret[n, :, self.fft_len // 2 - ws // 2:self.fft_len // 2 + ws // 2] += torch.hann_window(ws, device=bandwidth.device)
         return ret
 
 

@@ -45,8 +45,8 @@ simulation_params:
   load_targets: True
 
 antenna_params:
-  n_tx: 1
-  n_rx: 1
+  n_tx: 2
+  n_rx: 2
   gain: [25, 25]
   rec_gain: [100, 100]
   transmit_power: [100, 100]

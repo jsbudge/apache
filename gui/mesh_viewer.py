@@ -4,27 +4,21 @@ import moderngl
 from PyQt5 import QtOpenGL, QtWidgets, QtCore
 import numpy as np
 from moderngl import Context, Program
+from moderngl_window.scene import OrbitCamera
 from pyrr import Matrix44
 import open3d as o3d
 from simulib.simulation_functions import azelToVec
-
+from moderngl_window.context.pyqt5 import Window
 from gui_classes import ArcBallUtil
 # from resource import shaders
+from pyglm import glm
+
 
 rotation_matrix = np.array([
         [0, 0, 1],
         [1, 0, 0],
-        [0, 0.135, 0]
+        [0, 1, 0]
     ])
-
-def grid(size, steps):
-    u = np.repeat(np.linspace(-size, size, steps), 2)
-    v = np.tile([-size, size], steps)
-    w = np.zeros(steps * 2)
-    new_grid = np.concatenate([np.dstack([u, v, w]), np.dstack([v, u, w])])
-
-    # Rotate grid
-    return np.dot(new_grid, rotation_matrix)
 
 
 def ball(size, az_samples, el_samples, rotate=True):
@@ -49,19 +43,27 @@ class QGLControllerWidget(QtOpenGL.QGLWidget):
         self.parent = parent
         self.grid_mode = grid_mode
         super(QGLControllerWidget, self).__init__(parent)
-        self.arc_ball = ArcBallUtil(self.width(), self.height())
 
         # Initialize OpenGL parameters
         self.bg_color = (0.1, 0.1, 0.1, 0.1)
         self.color_alpha = 1.0
         self.new_color = (1.0, 1.0, 1.0, self.color_alpha)
-        self.fov = 60.0
-        self.camera_zoom = 2.0
+        self.fov = 75.0
         self.setMouseTracking(True)
         self.wheelEvent = self.update_zoom
         self.is_wireframe = False
         self.texture = None
         self.grid_alpha_value = 1.
+        self.camera = OrbitCamera(target=(0, 0, 0),
+                                  radius=2.,
+                                  fov=self.fov,
+                                  aspect_ratio=1,
+                                  near=1,
+                                  far=100.)
+        # self.camera._up = glm.vec3(0.0, 0.0, 1.0)
+        self.camera.set_position(2000, 0, 0)
+        self.prev_x = 0
+        self.prev_y = 0
 
     def initializeGL(self):
         # Create a new OpenGL context
@@ -113,13 +115,8 @@ class QGLControllerWidget(QtOpenGL.QGLWidget):
 
         # Setting mesh parameters
         self.mesh = None
-
-        # Setting ArcBall parameters
-        if self.arc_ball is None:
-            self.arc_ball = ArcBallUtil(self.width(), self.height())
-        self.center = np.zeros(3)
-        self.scale = 1.0
         self.ctx.point_size = 5.
+        self.ctx.depth_func = '1'
 
     def paintGL(self):
         # OpenGL loop
@@ -130,26 +127,22 @@ class QGLControllerWidget(QtOpenGL.QGLWidget):
         if self.mesh is None:
             return
 
-        # Update projection matrix loop
-        self.aspect_ratio = self.width() / max(1.0, self.height())
-        proj = Matrix44.perspective_projection(self.fov, self.aspect_ratio, 0.1, 1000.0)
         lookat = Matrix44.look_at(
-            (0.0, self.camera_zoom, 0.0),
-            (0.0, 0.0, 0.0),
+            (0.0, 1., 0.0),
+            (1.0, 0.0, 0.0),
             (0.0, 0.0, 1.0),
         )
-        self.arc_ball.Transform[3, :3] = -self.arc_ball.Transform[:3, :3].T @ self.center
-        self.mvp.write((proj * lookat * self.arc_ball.Transform).astype('f4'))
+        full_matrix = np.array(self.camera.matrix).dot(np.array(self.camera.projection.matrix)).dot(lookat)
+
+        self.mvp.write(np.ascontiguousarray(full_matrix).astype('f4'))
 
         # Render mesh loop
         self.color.value = self.new_color
         self.vao.render()
 
         # Render grid loop
-        self.color.value = (1.0, 1.0, 1.0, self.grid_alpha_value)
         for v in self.vaos:
             v[0].render(v[1])
-        self.color.value = self.new_color
 
     def set_mesh(self, new_mesh):
         self.mesh = new_mesh
@@ -162,7 +155,6 @@ class QGLControllerWidget(QtOpenGL.QGLWidget):
         vao_content = [(self.ctx.buffer(np.asarray(self.mesh.vertices, dtype="f4").tobytes()), '3f', 'in_position'),
                        (self.ctx.buffer(np.asarray(self.mesh.vertex_normals, dtype="f4").tobytes()), '3f', 'in_normal')]
         self.vao = self.ctx.vertex_array(self.prog, vao_content, index_buffer, 4)
-        self.init_arcball()
 
     def modify_mesh(self, pos=None, att=None):
         if pos is not None:
@@ -178,74 +170,26 @@ class QGLControllerWidget(QtOpenGL.QGLWidget):
                        (self.ctx.buffer(np.asarray(self.mesh.vertex_normals, dtype="f4").tobytes()), '3f',
                         'in_normal')]
         self.vao = self.ctx.vertex_array(self.prog, vao_content, index_buffer, 4)
-        self.init_arcball()
-
-
-    def init_arcball(self):
-        # Create ArcBall
-        self.arc_ball = ArcBallUtil(self.width(), self.height())
-        mesh_points = np.asarray(self.mesh.vertices)
-        bounding_box_min = np.min(mesh_points, axis=0)
-        bounding_box_max = np.max(mesh_points, axis=0)
-        self.center = 0.5*(bounding_box_max+bounding_box_min)
-        self.scale = np.linalg.norm(bounding_box_max-self.center)
-        self.arc_ball.Transform[:3, :3] /= self.scale
-        self.arc_ball.Transform[3, :3] = -self.center/self.scale
-
-    # -------------- GUI interface --------------
-    def change_light_color(self, color, alpha=1):
-        color = color + (alpha,)
-        print(color)
-        self.color.value = color
-        self.new_color = color
-
-    def update_alpha(self, alpha):
-        self.color_alpha = (alpha*0.01)
-        color_list = list(self.new_color)
-        color_list[-1] = self.color_alpha
-        self.new_color = tuple(color_list)
-
-    def update_grid_alpha(self, alpha):
-        self.grid_alpha_value = (alpha*0.01)
-
-    def background_color(self, color):
-        self.bg_color = color
-
-    def update_fov(self, num):
-        self.fov = num
-        self.camera_zoom = self.camera_distance(num)
-        self.update()
-
-    def zoom_to(self, camera_pos):
-        self.aspect_ratio = self.width() / max(1.0, self.height())
-        proj = Matrix44.perspective_projection(self.fov, self.aspect_ratio, 0.1, 1000.0)
-        lookat = Matrix44.look_at(
-            camera_pos,
-            (0.0, 0.0, 0.0),
-            (0.0, 0.0, 1.0),
-        )
-        self.arc_ball.Transform[3, :3] = -self.arc_ball.Transform[:3, :3].T @ self.center
-        self.mvp.write((proj * lookat * self.arc_ball.Transform).astype('f4'))
-
-    @staticmethod
-    def camera_distance(num):
-        return 1 / (math.tan(math.radians(num / 2)))
 
     def update_grid(self, vao_idx, pts, render_type=moderngl.POINTS):
         assert vao_idx < len(self.vaos), "index is out of range for vao"
-        vbo = self.ctx.buffer(np.dot(pts, rotation_matrix).astype('f4'))
+        # vbo = self.ctx.buffer(np.dot(pts, rotation_matrix).astype('f4'))
+        vbo = self.ctx.buffer(np.ascontiguousarray(pts).astype('f4'))
         self.vaos[vao_idx] = [self.ctx.simple_vertex_array(self.prog, vbo, 'in_position'), render_type]
 
     def add_grid(self, pts, render_type=moderngl.POINTS):
-        vbo = self.ctx.buffer(np.dot(pts, rotation_matrix).astype('f4'))
+        vbo = self.ctx.buffer(np.ascontiguousarray(pts).astype('f4'))
         self.vaos.append([self.ctx.simple_vertex_array(self.prog, vbo, 'in_position'), render_type])
 
     def resizeGL(self, width, height):
         width = max(2, width)
         height = max(2, height)
         self.ctx.viewport = (0, 0, width, height)
-        self.arc_ball.setBounds(width, height)
-        return
+        self.camera.projection.update(aspect_ratio=self.aspect_ratio)
+
+    @property
+    def aspect_ratio(self):
+        return self.width() / max(1.0, self.height())
 
     def make_wireframe(self):
         self.is_wireframe = True
@@ -253,35 +197,21 @@ class QGLControllerWidget(QtOpenGL.QGLWidget):
     def make_solid(self):
         self.is_wireframe = False
 
-    # Input handling
-    def mousePressEvent(self, event):
-        if event.buttons() & QtCore.Qt.LeftButton:
-            self.arc_ball.onClickLeftDown(event.x(), event.y())
-        elif event.buttons() & QtCore.Qt.RightButton:
-            self.prev_x = event.x()
-            self.prev_y = event.y()
-
-    def mouseReleaseEvent(self, event):
-        if event.buttons() & QtCore.Qt.LeftButton:
-            self.arc_ball.onClickLeftUp()
-
-    def mouseMoveEvent(self, event):
-        if event.buttons() & QtCore.Qt.LeftButton:
-            self.arc_ball.onDrag(event.x(), event.y())
+    def lookat(self, target, eye):
+        self.camera.set_position(*eye)
+        self.camera.look_at()
 
     def update_zoom(self, event):
-        self.camera_zoom += event.angleDelta().y() * 0.001
-        self.camera_zoom = max(self.camera_zoom, 0.1)
-        self.update()
+        self.camera.zoom_state(event.angleDelta().y() * .01)
+
+    def mousePressEvent(self, event):
+        if event.buttons() & QtCore.Qt.LeftButton:
+            self.prev_x = event.x()
+            self.prev_y = event.y()
+            self.camera.rot_state(event.x(), event.y())
 
     def mouseMoveEvent(self, event):
         if event.buttons() & QtCore.Qt.LeftButton:
-            self.arc_ball.onDrag(event.x(), event.y())
-        elif event.buttons() & QtCore.Qt.RightButton:
-            x_movement = event.x() - self.prev_x
-            y_movement = event.y() - self.prev_y
-            self.center[0] -= x_movement * 0.01
-            self.center[1] += y_movement * 0.01
-            self.update()
+            self.camera.rot_state(event.x() - self.prev_x, event.y() - self.prev_y)
             self.prev_x = event.x()
             self.prev_y = event.y()

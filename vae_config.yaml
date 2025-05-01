@@ -102,13 +102,13 @@ wave_exp_params:
     log_epoch: 100
     accumulation_steps: 16
     is_tuning: False
-    save_model: False
+    save_model: True
     loss_landscape: False
     max_epochs: 1200
     patience: 500
     distributed: False
   model_params:
-    n_ants: 1
+    n_ants: 2
     fft_len: 8192
     fs: 2000000000.
     fc: 9600000000.

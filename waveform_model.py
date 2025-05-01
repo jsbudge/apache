@@ -142,7 +142,7 @@ class GeneratorModel(FlatModule):
 
         ''' PULSE LENGTH INFORMATION '''
         self.pinfo = nn.Sequential(
-            FourierFeature(100., 50),
+            FourierFeature(1000., 50),
             nn.Linear(100, self.target_latent_size),
             nn.SiLU(),
         )
@@ -189,7 +189,7 @@ class GeneratorModel(FlatModule):
             x = tl(torch.cat([x, target.unsqueeze(1)], dim=1))
         x = self.wave_decoder(torch.cat([x, bw_info, pl_info], dim=1))
         x = self.plength(x, pulse_length) * self.bw_generate(bandwidth)
-        x = x.view(-1, self.n_ants, 2, self.fft_len)#  * bump
+        x = x.view(-1, self.n_ants, 2, self.fft_len)
         return x
 
     def full_forward(self, clutter_array, target_array: Tensor | np.ndarray, pulse_length: int, bandwidth: float) -> torch.tensor:
@@ -338,6 +338,7 @@ class GeneratorModel(FlatModule):
             sch.step()
         if self.trainer.is_global_zero and not self.config.is_tuning and self.config.loss_landscape:
             self.optim_path.append(self.get_flat_params())
+        self.log('lr', self.lr_schedulers().get_last_lr()[0], prog_bar=True, rank_zero_only=True)
 
     def configure_optimizers(self):
         optimizer = torch.optim.AdamW(self.parameters(),
@@ -347,7 +348,7 @@ class GeneratorModel(FlatModule):
                                       eps=1e-7)
         if self.config.scheduler_gamma is None:
             return optimizer
-        scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=self.config.scheduler_gamma)
+        # scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=self.config.scheduler_gamma)
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, 100, eta_min=1e-9)
         '''scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, cooldown=self.params['step_size'],
                                                          factor=self.params['scheduler_gamma'], threshold=1e-5)'''

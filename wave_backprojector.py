@@ -42,7 +42,7 @@ def buildWave(pulse_data, wfft_len):
     waves = np.roll(waves, np.where(freqdiff == freqdiff.min())[0][0], axis=-1)
     wave_mdl.to('cpu')
     waves = np.fft.fft(np.fft.ifft(waves, axis=1)[:, :nr], fft_len, axis=1) * 1e6
-    fft_chirp = waves.flatten()
+    fft_chirp = waves[0]
 
     # Shift the wave to the baseband fc
     taytay = genTaylorWindow(fc % fs, settings['bandwidth'] / 2, fs, fft_len)

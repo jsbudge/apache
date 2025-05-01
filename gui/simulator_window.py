@@ -79,13 +79,19 @@ class MainWindow(QMainWindow):
 
         self.lat_spinbox = QDoubleSpinBox(self)
         self.lat_spinbox.setRange(-90., 90.)
-        self.lat_spinbox.setFixedWidth(70)
+        self.lat_spinbox.setDecimals(10)
+        self.lat_spinbox.setFixedWidth(120)
+        self.lat_spinbox.setValue(self.virtual_pos[0])
         self.lon_spinbox = QDoubleSpinBox(self)
         self.lon_spinbox.setRange(-180., 180.)
-        self.lon_spinbox.setFixedWidth(70)
+        self.lon_spinbox.setDecimals(10)
+        self.lon_spinbox.setFixedWidth(120)
+        self.lon_spinbox.setValue(self.virtual_pos[1])
         self.alt_spinbox = QDoubleSpinBox(self)
         self.alt_spinbox.setRange(-1000., 10000.)
-        self.alt_spinbox.setFixedWidth(70)
+        self.alt_spinbox.setDecimals(10)
+        self.alt_spinbox.setFixedWidth(120)
+        self.alt_spinbox.setValue(self.virtual_pos[2])
         self.lat_spinbox.valueChanged.connect(self.slot_update_position)
         self.lon_spinbox.valueChanged.connect(self.slot_update_position)
         self.alt_spinbox.valueChanged.connect(self.slot_update_position)
@@ -314,6 +320,8 @@ class MainWindow(QMainWindow):
                                float(settings.value("range", 500.)))
         self.radar_params = (float(settings.value('fc', 5)), float(settings.value('rx_gain', 5)), float(settings.value('tx_gain', 5)),
                              float(settings.value('tx_power', 5)), float(settings.value('rec_gain', 5)))
+        self.virtual_pos = np.array([float(settings.value('lat', 40.138044)), float(settings.value('lon', -111.660027)),
+                                     float(settings.value('alt', 1365.8849123907273))])
         self._mode = settings.value("sim_mode", 'Profile')
 
     def savePersistentSettings(self):
@@ -338,6 +346,9 @@ class MainWindow(QMainWindow):
         settings.setValue('rec_gain', self.rec_gain_spinbox.value())
         settings.setValue('tx_power', self.tx_power_spinbox.value())
         settings.setValue('sim_mode', self._mode)
+        settings.setValue('lat', self.lat_spinbox.value())
+        settings.setValue('lon', self.lon_spinbox.value())
+        settings.setValue('alt', self.alt_spinbox.value())
 
     def closeEvent(self, a_event, **kwargs):
         self.savePersistentSettings()
@@ -367,13 +378,9 @@ class MainWindow(QMainWindow):
     def slot_update_percentage(self, value):
         self.progress_bar.setValue(value)
 
-    def slot_update_position(self):
-        new_pos = np.array([self.lat_spinbox.value(), self.lon_spinbox.value(), self.alt_spinbox.value()])
-        nenu = llh2enu(*new_pos, self._bg.ref)
-
-        self.virtual_pos = new_pos
-        self.openGL.update_grid(0, self.elevation_map - nenu, moderngl.LINES)
-        self.openGL.update_grid(1, self.platform_path - nenu)
+    def slot_update_position(self, centered=True):
+        self.virtual_pos = np.array([self.lat_spinbox.value(), self.lon_spinbox.value(), self.alt_spinbox.value()])
+        self.openGL.modify_mesh(pos=llh2enu(*self.virtual_pos, self._bg.ref if centered else self.virtual_pos))
         self.updateProgress(i='Updated Position')
 
     def slot_update_attitude(self):
@@ -384,6 +391,7 @@ class MainWindow(QMainWindow):
 
     def slot_update_mesh(self):
         tinfo = self.target_info.loc[self.target_combo_box.currentIndex()]
+        self.scaling_spinbox.setValue(tinfo['scaling'])
         self._mesh_path = f"/home/jeff/Documents/target_meshes/{tinfo['filename']}"
         self.updateProgress(i='Reading mesh file...')
         try:
@@ -407,6 +415,7 @@ class MainWindow(QMainWindow):
             self.openGL.update_grid(0,
                                     ball(self.range_spinbox.value(), self.azimuth_spinbox.value(),
                                          self.elevation_spinbox.value(), False))
+        self.slot_update_position(False)
         self.updateProgress(i='Antenna profile loaded.')
 
     def slot_reload_background(self):
@@ -416,24 +425,21 @@ class MainWindow(QMainWindow):
         gx, gy, gz = self._bg.getGrid(self.virtual_pos, self.grid_width.value(), self.grid_height.value(),
                                       self.grid_nrows.value(), self.grid_ncols.value())
         self.updateProgress(70, i='Generating flight profile...')
-        self.elevation_map = np.concatenate(
+        self.elevation_map = np.array([gx.flatten(), gy.flatten(), gz.flatten()]).T
+        '''self.elevation_map = np.concatenate(
             (np.dstack([gx[:, :-1].flatten(), gy[:, :-1].flatten(), gz[:, :-1].flatten()]),
-             np.dstack([gx[:, 1:].flatten(), gy[:, 1:].flatten(), gz[:, 1:].flatten()])))
-
-        nenu = llh2enu(*self.virtual_pos, self._bg.ref)
+             np.dstack([gx[:, 1:].flatten(), gy[:, 1:].flatten(), gz[:, 1:].flatten()])))'''
 
         if len(self.openGL.vaos) == 0:
-            self.openGL.add_grid(
-                self.elevation_map - nenu, moderngl.LINES)
+            self.openGL.add_grid(self.elevation_map)
         else:
-            self.openGL.update_grid(0, self.elevation_map - nenu, moderngl.LINES)
+            self.openGL.update_grid(0, self.elevation_map)
         if len(self.openGL.vaos) == 1:
-            self.openGL.add_grid(
-                self.platform_path - nenu)
+            self.openGL.add_grid(self.platform_path)
         else:
-            self.openGL.update_grid(1, self.platform_path - nenu)
+            self.openGL.update_grid(1, self.platform_path)
         self.updateProgress(90, i='Centering on model...')
-        self.openGL.zoom_to((0, 100, 0))
+        self.slot_update_position()
         self.updateProgress(0, 'Background updated.')
 
     def slot_load_sar(self):

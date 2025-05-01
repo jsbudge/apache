@@ -119,7 +119,7 @@ class ArcBall:
 
         # Return the quaternion equivalent to the rotation
         # Compute the vector perpendicular to the begin and end vectors
-        Perp = np.cross(self.StVec, self.EnVec)
+        Perp = np.cross(self.StVec, -self.EnVec)
 
         # Compute the length of the perpendicular vector
         if np.linalg.norm(Perp) > self.Epsilon:  # if its non-zero

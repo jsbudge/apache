@@ -215,13 +215,13 @@ if __name__ == '__main__':
     pdd = pdd[0, ::2]
     pulse_data = np.stack([pdd.real, pdd.imag])
 
-    wave_mdl.to(device)
+    '''wave_mdl.to(device)
     waves = wave_mdl.full_forward(pulse_data, patterns.squeeze(0).to(device), nr, settings['bandwidth'] / fs)
     wave_mdl.to('cpu')
     waves = np.fft.fft(np.fft.ifft(waves, axis=1)[:, :nr], fft_len, axis=1) * 1e6
     chirps = [np.roll(waves, -3277) for _ in rps]
     taytays = [genTaylorWindow(fc % fs, settings['bandwidth'] / 2, fs, fft_len)]
-    mfilts = [fft_chirp.conj() * taytay for fft_chirp, taytay in zip(chirps, taytays)]
+    mfilts = [fft_chirp.conj() * taytay for fft_chirp, taytay in zip(chirps, taytays)]'''
 
     for idx, ts in enumerate(data_t):
         # Modify the pulse
@@ -230,8 +230,8 @@ if __name__ == '__main__':
         waves = wave_mdl.full_forward(pulse_data, patterns.squeeze(0).to(device), nr, settings['bandwidth'] / fs)
         wave_mdl.to('cpu')
         waves = np.fft.fft(np.fft.ifft(waves, axis=1)[:, :nr], fft_len, axis=1) * 1e6
-        chirps = [np.roll(waves, -3277) for _ in rps]
-        taytays = [genTaylorWindow(fc % fs, settings['bandwidth'] / 2, fs, fft_len)]
+        chirps = [np.roll(waves[rp.tx_num], -3277) for n, rp in enumerate(rps)]
+        taytays = [genTaylorWindow(fc % fs, settings['bandwidth'] / 2, fs, fft_len) for _ in rps]
         mfilts = [fft_chirp.conj() * taytay for fft_chirp, taytay in zip(chirps, taytays)]
         txposes = [rp.txpos(ts).astype(np.float32) for rp in rps]
         rxposes = [rp.rxpos(ts).astype(np.float32) for rp in rps]
@@ -298,11 +298,11 @@ if __name__ == '__main__':
         plt.subplot(2, 1, 1)
         plt.title('Spectrum')
         for ch in chirps:
-            plt.plot(db(ch[0]))
+            plt.plot(db(ch))
         plt.subplot(2, 1, 2)
         plt.title('Time Series')
         for ch in chirps:
-            plt.plot(np.fft.ifft(ch[0]).real)
+            plt.plot(np.fft.ifft(ch).real)
 
         plt.figure('Matched Filtering')
         plt.subplot(2, 1, 1)
