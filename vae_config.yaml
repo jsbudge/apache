@@ -97,7 +97,7 @@ wave_exp_params:
     weight_decay: 0.01
     scheduler_gamma: 0.999
     swa_start: .6
-    warm_start: False
+    warm_start: True
     betas: [.9, .99]
     log_epoch: 100
     accumulation_steps: 16

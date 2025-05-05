@@ -1,17 +1,13 @@
 import math
-
+import time
 import moderngl
 from PyQt5 import QtOpenGL, QtWidgets, QtCore
 import numpy as np
 from moderngl import Context, Program
-from moderngl_window.scene import OrbitCamera
 from pyrr import Matrix44
-import open3d as o3d
 from simulib.simulation_functions import azelToVec
 from moderngl_window.context.pyqt5 import Window
-from gui_classes import ArcBallUtil
-# from resource import shaders
-from pyglm import glm
+from scipy.spatial.transform import Rotation as rot
 
 
 rotation_matrix = np.array([
@@ -54,14 +50,7 @@ class QGLControllerWidget(QtOpenGL.QGLWidget):
         self.is_wireframe = False
         self.texture = None
         self.grid_alpha_value = 1.
-        self.camera = OrbitCamera(target=(0, 0, 0),
-                                  radius=2.,
-                                  fov=self.fov,
-                                  aspect_ratio=1,
-                                  near=1,
-                                  far=100.)
-        # self.camera._up = glm.vec3(0.0, 0.0, 1.0)
-        self.camera.set_position(2000, 0, 0)
+        self.camera = Camera((15., 0, 0))
         self.prev_x = 0
         self.prev_y = 0
 
@@ -127,12 +116,8 @@ class QGLControllerWidget(QtOpenGL.QGLWidget):
         if self.mesh is None:
             return
 
-        lookat = Matrix44.look_at(
-            (0.0, 1., 0.0),
-            (1.0, 0.0, 0.0),
-            (0.0, 0.0, 1.0),
-        )
-        full_matrix = np.array(self.camera.matrix).dot(np.array(self.camera.projection.matrix)).dot(lookat)
+        proj = Matrix44.perspective_projection(self.fov, self.aspect_ratio, .1, 10000.)
+        full_matrix = proj * self.camera.matrix
 
         self.mvp.write(np.ascontiguousarray(full_matrix).astype('f4'))
 
@@ -185,11 +170,13 @@ class QGLControllerWidget(QtOpenGL.QGLWidget):
         width = max(2, width)
         height = max(2, height)
         self.ctx.viewport = (0, 0, width, height)
-        self.camera.projection.update(aspect_ratio=self.aspect_ratio)
 
     @property
     def aspect_ratio(self):
         return self.width() / max(1.0, self.height())
+
+    def look_at(self, target, eye):
+        self.camera.look_at(target, eye)
 
     def make_wireframe(self):
         self.is_wireframe = True
@@ -197,21 +184,64 @@ class QGLControllerWidget(QtOpenGL.QGLWidget):
     def make_solid(self):
         self.is_wireframe = False
 
-    def lookat(self, target, eye):
-        self.camera.set_position(*eye)
-        self.camera.look_at()
-
     def update_zoom(self, event):
-        self.camera.zoom_state(event.angleDelta().y() * .01)
+        self.camera.zoom_to(event.angleDelta().y() * .01)
 
     def mousePressEvent(self, event):
         if event.buttons() & QtCore.Qt.LeftButton:
             self.prev_x = event.x()
             self.prev_y = event.y()
-            self.camera.rot_state(event.x(), event.y())
 
     def mouseMoveEvent(self, event):
         if event.buttons() & QtCore.Qt.LeftButton:
-            self.camera.rot_state(event.x() - self.prev_x, event.y() - self.prev_y)
+            self.camera.move_to(self.prev_x - event.x(), self.prev_y - event.y())
+        if event.buttons() & QtCore.Qt.RightButton:
+            self.camera.rotate(self.prev_x - event.x(), self.prev_y - event.y())
             self.prev_x = event.x()
             self.prev_y = event.y()
+
+
+class Camera(object):
+
+    def __init__(self, pos: np.array):
+        self.pos = np.array(pos)
+        self.center = np.zeros(3)
+
+    def move_to(self, dx: float, dy: float):
+        # Map to camera coordinates before applying motion change
+        upconv = np.array(self.matrix[:3, 1])
+        rightconv = np.array(self.matrix[:3, 0])
+        motion = (upconv * -dy * 2 + rightconv * dx * 2) * .01 * np.linalg.norm(self.pos_center) / 1000.
+        self.center += motion
+        self.pos += motion
+
+    def look_at(self, target: np.array, eye: np.array):
+        self.center = target
+        self.pos = eye
+
+    def rotate(self, dx: float, dy: float):
+        upconv = np.array(self.matrix[:3, 1])
+        un = upconv / np.linalg.norm(upconv) * np.sin(dx * .005)
+        rightconv = np.array(self.matrix[:3, 0])
+        rn = rightconv / np.linalg.norm(rightconv) * np.sin(dy * .005)
+        rv = rot.from_quat(np.array([*un, np.cos(dx * .005)])) * rot.from_quat(np.array([*rn, np.cos(dy * .005)]))
+        self.pos = rv.apply(self.pos_center) + self.center
+
+    def zoom_to(self, zoom: float):
+        rng = np.linalg.norm(self.pos_center)
+        self.pos = self.pos + self.pos_center / rng * zoom * (np.sqrt(rng) + 1)
+
+    @property
+    def matrix(self):
+        return Matrix44.look_at(self.pos, self.center, (0, 0, 1.))
+
+    @property
+    def pos_center(self):
+        return self.pos - self.center
+
+    @property
+    def rotation(self):
+        return rot.from_rotvec(np.array([np.arctan2(self.pos_center[0], self.pos_center[1]), 0., np.arctan2(self.pos_center[0], self.pos_center[2])]))
+
+
+

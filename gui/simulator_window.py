@@ -166,10 +166,10 @@ class MainWindow(QMainWindow):
 
         sdr_param_layout = QHBoxLayout()
         self.grid_width = QDoubleSpinBox()
-        self.grid_width.setRange(1., 100.)
+        self.grid_width.setRange(1., 1000.)
         self.grid_width.setValue(self.grid_vals[0])
         self.grid_height = QDoubleSpinBox()
-        self.grid_height.setRange(1., 100.)
+        self.grid_height.setRange(1., 1000.)
         self.grid_height.setValue(self.grid_vals[1])
         self.grid_nrows = QLargeIntSpinBox()
         self.grid_nrows.setRange(10, 100)
@@ -279,7 +279,12 @@ class MainWindow(QMainWindow):
         timer.timeout.connect(self.openGL.updateGL)
         timer.start()
 
-        # self.openGL.initializeGL()
+        init_timer = QTimer(self)
+        init_timer.setSingleShot(True)
+        init_timer.setInterval(1000)
+        init_timer.timeout.connect(self.initialize)
+        init_timer.start()
+
 
 
     def setMode(self):
@@ -306,6 +311,11 @@ class MainWindow(QMainWindow):
         self.range_spinbox.setEnabled(arg2)
         self.clutter_save_path.setEnabled(arg1)
         self.target_save_path.setEnabled(arg2)
+
+
+    def initialize(self):
+        self.slot_update_mesh()
+        self.setMode()
 
 
     def loadPersistentSettings(self):
@@ -381,6 +391,7 @@ class MainWindow(QMainWindow):
     def slot_update_position(self, centered=True):
         self.virtual_pos = np.array([self.lat_spinbox.value(), self.lon_spinbox.value(), self.alt_spinbox.value()])
         self.openGL.modify_mesh(pos=llh2enu(*self.virtual_pos, self._bg.ref if centered else self.virtual_pos))
+        self.openGL.look_at(self.openGL.mesh.get_center(), self.openGL.mesh.get_center() + np.array([15., 0, 0]))
         self.updateProgress(i='Updated Position')
 
     def slot_update_attitude(self):
@@ -408,14 +419,12 @@ class MainWindow(QMainWindow):
             self.slot_reload_background()
 
     def slot_update_profile_background(self):
-        if len(self.openGL.vaos) == 0:
-            self.openGL.add_grid(
-                ball(self.range_spinbox.value(), self.azimuth_spinbox.value(), self.elevation_spinbox.value(), False))
-        else:
-            self.openGL.update_grid(0,
-                                    ball(self.range_spinbox.value(), self.azimuth_spinbox.value(),
-                                         self.elevation_spinbox.value(), False))
+        self.openGL.vaos = []
+        # if len(self.openGL.vaos) == 0:
+        self.openGL.add_grid(
+            ball(self.range_spinbox.value(), self.azimuth_spinbox.value(), self.elevation_spinbox.value(), False))
         self.slot_update_position(False)
+
         self.updateProgress(i='Antenna profile loaded.')
 
     def slot_reload_background(self):
@@ -440,6 +449,8 @@ class MainWindow(QMainWindow):
             self.openGL.update_grid(1, self.platform_path)
         self.updateProgress(90, i='Centering on model...')
         self.slot_update_position()
+        self.openGL.look_at(llh2enu(*self.virtual_pos, self._bg.ref), self.platform_path[0])
+        # self.openGL.fov = 1000.
         self.updateProgress(0, 'Background updated.')
 
     def slot_load_sar(self):

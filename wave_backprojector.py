@@ -155,20 +155,7 @@ if __name__ == '__main__':
     mesh_extent = car.get_max_bound() - car.get_min_bound()
     car = car.translate(np.array([gx.mean() + 100, gy.mean() - 1.5, gz.mean() + mesh_extent[2] / 2 - 9]),
                         relative=False)
-    msigmas = [2. for _ in range(np.asarray(car.triangle_material_ids).max() + 1)]
-    msigmas[0] = msigmas[15] = .5  # seats
-    msigmas[6] = msigmas[13] = msigmas[17] = .5  # body
-    msigmas[12] = msigmas[4] = .2  # windshield
-    mkds = [.5 for _ in range(np.asarray(car.triangle_material_ids).max() + 1)]
-    mkds[0] = mkds[15] = .8  # seats
-    mkds[6] = mkds[13] = mkds[17] = .8  # body
-    mkds[12] = mkds[4] = .1  # windshield
-    mkss = [.5 for _ in range(np.asarray(car.triangle_material_ids).max() + 1)]
-    mkss[0] = mkss[15] = .2  # seats
-    mkss[6] = mkss[13] = mkss[17] = .8  # body
-    mkss[12] = mkss[4] = .01  # windshield
-    scene.add(Mesh(car, num_box_levels=4, material_sigmas=msigmas, material_kd=mkds, material_ks=mkss,
-                   use_box_pts=True))
+    scene.add(Mesh(car, num_box_levels=nbox_levels))
 
     '''building = readCombineMeshFile('/home/jeff/Documents/target_meshes/long_hangar.obj', points=1e9, scale=.033)
     building = building.rotate(building.get_rotation_matrix_from_xyz(np.array([np.pi / 2, 0, 0])))
