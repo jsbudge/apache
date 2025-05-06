@@ -5,7 +5,8 @@ import torch
 from PyQt5.QtCore import QThread, QSettings, pyqtSignal, Qt, QTimer
 from OpenGL.GLUT import *
 from PyQt5.QtWidgets import QAction, QHBoxLayout, QVBoxLayout, QGridLayout, QWidget, QDoubleSpinBox, QLabel, \
-    QRadioButton, QButtonGroup, QPushButton, QComboBox, QSplashScreen, QApplication, QMainWindow
+    QRadioButton, QButtonGroup, QPushButton, QComboBox, QSplashScreen, QApplication, QMainWindow, QListWidget, \
+    QListWidgetItem
 from sdrparse.SDRParsing import SDRBase, load
 from simulib.grid_helper import SDREnvironment
 from simulib.mesh_functions import readCombineMeshFile
@@ -14,9 +15,11 @@ from simulib.simulation_functions import genChirp, llh2enu, enu2llh
 from sklearn.decomposition import TruncatedSVD
 from simulib.backproject_functions import getRadarAndEnvironment
 from superqt import QLargeIntSpinBox
+
+from gui.simulation_data_window import SimulationDataWindow
 from utils import get_radar_coeff
 from numba import cuda
-from gui.gui_classes import FileSelectWidget, ProgressBarWithText
+from gui.gui_classes import FileSelectWidget, ProgressBarWithText, WaveformCreateWindow
 from mesh_viewer import QGLControllerWidget, ball
 import gui_utils as f
 import argparse
@@ -52,6 +55,8 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
 
+        self.wave_window = None
+        self.data_window = None
         self.setWindowTitle("Simulator")
         self.setGeometry(200, 200, self.win_width, self.win_height)
         # self.setFixedSize(self.win_width, self.win_height)
@@ -235,6 +240,14 @@ class MainWindow(QMainWindow):
         rparam_sec_layout.addWidget(QLabel('# Files to Generate:'))
         rparam_sec_layout.addWidget(self.iteration_spinbox)
 
+        # Various simulation parameters to add
+        sim_param_layout = QHBoxLayout()
+        self.waves_box = QListWidget()
+        self.gen_wave_button = QPushButton('Create Wave')
+        self.gen_wave_button.clicked.connect(self.slot_gen_wave_window)
+        sim_param_layout.addWidget(self.gen_wave_button)
+        sim_param_layout.addWidget(self.waves_box)
+
         # Progress Bar
         self.progress_bar = ProgressBarWithText(self)
         self.progress_bar.setRange(0, 100)
@@ -260,9 +273,11 @@ class MainWindow(QMainWindow):
         main_layout.addLayout(rparam_layout, 8, 3)
         main_layout.addLayout(rparam_sec_layout, 9, 3)
         main_layout.addWidget(self.reload_button, 10, 3)
+        main_layout.addWidget(QLabel('Simulation Parameters'), 11, 3)
+        main_layout.addLayout(sim_param_layout, 12, 3)
         main_layout.addWidget(self.progress_bar, 16, 3)
         main_layout.addWidget(self.simulate_button, 17, 3)
-        main_layout.addWidget(QLabel('Simulation Parameters'), 16, 0)
+        main_layout.addWidget(QLabel('Location Parameters'), 16, 0)
         main_layout.addLayout(position_layout, 17, 0)
 
         container = QWidget()
@@ -284,6 +299,8 @@ class MainWindow(QMainWindow):
         init_timer.setInterval(1000)
         init_timer.timeout.connect(self.initialize)
         init_timer.start()
+
+        self.slot_set_radar_coeff()
 
 
 
@@ -374,6 +391,7 @@ class MainWindow(QMainWindow):
                                        n_iters=self.iteration_spinbox.value(), fft_len=8192)
         self.thread.signal_update_progress.connect(self.slot_update_progress)
         self.thread.signal_update_percentage.connect(self.slot_update_percentage)
+        self.thread.signal_file_generated.connect(self.slot_show_file)
         self.thread.start()
 
     def updateProgress(self, p=None, i=None):
@@ -381,6 +399,14 @@ class MainWindow(QMainWindow):
             self.progress_bar.setText(i)
         if p is not None:
             self.progress_bar.setValue(int(p))
+
+    def slot_add_wave(self, wavedata):
+        self.waves_box.addItem(QListWidgetItem(wavedata[0], self.waves_box))
+            
+    def slot_gen_wave_window(self):
+        self.wave_window = WaveformCreateWindow()
+        self.wave_window.signal_add_wave.connect(self.slot_add_wave)
+        self.wave_window.show()
 
     def slot_update_progress(self, value):
         self.progress_bar.setText(value)
@@ -467,11 +493,17 @@ class MainWindow(QMainWindow):
                                            self.rx_gain_spinbox.value(), self.tx_gain_spinbox.value(),
                                            self.rec_gain_spinbox.value())
 
+    def slot_show_file(self, fnmes):
+        self.data_window = SimulationDataWindow(fnmes)
+        self.data_window.show()
+
+
+
 
 class SimulationThread(QThread):
     signal_update_progress = pyqtSignal(str)
     signal_update_percentage = pyqtSignal(int)
-    signal_waveform_generated = pyqtSignal(object)
+    signal_file_generated = pyqtSignal(object)
 
     def __init__(self, mode, mesh, clutter_file_path, tensor_clutter_path, tensor_target_path, save_files, scaling,
                  target_index, tsvd, n_az_samples, n_el_samples, radar_coeff, n_iters=5, fft_len=8192):
@@ -492,6 +524,7 @@ class SimulationThread(QThread):
         self.n_iters = n_iters
 
     def run(self):
+        fnmes = []
         if self.mode == 1:
             abs_clutter_idx = 0
             self.signal_update_progress.emit('Loading clutter and target spectra...')
@@ -500,9 +533,10 @@ class SimulationThread(QThread):
                 if self.save_files:
                     for nt, sd in zip(ntpsd, sdata):
                         if not np.any(np.isnan(nt)) and not np.any(np.isnan(sd)):
+                            fnme = f"{self.tensor_clutter_path}/tc_{abs_clutter_idx}.pt"
                             torch.save([torch.tensor(sd, dtype=torch.float32),
-                                        torch.tensor(nt, dtype=torch.float32), self.tidx],
-                                       f"{self.tensor_clutter_path}/tc_{abs_clutter_idx}.pt")
+                                        torch.tensor(nt, dtype=torch.float32), self.tidx], fnme)
+                            fnmes.append(fnme)
                             abs_clutter_idx += 1
                             self.signal_update_percentage.emit(abs_clutter_idx * 20)
         elif self.mode == 0:
@@ -510,13 +544,12 @@ class SimulationThread(QThread):
             mf_chirp = mf_chirp * mf_chirp.conj()
             streams = [cuda.stream() for _ in range(1)]
             self.signal_update_progress.emit('Loading mesh parameters...')
-            gen_iter = iter(genProfileFromMesh('', self.n_iters, mf_chirp, 4,
+            gen_iter = iter(genProfileFromMesh('', self.n_iters, [mf_chirp], 4,
                                                2**16, self.scaling, streams, [500., 25000.], self.fft_len,
                                                self.radar_coeff, 4600, 2e9, 9.6e9, 1, a_mesh=self.mesh,
                                                a_naz=self.n_az_samples, a_nel=self.n_el_samples))
             self.signal_update_progress.emit('Running simulation...')
-            abs_idx = 0
-            for rprof, pd, i in gen_iter:
+            for abs_idx, (rprof, pd, i) in enumerate(gen_iter):
                 if np.all(pd == 0):
                     print(f'Skipping on target {self.tidx}, pd {i}')
                     continue
@@ -525,12 +558,14 @@ class SimulationThread(QThread):
 
                 # Append to master target list
                 if self.save_files and pd_cat is not None:
+                    fnme = f"{self.tensor_target_path}/target_{self.tidx}_{abs_idx}.pt"
                     # Save the block out to a torch file for the dataloader later
-                    torch.save([torch.tensor(pd_cat, dtype=torch.float32), self.tidx],
-                               f"{self.tensor_target_path}/target_{self.tidx}_{abs_idx}.pt")
-                    abs_idx += 1
+                    torch.save([torch.tensor(pd_cat, dtype=torch.float32), self.tidx], fnme)
+                    fnmes.append(fnme)
                 self.signal_update_percentage.emit(abs_idx * 20)
         self.signal_update_progress.emit('Done simulating.')
+        self.signal_update_percentage.emit(0)
+        self.signal_file_generated.emit(fnmes)
 
 
 

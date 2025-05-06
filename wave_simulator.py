@@ -137,6 +137,9 @@ if __name__ == '__main__':
     patterns = torch.tensor(torch.load('/home/jeff/repo/apache/data/target_tensors/target_embedding_means.pt')[2],
                             dtype=torch.float32)
 
+    lfm_chirps = [np.fft.fft(genChirp(nr, fs, fc, settings['bandwidth']), fft_len)]
+    lfm_mfilts = [fft_chirp.conj() * taytay for fft_chirp, taytay in zip(chirps, taytays)]
+
     # Calculate out points on the ground
     gx, gy, gz = bg.getGrid(settings['origin'], settings['grid_width'], settings['grid_height'], *nbpj_pts,
                             rpref.heading if settings['rotate_grid'] else 0)

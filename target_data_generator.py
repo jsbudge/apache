@@ -283,7 +283,8 @@ def processTargetProfile(a_pd, a_fft_len, a_tsvd):
     if np.all(ppd_cat == 0.):
         return None
 
-    return np.stack([a_tsvd.fit_transform(t) for t in ppd_cat[:, :, abs(ppd_cat[0, 0]) > 0].swapaxes(0, 1)])
+    return np.stack([a_tsvd.fit_transform(t) for t in ppd_cat.swapaxes(0, 1)])
+    # return np.stack([a_tsvd.fit_transform(t) for t in ppd_cat[:, :, abs(ppd_cat[0, 0]) > 0].swapaxes(0, 1)])
 
 
 if __name__ == '__main__':
