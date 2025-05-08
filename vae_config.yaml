@@ -114,15 +114,16 @@ wave_exp_params:
     fc: 9600000000.
     encoder_start_channel_sz: 2
     embedding_concatenation_channels: 128
-    n_skip_layers: 10
+    n_skip_layers: 5
     clutter_target_channels: 128
-    flowthrough_channels: 128
-    wave_decoder_channels: 128
+    flowthrough_channels: 114
+    wave_decoder_channels: 156
     target_channels: 128
     waveform_channels: 128
     target_latent_size: 1024
-    n_fourier_modes: 64
+    n_fourier_modes: 128
     bandwidth: 400000000.
+    nonlinearity: grow
   logging_params:
     log_dir: ./logs
     weights_path: ./model

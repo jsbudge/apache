@@ -12,13 +12,16 @@ inch_to_m = .0254
 m_to_ft = 3.2808
 
 
+
+
+
 def _xavier_init(model):
     """
     Performs the Xavier weight initialization.
     """
     for module in model.modules():
         if isinstance(module, (nn.Linear, nn.Conv1d, nn.ConvTranspose1d)):
-            nn.init.kaiming_normal_(module.weight)
+            nn.init.kaiming_normal_(module.weight, nonlinearity='linear')
             if module.bias is not None:
                 fan_in, _ = nn.init._calculate_fan_in_and_fan_out(module.weight)
                 if fan_in != 0:
@@ -118,3 +121,17 @@ def narrow_band(signal, lag=None, n_fbins=None):
     xi = np.arange(_xi1, _xi2 + 1, dtype=float) / n_fbins
     naf = naf[np.hstack((_ix1, _ix2)), :]
     return naf, lag, xi
+
+
+class GrowingCosine(nn.Module):
+    def forward(self, x):
+        return x * torch.cos(x)
+
+
+class ELiSH(nn.Module):
+    def forward(self, x):
+        return torch.where(x > 0, x * torch.sigmoid(x), (torch.exp(x) - 1) * torch.sigmoid(x))
+
+
+nonlinearities = {'silu': nn.SiLU(), 'gelu': nn.GELU(), 'selu': nn.SELU(), 'leaky': nn.LeakyReLU(),
+                  'grow': GrowingCosine(), 'elish': ELiSH()}

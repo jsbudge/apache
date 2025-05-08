@@ -1,5 +1,5 @@
 from PyQt5.QtWidgets import (QApplication, QComboBox, QDoubleSpinBox, QFileDialog, QGridLayout, QHBoxLayout, QLabel,
-                             QLineEdit, QMainWindow, QMessageBox, QProgressBar, QPushButton, QVBoxLayout, QWidget)
+                             QLineEdit, QMainWindow, QMessageBox, QProgressBar, QPushButton, QVBoxLayout, QWidget, QListWidget, QTabWidget)
 from PyQt5.QtCore import pyqtSignal, QObject, Qt, QSettings, QThread, QTimer
 
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
@@ -9,6 +9,8 @@ import numpy as np
 from scipy.spatial.transform import Rotation as R
 from simulib.simulation_functions import genChirp, db
 from superqt import QLargeIntSpinBox
+import torch
+from pathlib import Path
 
 
 class ProgressBarWithText(QProgressBar):
@@ -117,7 +119,7 @@ class WaveformCreateWindow(QMainWindow):
         self.nsam_spinbox.valueChanged.connect(self.slot_gen_wave)
         self.fc_spinbox.valueChanged.connect(self.slot_gen_wave)
         self.add_button = QPushButton('Add to Simulation')
-        self.add_button.clicked.connect(self.slot_gen_wave)
+        self.add_button.clicked.connect(self.slot_add_wave)
         self.name_field = QLineEdit(self)
 
         opts_layout.addWidget(QLabel('BW:'))
@@ -150,4 +152,61 @@ class WaveformCreateWindow(QMainWindow):
 
     def slot_add_wave(self):
         self.slot_gen_wave()
-        self.signal_add_wave.emit([self.name_field.text(), self.wave])
+        self.signal_add_wave.emit([self.name_field.text(), self.wave, self.nsam_spinbox.value(), 2e9, self.fc_spinbox.value()])
+
+
+class SimulationDataWindow(QMainWindow):
+
+    def __init__(self, files):
+        super().__init__()
+        self.setWindowTitle("Simulation Results")
+        self.setGeometry(250, 250, 500, 200)
+        layout = QVBoxLayout()
+
+        self.files = files
+        self.tabs = QTabWidget()
+        for f in files:
+            viewer = MplWidget()
+            viewer.plot_dopp_map(torch.load(f)[0][0])
+            self.tabs.addTab(viewer, Path(f).stem)
+        layout.addWidget(self.tabs)
+
+        container = QWidget()
+        container.setLayout(layout)
+        self.setCentralWidget(container)
+
+
+class DropList(QListWidget):
+    signal_item_dropped = pyqtSignal(str)
+    def __init__(self, parent=None):
+        super(DropList, self).__init__(parent)
+        self.setAcceptDrops(True)
+        self.itemDoubleClicked.connect(self.remove_item)
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event):
+        md = event.mimeData()
+        if md.hasUrls():
+            for url in md.urls():
+                self.addItem(url.toLocalFile())
+                self.signal_item_dropped.emit(url.toLocalFile())
+            event.acceptProposedAction()
+
+    def remove_item(self, item):
+        # Get the row of the item
+        row = self.row(item)
+
+        # Remove the item from the list
+        if row >= 0:
+            self.takeItem(row)

@@ -13,7 +13,7 @@ from config import Config
 from layers import FourierFeature, PulseLength, LKA1d, LKATranspose1d, WindowGenerate
 import numpy as np
 
-from utils import normalize, get_pslr, _xavier_init
+from utils import normalize, get_pslr, _xavier_init, nonlinearities
 
 EXP_1 = 0.36787944117144233
 EPS = 1e-12
@@ -82,27 +82,29 @@ class GeneratorModel(FlatModule):
         self.n_fourier_modes = config.n_fourier_modes
         self.bandwidth = config.bandwidth
         self.baseband_fc = (config.fc % self.fs) - self.fs
+        self.nonlinearity = config.nonlinearity
+        nlin = nonlinearities[self.nonlinearity]
 
         '''TRANSFORMER'''
         # self.predict_lstm = nn.LSTM(self.target_latent_size, self.target_latent_size, self.lstm_layers, batch_first=True)
         self.predict_decoder = nn.Transformer(self.target_latent_size, num_decoder_layers=7, num_encoder_layers=7, nhead=8,
-                                              batch_first=True, activation=nn.SiLU())
+                                              batch_first=True, activation=nlin)
         # self.predict_decoder.apply(init_weights)
 
         '''CLUTTER AND TARGET COMBINATION LAYERS'''
         self.clutter_encoder = nn.Sequential(
             nn.Linear(self.fft_len, self.target_latent_size),
-            nn.SiLU(),
+            nlin,
         )
         self.clutter_squash = nn.Sequential(
             nn.Linear(2, 1),
-            nn.SiLU(),
+            nlin,
         )
 
         self.clutter_target_init = nn.Sequential(
             TFNO1d(n_modes_height=self.n_fourier_modes, in_channels=2, out_channels=self.flowthrough_channels,
-                   hidden_channels=self.clutter_target_channels, non_linearity=nn.SiLU()),
-            LKA1d(self.clutter_target_channels, kernel_sizes=(255, 129), dilation=12, activation='silu'),
+                   hidden_channels=self.clutter_target_channels, non_linearity=nlin),
+            LKA1d(self.flowthrough_channels, kernel_sizes=(255, 129), dilation=12, activation=self.nonlinearity),
         )
 
         '''SKIP LAYERS'''
@@ -111,31 +113,31 @@ class GeneratorModel(FlatModule):
         for _ in range(config.n_skip_layers):
             self.waveform_layers.append(nn.Sequential(
             TFNO1d(n_modes_height=self.n_fourier_modes, in_channels=self.flowthrough_channels + 2,
-                   out_channels=self.waveform_channels, non_linearity=nn.SiLU(),
+                   out_channels=self.waveform_channels, non_linearity=nlin,
                    hidden_channels=self.waveform_channels),
-            LKA1d(self.waveform_channels, kernel_sizes=(129, 65), dilation=6, activation='silu'),
+            LKA1d(self.waveform_channels, kernel_sizes=(129, 65), dilation=6, activation=self.nonlinearity),
             TFNO1d(n_modes_height=self.n_fourier_modes, in_channels=self.waveform_channels,
-                   out_channels=self.flowthrough_channels, non_linearity=nn.SiLU(), hidden_channels=self.waveform_channels),
+                   out_channels=self.flowthrough_channels, non_linearity=nlin, hidden_channels=self.waveform_channels),
             ))
             self.target_layers.append(nn.Sequential(
                 TFNO1d(n_modes_height=self.n_fourier_modes, in_channels=self.flowthrough_channels + 1,
-                       out_channels=self.target_channels, non_linearity=nn.SiLU(),
+                       out_channels=self.target_channels, non_linearity=nlin,
                        hidden_channels=self.target_channels),
-                TFNO1d(n_modes_height=self.n_fourier_modes, in_channels=self.target_channels, non_linearity=nn.SiLU(),
+                TFNO1d(n_modes_height=self.n_fourier_modes, in_channels=self.target_channels, non_linearity=nlin,
                        out_channels=self.flowthrough_channels, hidden_channels=self.target_channels),
             ))
 
         self.wave_decoder = nn.Sequential(
             TFNO1d(n_modes_height=self.n_fourier_modes, in_channels=self.flowthrough_channels + 2,
-                   out_channels=self.wave_decoder_channels, non_linearity=nn.SiLU(),
+                   out_channels=self.wave_decoder_channels, non_linearity=nlin,
                    hidden_channels=self.wave_decoder_channels),
             TFNO1d(n_modes_height=self.n_fourier_modes, in_channels=self.wave_decoder_channels,
-                   out_channels=self.wave_decoder_channels, non_linearity=nn.SiLU(),
+                   out_channels=self.wave_decoder_channels, non_linearity=nlin,
                    hidden_channels=self.wave_decoder_channels),
             TFNO1d(n_modes_height=self.n_fourier_modes, in_channels=self.wave_decoder_channels,
-                   out_channels=self.wave_decoder_channels, non_linearity=nn.SiLU(),
+                   out_channels=self.wave_decoder_channels, non_linearity=nlin,
                    hidden_channels=self.wave_decoder_channels),
-            TFNO1d(n_modes_height=self.n_fourier_modes, in_channels=self.wave_decoder_channels, non_linearity=nn.SiLU(),
+            TFNO1d(n_modes_height=self.n_fourier_modes, in_channels=self.wave_decoder_channels, non_linearity=nlin,
                    out_channels=self.n_ants * 2, hidden_channels=self.wave_decoder_channels),
             nn.Linear(self.target_latent_size, self.fft_len),
         )
@@ -144,13 +146,13 @@ class GeneratorModel(FlatModule):
         self.pinfo = nn.Sequential(
             FourierFeature(1000., 50),
             nn.Linear(100, self.target_latent_size),
-            nn.SiLU(),
+            nlin,
         )
 
         self.bandwidth_info = nn.Sequential(
             FourierFeature(.5, 50),
             nn.Linear(100, self.target_latent_size),
-            nn.SiLU(),
+            nlin,
         )
 
         self.plength = PulseLength()

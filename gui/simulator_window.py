@@ -15,11 +15,10 @@ from simulib.simulation_functions import genChirp, llh2enu, enu2llh
 from sklearn.decomposition import TruncatedSVD
 from simulib.backproject_functions import getRadarAndEnvironment
 from superqt import QLargeIntSpinBox
-
-from gui.simulation_data_window import SimulationDataWindow
+from pathlib import Path
 from utils import get_radar_coeff
 from numba import cuda
-from gui.gui_classes import FileSelectWidget, ProgressBarWithText, WaveformCreateWindow
+from gui.gui_classes import FileSelectWidget, ProgressBarWithText, WaveformCreateWindow, DropList, SimulationDataWindow
 from mesh_viewer import QGLControllerWidget, ball
 import gui_utils as f
 import argparse
@@ -43,7 +42,7 @@ class MainWindow(QMainWindow):
     profile_params: tuple[int, int, float] = (8, 8, 1200.)
     mesh_params: tuple[float, int, int] = (7., 10000, 5)
     target_params: tuple[int, str, str, str]
-    to_update: np.array = None
+    waves: list = []
     radar_coeff: float = 0.
     win_width: int = 500
     win_height: int = 500
@@ -242,9 +241,10 @@ class MainWindow(QMainWindow):
 
         # Various simulation parameters to add
         sim_param_layout = QHBoxLayout()
-        self.waves_box = QListWidget()
+        self.waves_box = DropList(self)
         self.gen_wave_button = QPushButton('Create Wave')
         self.gen_wave_button.clicked.connect(self.slot_gen_wave_window)
+        self.waves_box.signal_item_dropped.connect(self.slot_load_wave)
         sim_param_layout.addWidget(self.gen_wave_button)
         sim_param_layout.addWidget(self.waves_box)
 
@@ -273,7 +273,7 @@ class MainWindow(QMainWindow):
         main_layout.addLayout(rparam_layout, 8, 3)
         main_layout.addLayout(rparam_sec_layout, 9, 3)
         main_layout.addWidget(self.reload_button, 10, 3)
-        main_layout.addWidget(QLabel('Simulation Parameters'), 11, 3)
+        main_layout.addWidget(QLabel('Waveforms to Add'), 11, 3)
         main_layout.addLayout(sim_param_layout, 12, 3)
         main_layout.addWidget(self.progress_bar, 16, 3)
         main_layout.addWidget(self.simulate_button, 17, 3)
@@ -388,7 +388,8 @@ class MainWindow(QMainWindow):
                                        TruncatedSVD(n_components=self.azimuth_spinbox.value() *
                                                                  self.elevation_spinbox.value()),
                                        self.azimuth_spinbox.value(), self.elevation_spinbox.value(), self.radar_coeff,
-                                       n_iters=self.iteration_spinbox.value(), fft_len=8192)
+                                       self.waves,
+                                       ranges=[self.range_spinbox.value()], fft_len=8192)
         self.thread.signal_update_progress.connect(self.slot_update_progress)
         self.thread.signal_update_percentage.connect(self.slot_update_percentage)
         self.thread.signal_file_generated.connect(self.slot_show_file)
@@ -401,7 +402,11 @@ class MainWindow(QMainWindow):
             self.progress_bar.setValue(int(p))
 
     def slot_add_wave(self, wavedata):
-        self.waves_box.addItem(QListWidgetItem(wavedata[0], self.waves_box))
+        self.waves_box.addItem(QListWidgetItem(wavedata[0]))
+        self.waves.append(wavedata)
+
+    def slot_load_wave(self, wave_filename):
+        print(f'{wave_filename} Wave loaded!')
             
     def slot_gen_wave_window(self):
         self.wave_window = WaveformCreateWindow()
@@ -506,7 +511,7 @@ class SimulationThread(QThread):
     signal_file_generated = pyqtSignal(object)
 
     def __init__(self, mode, mesh, clutter_file_path, tensor_clutter_path, tensor_target_path, save_files, scaling,
-                 target_index, tsvd, n_az_samples, n_el_samples, radar_coeff, n_iters=5, fft_len=8192):
+                 target_index, tsvd, n_az_samples, n_el_samples, radar_coeff, waves, ranges, fft_len=8192):
         super().__init__()
         self.mesh = mesh
         self.clut = clutter_file_path
@@ -521,32 +526,48 @@ class SimulationThread(QThread):
         self.n_az_samples = n_az_samples
         self.n_el_samples = n_el_samples
         self.radar_coeff = radar_coeff
-        self.n_iters = n_iters
+        self.waves = waves
+        self.ranges = ranges
 
     def run(self):
-        fnmes = []
         if self.mode == 1:
-            abs_clutter_idx = 0
-            self.signal_update_progress.emit('Loading clutter and target spectra...')
-            for ntpsd, sdata in loadClutterTargetSpectrum(self.clut, self.radar_coeff, self.mesh, self.scaling):
-                self.signal_update_progress.emit('Running simulation...')
-                if self.save_files:
-                    for nt, sd in zip(ntpsd, sdata):
-                        if not np.any(np.isnan(nt)) and not np.any(np.isnan(sd)):
-                            fnme = f"{self.tensor_clutter_path}/tc_{abs_clutter_idx}.pt"
-                            torch.save([torch.tensor(sd, dtype=torch.float32),
-                                        torch.tensor(nt, dtype=torch.float32), self.tidx], fnme)
-                            fnmes.append(fnme)
-                            abs_clutter_idx += 1
-                            self.signal_update_percentage.emit(abs_clutter_idx * 20)
+            fnmes = self.run_sdr_train([])
         elif self.mode == 0:
-            mf_chirp = np.fft.fft(genChirp(4300, 2e9, 9.6e9, 400e6), self.fft_len)
+            fnmes = self.run_target_profile([])
+        self.signal_update_progress.emit('Done simulating.')
+        self.signal_update_percentage.emit(0)
+        self.signal_file_generated.emit(fnmes)
+
+    def run_sdr_train(self, fnmes):
+        abs_clutter_idx = 0
+        self.signal_update_progress.emit('Loading clutter and target spectra...')
+        for ntpsd, sdata in loadClutterTargetSpectrum(self.clut, self.radar_coeff, self.mesh, self.scaling, self.fft_len):
+            self.signal_update_progress.emit('Running simulation...')
+            if self.save_files:
+                for nt, sd in zip(ntpsd, sdata):
+                    if not np.any(np.isnan(nt)) and not np.any(np.isnan(sd)):
+                        fnme = f"{self.tensor_clutter_path}/tc_{abs_clutter_idx}.pt"
+                        torch.save([torch.tensor(sd, dtype=torch.float32),
+                                    torch.tensor(nt, dtype=torch.float32), self.tidx], fnme)
+                        fnmes.append(fnme)
+                        abs_clutter_idx += 1
+                        self.signal_update_percentage.emit(abs_clutter_idx * 20)
+        return fnmes
+
+    def run_target_profile(self, fnmes):
+        progress_div = len(self.waves)
+        prog_num = 0
+        for wavename, wavedata, nsam, fs, fc in self.waves:
+            tensor_path = f"{self.tensor_target_path}/{wavename}"
+            if not Path(tensor_path).exists():
+                os.mkdir(tensor_path)
+            mf_chirp = np.fft.fft(wavedata, self.fft_len)
             mf_chirp = mf_chirp * mf_chirp.conj()
             streams = [cuda.stream() for _ in range(1)]
             self.signal_update_progress.emit('Loading mesh parameters...')
-            gen_iter = iter(genProfileFromMesh('', self.n_iters, [mf_chirp], 4,
-                                               2**16, self.scaling, streams, [500., 25000.], self.fft_len,
-                                               self.radar_coeff, 4600, 2e9, 9.6e9, 1, a_mesh=self.mesh,
+            gen_iter = iter(genProfileFromMesh('', 1, [mf_chirp], 4,
+                                               2 ** 16, self.scaling, streams, self.ranges, self.fft_len,
+                                               self.radar_coeff, nsam, fs, fc, 1, a_mesh=self.mesh,
                                                a_naz=self.n_az_samples, a_nel=self.n_el_samples))
             self.signal_update_progress.emit('Running simulation...')
             for abs_idx, (rprof, pd, i) in enumerate(gen_iter):
@@ -558,14 +579,13 @@ class SimulationThread(QThread):
 
                 # Append to master target list
                 if self.save_files and pd_cat is not None:
-                    fnme = f"{self.tensor_target_path}/target_{self.tidx}_{abs_idx}.pt"
+                    fnme = f"{tensor_path}/target_{self.tidx}_{abs_idx}.pt"
                     # Save the block out to a torch file for the dataloader later
                     torch.save([torch.tensor(pd_cat, dtype=torch.float32), self.tidx], fnme)
                     fnmes.append(fnme)
-                self.signal_update_percentage.emit(abs_idx * 20)
-        self.signal_update_progress.emit('Done simulating.')
-        self.signal_update_percentage.emit(0)
-        self.signal_file_generated.emit(fnmes)
+                prog_num += progress_div
+                self.signal_update_percentage.emit(prog_num)
+        return fnmes
 
 
 

@@ -6,6 +6,7 @@ from torch import nn, Tensor
 from pytorch_lightning import LightningModule
 from torch.nn import functional as tf
 from torch.distributions import Normal
+from utils import nonlinearities
 
 
 def gaussian_kernel_1d(sigma: float, num_sigmas: float = 3.) -> torch.Tensor:
@@ -225,18 +226,19 @@ class AttentionConv(nn.Module):
 
 class Block2d(nn.Module):
 
-    def __init__(self, channel_sz, kernel, stride, padding, nonlinearity=nn.GELU()):
+    def __init__(self, channel_sz, kernel, stride, padding, nonlinearity='gelu'):
         super(Block2d, self).__init__()
+        nlin = nonlinearities[nonlinearity]
         self.channel_sz = channel_sz
         self.block = nn.Sequential(
             nn.Conv2d(channel_sz, channel_sz, kernel, stride, padding),
-            nonlinearity,
+            nlin,
             nn.Conv2d(channel_sz, channel_sz, kernel, stride, padding),
-            nonlinearity,
+            nlin,
             nn.Conv2d(channel_sz, channel_sz, kernel, stride, padding),
-            nonlinearity,
+            nlin,
             nn.Conv2d(channel_sz, channel_sz, kernel, stride, padding),
-            nonlinearity,
+            nlin,
             nn.BatchNorm2d(channel_sz),
         )
 
@@ -245,18 +247,19 @@ class Block2d(nn.Module):
 
 class Block2dTranspose(nn.Module):
 
-    def __init__(self, channel_sz, kernel, stride, padding, nonlinearity=nn.GELU()):
+    def __init__(self, channel_sz, kernel, stride, padding, nonlinearity='gelu'):
         super(Block2dTranspose, self).__init__()
+        nlin = nonlinearities[nonlinearity]
         self.channel_sz = channel_sz
         self.block = nn.Sequential(
             nn.ConvTranspose2d(channel_sz, channel_sz, kernel, stride, padding),
-            nonlinearity,
+            nlin,
             nn.ConvTranspose2d(channel_sz, channel_sz, kernel, stride, padding),
-            nonlinearity,
+            nlin,
             nn.ConvTranspose2d(channel_sz, channel_sz, kernel, stride, padding),
-            nonlinearity,
+            nlin,
             nn.ConvTranspose2d(channel_sz, channel_sz, kernel, stride, padding),
-            nonlinearity,
+            nlin,
             nn.BatchNorm2d(channel_sz),
         )
 
@@ -303,7 +306,7 @@ class LKA(nn.Module):
     def __init__(self, channel_sz, kernel_sizes=(3, 3), dilation=6, activation='gelu', *args: Any, **kwargs: Any):
         super().__init__(*args, **kwargs)
         padding = int(dilation * (kernel_sizes[1] - 1) // 2)
-        nonlinearity = nn.GELU() if activation == 'gelu' else nn.SiLU()
+        nonlinearity = nonlinearities[activation]
         self.kernel = nn.Sequential(
             nn.Conv2d(channel_sz, channel_sz, kernel_sizes[0], 1, int(kernel_sizes[0] // 2)),
             nonlinearity,
@@ -322,7 +325,7 @@ class LKATranspose(nn.Module):
     def __init__(self, channel_sz, kernel_sizes=(3, 3), dilation=6, activation='gelu', *args: Any, **kwargs: Any):
         super().__init__(*args, **kwargs)
         padding = int(dilation * (kernel_sizes[1] - 1) // 2)
-        nonlinearity = nn.GELU() if activation == 'gelu' else nn.SiLU()
+        nonlinearity = nonlinearities[activation]
         self.kernel = nn.Sequential(
             nn.ConvTranspose2d(channel_sz, channel_sz, kernel_sizes[0], 1, int(kernel_sizes[0] // 2)),
             nonlinearity,
@@ -341,13 +344,14 @@ class LKA1d(nn.Module):
     def __init__(self, channel_sz, kernel_sizes=(3, 3), dilation=6, activation='gelu', *args: Any, **kwargs: Any):
         super().__init__(*args, **kwargs)
         padding = int(dilation * (kernel_sizes[1] - 1) // 2)
+        nonlinearity = nonlinearities[activation]
         self.kernel = nn.Sequential(
             nn.Conv1d(channel_sz, channel_sz, kernel_sizes[0], 1, int(kernel_sizes[0] // 2)),
-            nn.GELU() if activation == 'gelu' else nn.SiLU(),
+            nonlinearity,
             nn.Conv1d(channel_sz, channel_sz, kernel_sizes[1], 1, padding, dilation=dilation),
-            nn.GELU() if activation == 'gelu' else nn.SiLU(),
+            nonlinearity,
             nn.Conv1d(channel_sz, channel_sz, 1, 1, 0),
-            nn.GELU() if activation == 'gelu' else nn.SiLU(),
+            nonlinearity,
         )
 
     def forward(self, x):
@@ -359,13 +363,14 @@ class LKATranspose1d(nn.Module):
     def __init__(self, channel_sz, kernel_sizes=(3, 3), dilation=6, activation='gelu', *args: Any, **kwargs: Any):
         super().__init__(*args, **kwargs)
         padding = int(dilation * (kernel_sizes[1] - 1) // 2)
+        nonlinearity = nonlinearities[activation]
         self.kernel = nn.Sequential(
             nn.ConvTranspose1d(channel_sz, channel_sz, kernel_sizes[0], 1, int(kernel_sizes[0] // 2)),
-            nn.GELU() if activation == 'gelu' else nn.SiLU(),
+            nonlinearity,
             nn.ConvTranspose1d(channel_sz, channel_sz, kernel_sizes[1], 1, padding, dilation=dilation),
-            nn.GELU() if activation == 'gelu' else nn.SiLU(),
+            nonlinearity,
             nn.ConvTranspose1d(channel_sz, channel_sz, 1, 1, 0),
-            nn.GELU() if activation == 'gelu' else nn.SiLU(),
+            nonlinearity,
         )
 
     def forward(self, x):

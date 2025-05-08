@@ -152,7 +152,7 @@ def loadClutterFiles():
     return clutter_files
 
 
-def loadClutterTargetSpectrum(a_clut, a_radarc, a_mesh=None, a_scaling=1.):
+def loadClutterTargetSpectrum(a_clut, a_radarc, a_mesh=None, a_scaling=1., fft_len=8192):
     sdr_ch = load(a_clut, use_jump_correction=False)
     rp = SDRPlatform(sdr_ch)
     nsam, nr, ranges, ranges_sampled, near_range_s, granges, full_fft_len, up_fft_len = (
