@@ -7,9 +7,9 @@ from simulib.mesh_objects import Mesh, Scene
 from apache_helper import ApachePlatform
 from config import get_config
 from models import TargetEmbedding
-from simulib.simulation_functions import llh2enu, db, azelToVec, genChirp, genTaylorWindow
+from simulib.simulation_functions import llh2enu, db, azelToVec, genChirp, genTaylorWindow, getRadarCoeff
 from simulib.cuda_kernels import applyRadiationPatternCPU
-from simulib.mesh_functions import readCombineMeshFile, getRangeProfileFromScene
+from simulib.mesh_functions import readCombineMeshFile, getRangeProfileFromScene, _float
 from simulib.mimo_functions import genChirpAndMatchedFilters, genChannels
 from simulib.grid_helper import MapEnvironment
 import matplotlib.pyplot as plt
@@ -47,9 +47,10 @@ if __name__ == '__main__':
 
     # This is all the constants in the radar equation for this simulation
     fc = settings['fc']
-    radar_coeff = (
-                c0 ** 2 / fc ** 2 * settings['antenna_params']['transmit_power'][0] * 10 ** ((settings['antenna_params']['gain'][0] + 2.15) / 10) * 10 ** ((settings['antenna_params']['gain'][0] + 2.15) / 10) *
-                10 ** ((settings['antenna_params']['rec_gain'][0] + 2.15) / 10) / (4 * np.pi) ** 3)
+    radar_coeff = getRadarCoeff(fc, settings['antenna_params']['transmit_power'][0],
+                                settings['antenna_params']['gain'][0],
+                                settings['antenna_params']['gain'][0],
+                                settings['antenna_params']['rec_gain'][0])
     noise_power = 10**(sim_settings['noise_power_db'] / 10)
 
     # Calculate out mesh extent
@@ -97,7 +98,7 @@ if __name__ == '__main__':
     nsam, nr, ranges, ranges_sampled, near_range_s, granges, fft_len, up_fft_len = (
         rpref.getRadarParams(u.mean(), settings['plp'], settings['upsample']))
     print(f'Plane slant range is {np.linalg.norm(plane_pos - rpref.rxpos(rpref.gpst), axis=1).mean()}')
-    near_range_s = np.float64(near_range_s)
+    near_range_s = _float(near_range_s)
 
     # Get reference data
     fs = rpref.fs
@@ -107,9 +108,6 @@ if __name__ == '__main__':
 
     # Generate values needed for backprojection
     print('Calculating grid parameters...')
-
-    # Chirp and matched filter calculations
-    bpj_wavelength = np.float64(c0 / fc)
 
     # Run through loop to get data simulated
     data_t = rpref.getValidPulseTimings(settings['simulation_params']['prf'], nr / TAC, cpi_len, as_blocks=True)
@@ -125,7 +123,7 @@ if __name__ == '__main__':
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     chirps = [np.fft.fft(genChirp(nr, fs, fc, settings['bandwidth']), fft_len)]
     taytays = [genTaylorWindow(fc % fs, settings['bandwidth'] / 2, fs, fft_len)]
-    mfilts = [fft_chirp.conj() * taytay for fft_chirp, taytay in zip(chirps, taytays)]
+    mfilts = [taytay / fft_chirp for fft_chirp, taytay in zip(chirps, taytays)]
     pdd = np.fft.fftshift(np.fft.fft(genChirp(nr, fs, fc, settings['bandwidth']), wave_fft_len))
     pulse_data = np.stack([pdd.real, pdd.imag])
     print('Setting up wavemodel...')
@@ -163,14 +161,14 @@ if __name__ == '__main__':
     mesh = mesh.rotate(mesh.get_rotation_matrix_from_xyz(np.array([np.pi / 2, 0, 0])))
     mesh = mesh.translate(llh2enu(*grid_origin, grid_origin), relative=False)
 
-    bgmesh = Mesh(mesh, num_box_levels=settings['nbox_levels'])
+    bgmesh = Mesh(mesh, max_tris_per_split=64)
 
     # Add in the target mesh
     mesh = readCombineMeshFile('/home/jeff/Documents/target_meshes/cessna-172-obj.obj', points=3000000)
     mesh = mesh.rotate(mesh.get_rotation_matrix_from_xyz(np.array([np.pi / 2, 0, 0])))
     mesh = mesh.translate(llh2enu(*grid_origin, grid_origin), relative=False)
 
-    planemesh = Mesh(mesh, num_box_levels=settings['nbox_levels'])
+    planemesh = Mesh(mesh, max_tris_per_split=64)
     scene = Scene([bgmesh, planemesh])
 
     test = None
@@ -198,16 +196,17 @@ if __name__ == '__main__':
     det_pts = []
     ex_chirps = []
 
-    sample_points = scene.sample(2**16, view_pos=rpref.txpos(rpref.gpst[np.linspace(0, len(rpref.gpst) - 1, 4).astype(int)]))
+    sample_points = scene.sample(2**16, view_pos=rpref.txpos(rpref.gpst[np.linspace(0, len(rpref.gpst) - 1, 4).astype(int)]),
+                                 fc=fc, fs=fs, near_range_s=near_range_s, radar_equation_constant=radar_coeff)
     # bpj_grid = np.zeros_like(gx).astype(np.complex128)
 
     if settings['simulation_params']['load_targets']:
         pass
     ts = data_t[10]
-    txposes = [rp.txpos(ts).astype(np.float32) for rp in rps]
-    rxposes = [rp.rxpos(ts).astype(np.float32) for rp in rps]
-    pans = [rp.pan(ts).astype(np.float32) for rp in rps]
-    tilts = [rp.tilt(ts).astype(np.float32) for rp in rps]
+    txposes = [rp.txpos(ts).astype(_float) for rp in rps]
+    rxposes = [rp.rxpos(ts).astype(_float) for rp in rps]
+    pans = [rp.pan(ts).astype(_float) for rp in rps]
+    tilts = [rp.tilt(ts).astype(_float) for rp in rps]
     init_rp = getRangeProfileFromScene(scene, sample_points, txposes, rxposes, pans, tilts,
                                          radar_coeff, rpref.az_half_bw, rpref.el_half_bw, nsam, fc, near_range_s,
                                          num_bounces=1, streams=streams)
@@ -236,12 +235,12 @@ if __name__ == '__main__':
         chirps = [np.roll(waves[rp.tx_num], -3277) for n, rp in enumerate(rps)]
         taytays = [genTaylorWindow(fc % fs, settings['bandwidth'] / 2, fs, fft_len) for _ in rps]
         mfilts = [fft_chirp.conj() * taytay for fft_chirp, taytay in zip(chirps, taytays)]
-        txposes = [rp.txpos(ts).astype(np.float32) for rp in rps]
-        rxposes = [rp.rxpos(ts).astype(np.float32) for rp in rps]
-        pans = [rp.pan(ts).astype(np.float32) for rp in rps]
-        tilts = [rp.tilt(ts).astype(np.float32) for rp in rps]
+        txposes = [rp.txpos(ts).astype(_float) for rp in rps]
+        rxposes = [rp.rxpos(ts).astype(_float) for rp in rps]
+        pans = [rp.pan(ts).astype(_float) for rp in rps]
+        tilts = [rp.tilt(ts).astype(_float) for rp in rps]
         single_rp = getRangeProfileFromScene(scene, sample_points, txposes, rxposes, pans, tilts,
-                                      radar_coeff, rpref.az_half_bw, rpref.el_half_bw, nsam, fc, near_range_s,
+                                      _float(radar_coeff), _float(rpref.az_half_bw), _float(rpref.el_half_bw), nsam, _float(fc), _float(near_range_s),
                                       num_bounces=1, streams=streams)
         if sum(np.sum(abs(s)) for s in single_rp) < 1e-10:
             continue
@@ -250,8 +249,8 @@ if __name__ == '__main__':
         compressed_data = np.stack(single_data).swapaxes(0, 1)
         compressed_data = np.sum(compressed_data * avec[None, :, None], axis=1)
 
-        # bpj_grid += backprojectPulseStream([compressed_data.T], pans, tilts, rxposes, txposes, gz.astype(np.float32), c0 / fc, near_range_s, fs * settings['upsample'],
-        #                                    rpref.az_half_bw, rpref.el_half_bw, gx=gx.astype(np.float32), gy=gy.astype(np.float32), streams=streams)
+        # bpj_grid += backprojectPulseStream([compressed_data.T], pans, tilts, rxposes, txposes, gz.astype(_float), c0 / fc, near_range_s, fs * settings['upsample'],
+        #                                    rpref.az_half_bw, rpref.el_half_bw, gx=gx.astype(_float), gy=gy.astype(_float), streams=streams)
         ts_hat = ts.min()
         panrx = rpref.pan(ts[:H_hat.shape[1]])
         elrx = rpref.tilt(ts[:H_hat.shape[1]])

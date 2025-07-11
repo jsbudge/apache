@@ -28,12 +28,12 @@ settings:
 generate_data_settings:
   iterations: 10
   use_local_storage: True
-  save_files: True
+  save_files: False
   overwrite_files: True  # Don't set this to False without cleaning the folders first
   local_path: ./data
   obj_path: /home/jeff/Documents/target_meshes
-  run_target: False
-  run_clutter: True
+  run_target: True
+  run_clutter: False
   n_az_samples: 16
   n_el_samples: 8
   num_bounces: 1
@@ -97,12 +97,12 @@ wave_exp_params:
     weight_decay: 0.01
     scheduler_gamma: 0.999
     swa_start: .6
-    warm_start: True
+    warm_start: False
     betas: [.9, .99]
     log_epoch: 100
     accumulation_steps: 16
     is_tuning: False
-    save_model: True
+    save_model: False
     loss_landscape: False
     max_epochs: 1200
     patience: 500

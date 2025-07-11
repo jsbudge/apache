@@ -3,7 +3,7 @@ from numba import cuda
 import matplotlib.pyplot as plt
 from scipy.spatial import Delaunay
 from simulib.backproject_functions import getRadarAndEnvironment, backprojectPulseStream
-from simulib.simulation_functions import db, genChirp, upsamplePulse, llh2enu, genTaylorWindow
+from simulib.simulation_functions import db, genChirp, upsamplePulse, llh2enu, genTaylorWindow, getRadarCoeff
 from simulib.mesh_functions import readCombineMeshFile, getRangeProfileFromMesh, _float, getRangeProfileFromScene, \
     getMeshFig, getSceneFig, drawOctreeBox
 from waveform_model import GeneratorModel
@@ -27,9 +27,9 @@ fs = 2e9
 DTR = np.pi / 180
 
 
-def addNoise(range_profile, chirp, npower, mf, fft_len):
+def addNoise(range_profile: np.ndarray, chirp, npower, mf, a_fft_len):
     data = (chirp * np.fft.fft(range_profile + np.random.normal(0, npower, range_profile.shape) +
-                               1j * np.random.normal(0, npower, range_profile.shape), fft_len))
+                               1j * np.random.normal(0, npower, range_profile.shape), a_fft_len))
     return data * mf
 
 
@@ -42,12 +42,12 @@ def buildWave(pulse_data, wfft_len):
     waves = np.roll(waves, np.where(freqdiff == freqdiff.min())[0][0], axis=-1)
     wave_mdl.to('cpu')
     waves = np.fft.fft(np.fft.ifft(waves, axis=1)[:, :nr], fft_len, axis=1) * 1e6
-    fft_chirp = waves[0]
+    a_fft_chirp = waves[0]
 
     # Shift the wave to the baseband fc
     taytay = genTaylorWindow(fc % fs, settings['bandwidth'] / 2, fs, fft_len)
-    mf_chirp = fft_chirp.conj() * taytay
-    return mf_chirp, fft_chirp
+    a_mf_chirp = taytay / a_fft_chirp
+    return a_mf_chirp, a_fft_chirp
 
 
 if __name__ == '__main__':
@@ -57,20 +57,21 @@ if __name__ == '__main__':
     rec_gain = 100  # dB
     ant_transmit_power = 100  # watts
     noise_power_db = -120
-    npulses = 32
-    plp = .75
+    npulses = 64
+    plp = 0.
     fdelay = 10.
     upsample = 8
     num_bounces = 2
-    nbox_levels = 5
+    max_tris_per_split = 64
     nstreams = 1
-    points_to_sample = 2 ** 16
+    points_to_sample = 2 ** 17
     num_mesh_triangles = 1000000
     max_pts_per_run = 2 ** 17
     grid_origin = (40.139343, -111.663541, 1360.10812)
     fnme = '/data6/SAR_DATA/2024/08072024/SAR_08072024_111617.sar'
     triangle_colors = None
     do_randompts = False
+    use_supersampling = True
 
     # Load all the settings files
     with open('./wave_simulator.yaml') as y:
@@ -105,11 +106,10 @@ if __name__ == '__main__':
 
     # This is all the constants in the radar equation for this simulation
     fc = settings['fc']
-    radar_coeff = (
-            c0 ** 2 / fc ** 2 * settings['antenna_params']['transmit_power'][0] * 10 ** (
-            (settings['antenna_params']['gain'][0] + 2.15) / 10) * 10 ** (
-                    (settings['antenna_params']['gain'][0] + 2.15) / 10) *
-            10 ** ((settings['antenna_params']['rec_gain'][0] + 2.15) / 10) / (4 * np.pi) ** 3)
+    radar_coeff = getRadarCoeff(fc, settings['antenna_params']['transmit_power'][0],
+                                settings['antenna_params']['gain'][0],
+                                settings['antenna_params']['gain'][0],
+                                settings['antenna_params']['rec_gain'][0])
     noise_power = 10 ** (sim_settings['noise_power_db'] / 10)
 
     pointing_vec = rp.boresight(data_t).mean(axis=0)
@@ -128,7 +128,13 @@ if __name__ == '__main__':
     mesh = readCombineMeshFile('/home/jeff/Documents/roman_facade/scene.gltf', points=3000000)
     mesh = mesh.rotate(mesh.get_rotation_matrix_from_xyz(np.array([np.pi / 2, 0, 0])))
     mesh = mesh.translate(llh2enu(*grid_origin, bg.ref), relative=False)
-    scene.add(Mesh(mesh, num_box_levels=nbox_levels))
+    scene.add(
+        Mesh(
+            mesh,
+            max_tris_per_split=max_tris_per_split,
+            material_sigma=[0.017 for _ in mesh.triangle_material_ids],
+        )
+    )
 
     '''mesh = readCombineMeshFile('/home/jeff/Documents/eze_france/scene.gltf', 1e9, scale=1 / 100)
     mesh = mesh.translate(np.array([0, 0, 0]), relative=False)
@@ -148,14 +154,14 @@ if __name__ == '__main__':
     scene.add(Mesh(mesh, num_box_levels=nbox_levels))
     triangle_colors = np.mean(np.asarray(mesh.vertex_colors)[np.asarray(mesh.triangles)], axis=1)'''
 
-    car = readCombineMeshFile('/home/jeff/Documents/nissan_sky/NissanSkylineGT-R(R32).obj',
-                              points=num_mesh_triangles)  # Has just over 500000 points in the file
+    '''car = readCombineMeshFile('/home/jeff/Documents/nissan_sky/NissanSkylineGT-R(R32).obj',
+                              points=100000)  # Has just over 500000 points in the file
     car = car.rotate(car.get_rotation_matrix_from_xyz(np.array([np.pi / 2, 0, 0])))
     car = car.rotate(car.get_rotation_matrix_from_xyz(np.array([0, 0, -42.51 * DTR])))
     mesh_extent = car.get_max_bound() - car.get_min_bound()
     car = car.translate(np.array([gx.mean() + 100, gy.mean() - 1.5, gz.mean() + mesh_extent[2] / 2 - 9]),
                         relative=False)
-    scene.add(Mesh(car, num_box_levels=nbox_levels))
+    scene.add(Mesh(car, max_tris_per_split=max_triangles_per_box))'''
 
     '''building = readCombineMeshFile('/home/jeff/Documents/target_meshes/long_hangar.obj', points=1e9, scale=.033)
     building = building.rotate(building.get_rotation_matrix_from_xyz(np.array([np.pi / 2, 0, 0])))
@@ -217,7 +223,8 @@ if __name__ == '__main__':
         sample_points = ptsam
     else:
         sample_points = [scene.sample(int(splits[s + 1] - splits[s]),
-                                      view_pos=rp.txpos(rp.gpst[np.linspace(0, len(rp.gpst) - 1, 4).astype(int)]))
+                                      view_pos=rp.txpos(rp.gpst[np.linspace(0, len(rp.gpst) - 1, 4).astype(int)]),
+                                      fc=fc, fs=fs, near_range_s=near_range_s, radar_equation_constant=radar_coeff)
                          for s in range(len(splits) - 1)]
     boresight = rp.boresight(sdr_f[0].pulse_time).mean(axis=0)
     pointing_az = np.arctan2(boresight[0], boresight[1])
@@ -252,7 +259,7 @@ if __name__ == '__main__':
                                       rp.az_half_bw, rp.el_half_bw,
                                       nsam, fc, near_range_s, rp.fs,
                                       num_bounces=num_bounces,
-                                      debug=True, streams=streams) for sam in sample_points]
+                                      debug=True, streams=streams, use_supersampling=use_supersampling) for sam in sample_points]
     single_rp = outputs[0][0]
     ray_origins = outputs[0][1]
     ray_directions = outputs[0][2]
@@ -359,21 +366,6 @@ if __name__ == '__main__':
                    xaxis=dict(range=[2150, 2550]),
                    yaxis=dict(range=[-800, -1000])),
     )
-    fig.show()
-
-    fig = getSceneFig(scene)
-
-    for mesh in scene.meshes:
-        for b in mesh.octree[sum(8 ** n for n in range(mesh.octree_levels - 1)):]:
-            if np.sum(b) != 0:
-                fig.add_trace(drawOctreeBox(b))
-    fig.show()
-
-    fig = px.scatter_3d(x=sample_points[0][:256, 0], y=sample_points[0][:256, 1], z=sample_points[0][:256, 2])
-    for n in range(256, 8192, 256):
-        fig.add_trace(
-            go.Scatter3d(x=sample_points[0][n:n + 256, 0], y=sample_points[0][n:n + 256, 1], z=sample_points[0][n:n + 256, 2],
-                         mode='markers'))
     fig.show()
 
     # Waveform information
