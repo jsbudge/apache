@@ -23,6 +23,8 @@ from mesh_viewer import QGLControllerWidget, ball
 import gui_utils as f
 import argparse
 import numpy as np
+from glob import glob
+import pickle
 from target_data_generator import loadClutterTargetSpectrum, getTargetProfile, processTargetProfile, genProfileFromMesh
 
 DTR = np.pi / 180.
@@ -64,16 +66,19 @@ class MainWindow(QMainWindow):
         # new_window_action.triggered.connect(self.open_settings_window)
         # menu_bar.addAction(new_window_action)
 
-        self.target_info = pd.read_csv('../data/target_info.csv')
         self.loadPersistentSettings()
 
+        self.target_info = glob(f'{self._mesh_path}/*.model')
         main_layout = QGridLayout()
 
         self.target_combo_box = QComboBox(self)
-        self.target_combo_box.addItems(self.target_info['name'])
-        self.target_combo_box.setCurrentIndex(self.target_params[0])
+        self.target_combo_box.addItems(self.target_info)
         # self.target_combo_box.lineEdit().setReadOnly(True)
         self.target_combo_box.currentIndexChanged.connect(self.slot_update_mesh)
+
+        self.mesh_load_path = FileSelectWidget(self, 'Mesh Directory', read_only=False)
+        self.mesh_load_path.line_edit.setText(self._mesh_path)
+        self.mesh_load_path.signal_btn_clicked.connect(self.slot_load_mesh_dir)
 
         self.sdr_file = FileSelectWidget(self, 'Select SDR File', file_types="SAR Files (*.sar)")
         self.sdr_file.line_edit.setText(self.target_params[1])
@@ -153,20 +158,6 @@ class MainWindow(QMainWindow):
         mode_layout = QHBoxLayout()
         mode_layout.addWidget(self.mode_target)
         mode_layout.addWidget(self.mode_train)
-
-        mesh_param_layout = QHBoxLayout()
-        self.triangle_spinbox = QLargeIntSpinBox()
-        self.triangle_spinbox.setRange(10, 5e6)
-        self.triangle_spinbox.setValue(self.mesh_params[1])
-        self.triangle_spinbox.valueChanged.connect(self.slot_update_mesh)
-        self.scaling_spinbox = QDoubleSpinBox()
-        self.scaling_spinbox.setRange(.01, 1000)
-        self.scaling_spinbox.setValue(self.mesh_params[0])
-        self.scaling_spinbox.valueChanged.connect(self.slot_update_mesh)
-        mesh_param_layout.addWidget(QLabel('# Tris:'))
-        mesh_param_layout.addWidget(self.triangle_spinbox)
-        mesh_param_layout.addWidget(QLabel('Scaling Factor:'))
-        mesh_param_layout.addWidget(self.scaling_spinbox)
 
         sdr_param_layout = QHBoxLayout()
         self.grid_width = QDoubleSpinBox()
@@ -264,8 +255,8 @@ class MainWindow(QMainWindow):
         # Grid layout for the widgets
         main_layout.addWidget(QLabel('Simulation Mode'), 0, 3)
         main_layout.addLayout(mode_layout, 1, 3)
+        main_layout.addWidget(self.mesh_load_path, 3, 3)
         main_layout.addWidget(self.target_combo_box, 2, 3)
-        main_layout.addLayout(mesh_param_layout, 3, 3)
         main_layout.addWidget(self.sdr_file, 4, 3)
         main_layout.addLayout(sdr_param_layout, 5, 3)
         main_layout.addWidget(self.target_save_path, 6, 3)
@@ -337,6 +328,7 @@ class MainWindow(QMainWindow):
 
     def loadPersistentSettings(self):
         settings = QSettings("ARTEMIS_SIM", "Simulator")
+        self._mesh_path = settings.value('mesh_path')
         self.mesh_params = (float(settings.value("mesh_scaling", 7.)), int(settings.value("mesh_ntris", 10000)),
                             settings.value('n_iters', 5))
         self.grid_vals = (float(settings.value("grid_height", 10.)), float(settings.value("grid_width", 10.)),
@@ -353,6 +345,7 @@ class MainWindow(QMainWindow):
 
     def savePersistentSettings(self):
         settings = QSettings("ARTEMIS_SIM", "Simulator")
+        settings.setValue('mesh_path', self.mesh_load_path.line_edit.text())
         settings.setValue('mesh_ntris', self.triangle_spinbox.value())
         settings.setValue('mesh_scaling', self.scaling_spinbox.value())
         settings.setValue('grid_ncols', self.grid_ncols.value())
@@ -363,7 +356,6 @@ class MainWindow(QMainWindow):
         settings.setValue('el_samples', self.elevation_spinbox.value())
         settings.setValue('range', self.range_spinbox.value())
         settings.setValue('sar_file', self.sdr_file.line_edit.text())
-        settings.setValue('current_target', self.target_combo_box.currentIndex())
         settings.setValue('target_save_path', self.target_save_path.line_edit.text())
         settings.setValue('clutter_save_path', self.clutter_save_path.line_edit.text())
         settings.setValue('n_iters', self.iteration_spinbox.value())
@@ -384,7 +376,7 @@ class MainWindow(QMainWindow):
     def run_simulation(self):
         self.thread = SimulationThread(self._mode, self.openGL.mesh, self.sdr_file.line_edit.text(),
                                        self.clutter_save_path.line_edit.text(), self.target_save_path.line_edit.text(),
-                                       True, self.scaling_spinbox.value(), self.target_combo_box.currentIndex(),
+                                       True, self.scaling_spinbox.value(), self.target_combo_box.currentText(),
                                        TruncatedSVD(n_components=self.azimuth_spinbox.value() *
                                                                  self.elevation_spinbox.value()),
                                        self.azimuth_spinbox.value(), self.elevation_spinbox.value(), self.radar_coeff,
@@ -407,6 +399,12 @@ class MainWindow(QMainWindow):
 
     def slot_load_wave(self, wave_filename):
         print(f'{wave_filename} Wave loaded!')
+
+    def slot_load_mesh_dir(self):
+        self._mesh_path = self.mesh_load_path.line_edit.text()
+        self.target_info = glob(f'{self._mesh_path}/*.model')
+        self.target_combo_box.clear()
+        self.target_combo_box.addItems(self.target_info)
             
     def slot_gen_wave_window(self):
         self.wave_window = WaveformCreateWindow()
@@ -432,13 +430,11 @@ class MainWindow(QMainWindow):
         self.updateProgress(i='Updated Attitude')
 
     def slot_update_mesh(self):
-        tinfo = self.target_info.loc[self.target_combo_box.currentIndex()]
-        self.scaling_spinbox.setValue(tinfo['scaling'])
-        self._mesh_path = f"/home/jeff/Documents/target_meshes/{tinfo['filename']}"
+        tinfo = self.target_combo_box.currentText()
         self.updateProgress(i='Reading mesh file...')
         try:
-            mesh = readCombineMeshFile(self._mesh_path, self.triangle_spinbox.value(),
-                                       scale=1 / self.scaling_spinbox.value())
+            with open(tinfo, 'rb') as f:
+                mesh = pickle.load(f)
             self.updateProgress(70, 'Loading mesh...')
             self.openGL.set_mesh(mesh)
             self.updateProgress(0, 'Mesh updated.')
@@ -541,17 +537,16 @@ class SimulationThread(QThread):
     def run_sdr_train(self, fnmes):
         abs_clutter_idx = 0
         self.signal_update_progress.emit('Loading clutter and target spectra...')
-        for ntpsd, sdata in loadClutterTargetSpectrum(self.clut, self.radar_coeff, self.mesh, self.scaling, self.fft_len):
+        for ntpsd, sdata in loadClutterTargetSpectrum(self.clut, self.radar_coeff, self.mesh, 5, 8, 32, 2**16, self.fft_len):
             self.signal_update_progress.emit('Running simulation...')
-            if self.save_files:
-                for nt, sd in zip(ntpsd, sdata):
-                    if not np.any(np.isnan(nt)) and not np.any(np.isnan(sd)):
-                        fnme = f"{self.tensor_clutter_path}/tc_{abs_clutter_idx}.pt"
-                        torch.save([torch.tensor(sd, dtype=torch.float32),
-                                    torch.tensor(nt, dtype=torch.float32), self.tidx], fnme)
-                        fnmes.append(fnme)
-                        abs_clutter_idx += 1
-                        self.signal_update_percentage.emit(abs_clutter_idx * 20)
+            if self.save_files and (not np.any(np.isnan(ntpsd)) and not np.any(np.isnan(sdata))):
+                fnme = f"{self.tensor_clutter_path}/tc_{abs_clutter_idx}.pt"
+                torch.save([torch.tensor(sdata, dtype=torch.float32),
+                            torch.tensor(ntpsd, dtype=torch.float32), tidx],
+                           f"{tensor_clutter_path}/tc_{abs_clutter_idx}.pt")
+                fnmes.append(fnme)
+                abs_clutter_idx += 1
+                self.signal_update_percentage.emit(abs_clutter_idx * 20)
         return fnmes
 
     def run_target_profile(self, fnmes):
@@ -565,10 +560,9 @@ class SimulationThread(QThread):
             mf_chirp = mf_chirp * mf_chirp.conj()
             streams = [cuda.stream() for _ in range(1)]
             self.signal_update_progress.emit('Loading mesh parameters...')
-            gen_iter = iter(genProfileFromMesh('', 1, [mf_chirp], 4,
-                                               2 ** 16, self.scaling, streams, self.ranges, self.fft_len,
-                                               self.radar_coeff, nsam, fs, fc, 1, a_mesh=self.mesh,
-                                               a_naz=self.n_az_samples, a_nel=self.n_el_samples))
+            gen_iter = iter(genProfileFromMesh(self.mesh, 4, [mf_chirp], 2**16, streams,
+                       self.ranges, self.fft_len, self.radar_coeff, nsam, fs, fc, num_bounces=1,
+                       a_naz=self.n_az_samples, a_nel=self.n_el_samples))
             self.signal_update_progress.emit('Running simulation...')
             for abs_idx, (rprof, pd, i) in enumerate(gen_iter):
                 if np.all(pd == 0):

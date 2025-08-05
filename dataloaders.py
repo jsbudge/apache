@@ -163,9 +163,11 @@ class WaveDataset(Dataset):
     def __getitem__(self, idx):
         if self.single:
             idx = 720
-        data = [torch.load(f'{self.datapath}/tc_{n}.pt') for n in range(idx, idx + self.seq_len)]
-        return (torch.cat([c.unsqueeze(0) for c, t, i in data], dim=0), data[-1][1], self.patterns[data[-1][2]].clone().detach(),
-                np.random.randint(self.min_pulse_length, self.max_pulse_length), np.random.rand() * .6 + .2)
+        # File contains target range profile, compressed clutter data, and the target index
+        data = torch.load(f'{self.datapath}/tc_{idx}.pt')
+        return data[0], data[1][-1], self.patterns[data[2]].clone().detach(), np.random.randint(self.min_pulse_length, self.max_pulse_length), np.random.rand() * .6 + .2
+        # return (torch.cat([c.unsqueeze(0) for c, t, i in data], dim=0), data[-1][1], self.patterns[data[-1][2]].clone().detach(),
+        #        np.random.randint(self.min_pulse_length, self.max_pulse_length), np.random.rand() * .6 + .2)
 
     def __len__(self):
         return self.idxes.shape[0]

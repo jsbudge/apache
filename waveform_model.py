@@ -81,6 +81,7 @@ class GeneratorModel(FlatModule):
         self.automatic_optimization = False
         self.n_fourier_modes = config.n_fourier_modes
         self.bandwidth = config.bandwidth
+        self.passes = config.transformer_passes
         self.baseband_fc = (config.fc % self.fs) - self.fs
         self.nonlinearity = config.nonlinearity
         nlin = nonlinearities[self.nonlinearity]
@@ -177,6 +178,10 @@ class GeneratorModel(FlatModule):
         x = x.squeeze(-1)
 
         # Predict the next clutter step using transformer
+        for _ in range(self.passes):
+            x = self.predict_decoder(x, x)
+
+        # Final pass
         x = self.predict_decoder(x[:, :-1], x[:, 1:])[:, -1, ...].unsqueeze(1)
 
         # Combine clutter prediction with target information

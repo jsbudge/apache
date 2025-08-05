@@ -131,10 +131,10 @@ class QGLControllerWidget(QtOpenGL.QGLWidget):
 
     def set_mesh(self, new_mesh):
         self.mesh = new_mesh
-        self.mesh.translate(np.array([0, 0, 0.]), relative=False)
+        self.mesh.shift(np.array([0, 0, 0.]), relative=False)
 
         # Creates an index buffer
-        index_buffer = self.ctx.buffer(np.asarray(self.mesh.triangles, dtype="u4").tobytes())
+        index_buffer = self.ctx.buffer(np.asarray(self.mesh.tri_idx, dtype="u4").tobytes())
 
         # Creates a list of vertex buffer objects (VBOs)
         vao_content = [(self.ctx.buffer(np.asarray(self.mesh.vertices, dtype="f4").tobytes()), '3f', 'in_position'),
@@ -143,9 +143,9 @@ class QGLControllerWidget(QtOpenGL.QGLWidget):
 
     def modify_mesh(self, pos=None, att=None):
         if pos is not None:
-            self.mesh.translate(pos, relative=False)
+            self.mesh.shift(pos, relative=False)
         if att is not None:
-            self.mesh.rotate(self.mesh.get_rotation_matrix_from_xyz(att))
+            self.mesh.rotate(att)
 
         # Creates an index buffer
         index_buffer = self.ctx.buffer(np.asarray(self.mesh.triangles, dtype="u4").tobytes())

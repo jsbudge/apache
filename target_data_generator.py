@@ -14,7 +14,7 @@ import yaml
 from sdrparse.SDRParsing import load, loadXMLFile
 import torch
 import matplotlib as mplib
-
+import pickle
 from config import load_yaml_config
 
 mplib.use('TkAgg')
@@ -28,6 +28,7 @@ from utils import scale_normalize, get_radar_coeff, normalize
 pio.renderers.default = 'browser'
 
 c0 = 299792458.0
+fs = 2e9
 TAC = 125e6
 DTR = np.pi / 180
 inch_to_m = .0254
@@ -69,26 +70,12 @@ def readVCS(filepath):
     return _scat_data, np.array(_angles) * DTR
 
 
-def genProfileFromMesh(a_obj_path, niters, a_mf_chirp, a_points_to_sample, a_scaling, a_streams,
-                       a_standoff, a_fft_len, a_radarc, a_nsam, a_fs, a_fc, num_bounces=1, n_tris=2000000, a_mesh=None,
+def genProfileFromMesh(a_scene, niters, a_mf_chirp, a_points_to_sample, a_streams,
+                       a_standoff, a_fft_len, a_radarc, a_nsam, a_fs, a_fc, num_bounces=1,
                        a_naz=8, a_nel=8):
-    if a_mesh is not None:
-        m_mesh = a_mesh
-    else:
-        try:
-            m_mesh = readCombineMeshFile(a_obj_path, n_tris, scale=1 / a_scaling)
-        except IndexError:
-            print(f'{a_obj_path} not found.')
-
-    if np.linalg.norm(m_mesh.get_center()) > 2.:
-        m_mesh = m_mesh.translate(np.array([0, 0, 0.]), relative=False)
 
     _, poses, _, _ = calcPosBoresight(a_standoff[0], a_naz=a_naz, a_nel=a_nel)
-    view_pos = poses[np.linspace(0, poses.shape[0] - 1, 32).astype(int)]
-    m_scene = Scene()
-    m_scene.add(Mesh(m_mesh, max_tris_per_split=64))
-    m_sample_points = m_scene.sample(a_points_to_sample, view_pos=view_pos[::4], fc=a_fc, fs=a_fs,
-                                     near_range_s=a_standoff[0] / c0, radar_equation_constant=a_radarc)
+    m_sample_points = a_scene.sample(a_points_to_sample)
 
     # Apply random rotations and scalings for augmenting of training data
     for m_i in range(niters):
@@ -97,7 +84,7 @@ def genProfileFromMesh(a_obj_path, niters, a_mf_chirp, a_points_to_sample, a_sca
         el_bw = MAX_EL_BEAMWIDTH * np.random.rand() + DTR
         block = np.zeros((len(a_standoff), poses.shape[0], a_fft_len), dtype=np.complex64)
         for k, s in enumerate(a_standoff):
-            msrp, block[k] = getTargetProfile(m_scene, m_sample_points, s, a_streams, num_bounces,
+            msrp, block[k] = getTargetProfile(a_scene, m_sample_points, s, a_streams, num_bounces,
                                               a_mf_chirp[chirp_idx], a_naz, a_nel, a_radarc, a_nsam, a_fs, a_fc,
                                               a_fft_len, az_bw, el_bw)
         yield msrp, block, m_i
@@ -150,9 +137,9 @@ def loadClutterFiles():
                                                           for g in glob(f'{str(Path(m_clut).parent)}/*')]):
             try:
                 xml_data = loadXMLFile(f'{m_clut[:-4]}.xml').find('SlimSDR_Configuration')
-                if (xml_data['SlimSDR_Info']['System_Mode'] == 'SAR'
-                        and 8e9 < xml_data['SlimSDR_Info']['Channel_0']['Center_Frequency_Hz'] < 32e9
-                        and xml_data['SlimSDR_Info']['Gimbal_Settings']['Gimbal_Depression_Angle_D'] > 20.0):
+                if (xml_data.SlimSDR_Info.System_Mode == 'SAR'
+                        and 8e9 < xml_data.SlimSDR_Info.Channel_0.Center_Frequency_Hz < 32e9
+                        and xml_data.SlimSDR_Info.Gimbal_Settings.Gimbal_Depression_Angle_D > 20.0):
                     m_clutter_files.append(m_clut)
             except FileNotFoundError:
                 print(f'{m_clut} not found.')
@@ -166,8 +153,8 @@ def loadClutterFiles():
     return m_clutter_files
 
 
-def loadClutterTargetSpectrum(a_clut, a_radarc, a_mesh=None, a_scaling=1., fft_len=8192):
-    sdr_ch = load(a_clut, use_jump_correction=False)
+def loadClutterTargetSpectrum(a_clut, a_radarc, scene, iterations, seq_min, seq_max, a_points_to_sample, fft_len=8192, a_streams=None):
+    sdr_ch = load(a_clut, import_pickle=False, use_jump_correction=False)
     rp = SDRPlatform(sdr_ch)
     m_nsam, nr, ranges, ranges_sampled, near_range_s, granges, full_fft_len, up_fft_len = (
         rp.getRadarParams(0., .5, 1))
@@ -177,68 +164,44 @@ def loadClutterTargetSpectrum(a_clut, a_radarc, a_mesh=None, a_scaling=1., fft_l
     downsample_nsam = m_nsam // downsample_rate
 
     flight_path = rp.rxpos(sdr_ch[0].pulse_time)
-    bore = rp.boresight(rp.gpst).mean(axis=0)
-    heading = np.arctan2(bore[0], bore[1])
-    # The XML is not guaranteed to have a flight line, so we check for that
-    try:
-        flight_alt = sdr_ch.xml.Flight_Line.Flight_Line_Altitude_M
-        gnd_exp_alt = flight_path.mean(axis=0)[2] - flight_alt
-        mpos = flight_path.mean(axis=0) + bore * ranges.min()
-        mpos[2] = gnd_exp_alt
-        mrng = np.linalg.norm(mpos)
-        mang = -np.arcsin(mpos[2] / mrng)
-        m_it = 1
-        while not ((ranges.max() > mrng > ranges.min()) and (
-                rp.dep_ang + rp.el_half_bw > mang > rp.dep_ang - rp.el_half_bw)):
-            mpos = flight_path.mean(axis=0) + bore * (ranges.min() + m_it)
-            mpos[2] = gnd_exp_alt
-            mrng = np.linalg.norm(mpos)
-            mang = -np.arcsin(mpos[2] / mrng)
-            m_it += 1
-    except KeyError:
-        # We don't know where the ground is, let's just project it into the abyss
-        mpos = flight_path.mean(axis=0) + bore * ranges.mean()
+    # Locate the extrema to speed up the optimization
+
+    nstreams = len(a_streams)
+    sample_points = scene.sample(a_points_to_sample)
+    sample_center = scene.center + 0.
 
     # Get pulse data and modify accordingly
     pulse = np.fft.fft(sdr_ch[0].cal_chirp, fft_len)
     mfilt = sdr_ch.genMatchedFilter(0, fft_len=fft_len)
+    for i in range(iterations):
+        pt_pt = np.random.choice(sdr_ch[0].nframes - seq_max)
+        frame_idxes = np.arange(pt_pt, pt_pt + np.random.choice(np.arange(seq_min, seq_max)))
+        pulse_times = sdr_ch[0].pulse_time[frame_idxes]
 
-    vecs = np.array([mpos[0] - flight_path[:, 0], mpos[1] - flight_path[:, 1],
-                     mpos[2] - flight_path[:, 2]]).T
-    pt_az = np.arctan2(vecs[:, 0], vecs[:, 1])
-    max_pts = sdr_ch[0].frame_num[abs(pt_az - heading) < rp.az_half_bw]
-    pulse_lims = [min(max_pts), max(max_pts)]
-    pulse_lims[1] = min(pulse_lims[1],
-                        pulse_lims[0] + cfig_settings.cpi_len * cfig_generate.iterations)
+        # Place the model in the scene at a random location
+        proj_rng = np.random.choice(ranges_sampled)
+        r_d = azelToVec(rp.pan(pulse_times).mean() + np.random.normal() * rp.az_half_bw,
+                        rp.tilt(pulse_times).mean() + np.random.normal() * rp.el_half_bw)
+        floc = rp.rxpos(pulse_times).mean(axis=0)
 
-    # Locate the extrema to speed up the optimization
-    if a_scaling > 0:
-        scene = Scene()
-        mmesh = a_mesh.translate(mpos, relative=False)
-        scene.add(Mesh(mmesh))
-        sample_points = scene.sample(points_to_sample,
-                                     vecs[np.linspace(0, vecs.shape[0] - 1,
-                                                      min(128, vecs.shape[0])).astype(int)])
+        mpos = floc + r_d * proj_rng
 
-    for frame in list(
-            zip(*(iter(range(pulse_lims[0], pulse_lims[1] - cfig_settings.cpi_len, cfig_settings.cpi_len)),) * (
-                    nstreams + 1))):
-        txposes = [rp.txpos(sdr_ch[0].pulse_time[frame[n]:frame[n] + cfig_settings.cpi_len]).astype(_float) for n in
-                   range(nstreams)]
-        rxposes = [rp.rxpos(sdr_ch[0].pulse_time[frame[n]:frame[n] + cfig_settings.cpi_len]).astype(_float) for n in
-                   range(nstreams)]
-        pans = [rp.pan(sdr_ch[0].pulse_time[frame[n]:frame[n] + cfig_settings.cpi_len]).astype(_float) for n in
-                range(nstreams)]
-        tilts = [rp.tilt(sdr_ch[0].pulse_time[frame[n]:frame[n] + cfig_settings.cpi_len]).astype(_float) for n in
-                 range(nstreams)]
-        sdr_data = [sdr_ch.getPulses(sdr_ch[0].frame_num[frame[n]:frame[n] + cfig_settings.cpi_len], 0)[1] for n in
-                    range(nstreams)]
-        if row['scaling'] > 0:
+        txposes = [rp.txpos(pulse_times).astype(_float) for _ in range(nstreams)]
+        rxposes = [rp.rxpos(pulse_times).astype(_float) for _ in range(nstreams)]
+        pans = [rp.pan(pulse_times).astype(_float) for _ in range(nstreams)]
+        tilts = [rp.tilt(pulse_times).astype(_float) for _ in range(nstreams)]
+        sdr_data = [sdr_ch.getPulses(sdr_ch[0].frame_num[frame_idxes], 0)[1] for _ in range(nstreams)]
+
+        if True:
+            scene.shift(mpos, relative=False)
+            sample_points = sample_points - sample_center + scene.center
+            sample_center = scene.center + 0.
+
             single_rp = getRangeProfileFromScene(scene, sample_points, txposes, rxposes, pans, tilts,
-                                                 a_radarc, rp.az_half_bw, rp.el_half_bw, downsample_nsam,
-                                                 cfig_generate.fc, near_range_s, fs=downsample_fs,
-                                                 num_bounces=cfig_generate.num_bounces, streams=streams)
-            tpsds = [np.fft.fft(srp, fft_len, axis=1) * mfilt * pulse for srp in single_rp]
+                                                 a_radarc, rp.az_half_bw, rp.el_half_bw, m_nsam,
+                                                 cfig_generate.fc, near_range_s, fs=fs,
+                                                 num_bounces=cfig_generate.num_bounces, streams=a_streams)
+            tpsds = [np.fft.fft(srp[:, ::downsample_rate], fft_len, axis=1) * mfilt * pulse for srp in single_rp]
         else:
             # Load in the VCS file using the format reader
             scat_data, angles = readVCS(obj_path)
@@ -304,14 +267,6 @@ def processTargetProfile(a_pd, a_fft_len, a_tsvd):
 if __name__ == '__main__':
     cuda.select_device(0)
 
-    rx_gain = 40  # dB
-    tx_gain = 40  # dB
-    rec_gain = 100  # dB
-    ant_transmit_power = 100  # watts
-    points_to_sample = 2**16
-    nsam = 4600
-    nstreams = 1
-    fs = 2e9
     config = load_yaml_config('./vae_config.yaml')
     cfig_settings = config.settings
     cfig_generate = config.generate_data_settings
@@ -326,21 +281,24 @@ if __name__ == '__main__':
 
 
     clutter_files = loadClutterFiles()
-    target_info = pd.read_csv('./data/target_info.csv')
+    target_info = glob(f'{cfig_generate.obj_path}/*.model')
+    target_csv = pd.DataFrame(columns=['name'])
+    # target_info = pd.read_csv('./data/target_info.csv')
 
     tsvd = TruncatedSVD(n_components=cfig_generate.n_el_samples * cfig_generate.n_az_samples)
 
-    streams = [cuda.stream() for _ in range(nstreams)]
+    streams = [cuda.stream() for _ in range(cfig_generate.nstreams)]
 
     # Standardize the FFT length for training purposes (this may cause data loss)
     fft_len = cfig_settings.fft_len
 
     # This is all the constants in the radar equation for this simulation
-    radar_coeff = get_radar_coeff(cfig_generate.fc, ant_transmit_power, rx_gain, tx_gain, rec_gain)
+    radar_coeff = get_radar_coeff(cfig_generate.fc, cfig_generate.ant_transmit_power, cfig_generate.rx_gain,
+                                  cfig_generate.tx_gain, cfig_generate.rec_gain)
 
     # Generate chirps with random bandwidths, pulse lengths
     bws = BASE_BANDWIDTH + np.random.rand(10) * BANDWIDTH_RANGE
-    plens = (BASE_PULSE_LENGTH + np.random.rand(10) * (nsam / 2) / fs) * fs
+    plens = (BASE_PULSE_LENGTH + np.random.rand(10) * (cfig_generate.nsam / 2) / fs) * fs
     chirps = []
 
     # Get matched filters for the chirps
@@ -360,43 +318,39 @@ if __name__ == '__main__':
     abs_idx = 0
     abs_clutter_idx = 0
 
-    for tidx, row in target_info.iterrows():
-        obj_path = f'{config.generate_data_settings.obj_path}/{row["filename"]}'
+    for tidx, tname in enumerate(target_info):
+        with open(tname, 'rb') as f:
+            model = pickle.load(f)
 
         # FIRST CODE BLOCK: Generate target representative blocks for an autoencoder to compress
         # Saves them out to a file
         if cfig_generate.run_target:
+            print(f'Running target {tname}')
             tensor_target_path = f"{config.target_exp_params.dataset_params.data_path}/target_{tidx}"
             if not Path(tensor_target_path).exists():
                 os.mkdir(tensor_target_path)
+            target_csv.loc[tidx, 'name'] = tname
             iterations = cfig_generate.iterations
             if not cfig_generate.overwrite_files:
-                # Determine next index
-                pre_file_idx = max(
-                    int(Path(g).name.split('_')[-1])
-                    for g in glob(f'{tensor_target_path}/*.pt')
-                )
-                if pre_file_idx - abs_idx < iterations:
-                    iterations -= pre_file_idx - abs_idx
-                    abs_idx = pre_file_idx + 1
-                else:
-                    # Skip the target if we have enough files for it already
-                    abs_idx = pre_file_idx + 1
+                nfiles_in_path = len(glob(f'{tensor_target_path}/*.pt'))
+                iterations -= nfiles_in_path
+                abs_idx += nfiles_in_path
+                if iterations <= 0:
                     continue
 
             # Generate a Nrange_samples x Nangles x fft_len block for the autoencoder, iterated niters times to get different
             # bandwidths and pulse lengths.
-            if row['scaling'] > 0:
-                gen_iter = iter(genProfileFromMesh(obj_path, iterations, mf_chirp,
-                                                   points_to_sample, row['scaling'], streams, standoff, fft_len,
-                                                   radar_coeff, nsam, fs, cfig_generate.fc,
+            if True:
+                gen_iter = iter(genProfileFromMesh(model, iterations, mf_chirp,
+                                                   2**cfig_generate.num_sample_points_power, streams, standoff, fft_len,
+                                                   radar_coeff, cfig_generate.nsam, fs, cfig_generate.fc,
                                                    cfig_generate.num_bounces, a_naz=n_az_samples, a_nel=n_el_samples))
             else:
                 gen_iter = iter(genProfileFromVCS(obj_path, standoff, iterations, mf_chirp))
 
 
             pd_cats = []
-            for rprof, pd, i in gen_iter:
+            for rprof, pd, i in tqdm(gen_iter):
                 if np.all(pd == 0):
                     print(f'Skipping on target {tidx}, pd {i}')
                     continue
@@ -416,16 +370,33 @@ if __name__ == '__main__':
             tensor_clutter_path = f"{config.target_exp_params.dataset_params.data_path}/clutter_tensors"
             if not Path(tensor_clutter_path).exists():
                 os.mkdir(tensor_clutter_path)
-            print(f'Saving clutter spec for target {row["name"]}')
-            if row['scaling'] > 0:
-                mesh = readCombineMeshFile(obj_path, points_to_sample, scale=1 / row['scaling'])
+            print(f'Saving clutter spec for target {tname}')
             for clut in clutter_files:
                 # Load the sar file that the clutter came from
-                for ntpsd, sdata in loadClutterTargetSpectrum(clut, radar_coeff, mesh, row['scaling']):
-                    if cfig_generate.save_files:
-                        for nt, sd in zip(ntpsd, sdata):
-                            if not np.any(np.isnan(nt)) and not np.any(np.isnan(sd)):
-                                torch.save([torch.tensor(sd, dtype=torch.float32),
-                                            torch.tensor(nt, dtype=torch.float32), tidx],
-                                           f"{tensor_clutter_path}/tc_{abs_clutter_idx}.pt")
-                                abs_clutter_idx += 1
+                for ntpsd, sdata in loadClutterTargetSpectrum(clut, radar_coeff, model, cfig_generate.clutter_iterations,
+                                                                cfig_generate.seq_min_length, cfig_generate.seq_max_length,
+                                                              2**cfig_generate.num_sample_points_power,
+                                                              a_streams=streams):
+                    if cfig_generate.save_files and (not np.any(np.isnan(ntpsd)) and not np.any(np.isnan(sdata))):
+                        torch.save([torch.tensor(sdata, dtype=torch.float32),
+                                    torch.tensor(ntpsd, dtype=torch.float32), tidx],
+                                   f"{tensor_clutter_path}/tc_{abs_clutter_idx}.pt")
+                        abs_clutter_idx += 1
+
+    # Grab all the finished target representations and get the mean and std
+    targ_files = glob(f"{config.target_exp_params.dataset_params.data_path}/target_*/*.pt", recursive=True)
+    ex_mu = torch.tensor(np.zeros(4))
+    ex_m2 = torch.tensor(np.zeros(4))
+    ex_count = torch.tensor(np.zeros(4))
+    for targ in targ_files:
+        tdata = torch.load(targ)
+        ex, idx = tdata
+        ex = ex.reshape((4, -1)).T
+        for vec in ex:
+            ex_count += 1
+            delta = vec - ex_mu
+            ex_mu += delta / ex_count
+            delta2 = vec - ex_mu
+            ex_m2 += delta * delta2
+    ex_var = ex_m2 / (ex_count - 1)
+

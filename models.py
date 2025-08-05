@@ -8,7 +8,7 @@ from cbam import CBAM
 from config import Config
 from layers import LKA, LKATranspose, LKA1d, LKATranspose1d, Block2d, Block2dTranspose
 from pytorch_lightning import LightningModule
-from utils import _xavier_init
+from utils import _xavier_init, nonlinearities
 from waveform_model import FlatModule
 
 
@@ -35,13 +35,14 @@ class TargetEmbedding(FlatModule):
         # out_sz = (config.angle_samples // (2 ** levels), config.fft_len // (2 ** levels))
         out_sz = (config.angle_samples // (2 ** levels), config.angle_samples // (2 ** levels))
 
-        nonlinearity = nn.SiLU() if config.nonlinearity == 'silu' else nn.GELU() \
-            if config.nonlinearity == 'gelu' else nn.SELU() if config.nonlinearity == 'selu' else nn.LeakyReLU()
+        nonlinearity = nonlinearities[config.nonlinearity]
 
         # Encoder
         # self.encoder_inflate = nn.Conv2d(self.in_channels, self.channel_sz, 1, 1, 0)
         self.encoder_inflate = nn.Sequential(
-            nn.Conv2d(self.in_channels, self.channel_sz, 1, 1, 0),
+            nn.Conv2d(self.in_channels, self.in_channels // 2, 1, 1, 0),
+            nonlinearity,
+            nn.Conv2d(self.in_channels // 2, self.channel_sz, 1, 1, 0),
             nonlinearity,
             # CBAM(self.channel_sz, reduction_factor=1, kernel_size=9),
         )
@@ -57,7 +58,7 @@ class TargetEmbedding(FlatModule):
             ))
             self.encoder_conv.append(nn.Sequential(
                 CBAM(ch_lev_enc, reduction_factor=4, kernel_size=7 - l * 2),
-                Block2d(ch_lev_enc, 7 - l * 2, 1, 3 - l, nonlinearity=nonlinearity),
+                Block2d(ch_lev_enc, 7 - l * 2, 1, 3 - l, nonlinearity=config.nonlinearity),
                 # LKA(ch_lev_enc, (5, 3), dilation=3, activation=config.nonlinearity),
             ))
             prev_lev_enc = ch_lev_enc + 0
@@ -76,7 +77,7 @@ class TargetEmbedding(FlatModule):
         )
 
         self.decoder = DecoderHead(config.latent_dim, config.channel_sz, self.in_channels, out_sz,
-                                   (config.angle_samples, config.fft_len), nonlinearity=nonlinearity, levels=levels)
+                                   (config.angle_samples, config.fft_len), nonlinearity=config.nonlinearity, levels=levels)
 
         _xavier_init(self)
 
@@ -135,9 +136,9 @@ class TargetEmbedding(FlatModule):
                                       eps=1e-7)
         if self.config.scheduler_gamma is None:
             return optimizer
-        scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=self.config.scheduler_gamma,
-                                                           verbose=True)
-        # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, 100, eta_min=self.config.eta_min)
+        # scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=self.config.scheduler_gamma,
+        #                                                    verbose=True)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, 100, eta_min=self.config.eta_min)
         '''scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, cooldown=self.params['step_size'],
                                                          factor=self.params['scheduler_gamma'], threshold=1e-5)'''
 
@@ -145,6 +146,8 @@ class TargetEmbedding(FlatModule):
 
     def train_val_get(self, batch, batch_idx, kind='train'):
         img, idx = batch
+        # Normalize the image
+        img = (img - torch.tensor(self.config.mu, device=self.device)[None, :, None, None]) / torch.tensor(self.config.var, device=self.device)[None, :, None, None]
 
         feats = self.encode(img)
         reconstructions = self.decoder(feats)
@@ -155,11 +158,15 @@ class TargetEmbedding(FlatModule):
             torch.mean(torch.abs(i - r)) for i, r in zip(img, reconstructions)
         )'''
 
+        # CLIP LOSS
+        clip_loss = (-idx * torch.nn.LogSoftmax(dim=-1)(feats @ feats.T)).sum(1).mean()
+
+
         # COMBINATION LOSS
-        cll = rec_loss + torch.mean(torch.abs(img - reconstructions)) * .01
+        cll = rec_loss + clip_loss * .0001
 
         # Logging ranking metrics
-        self.log_dict({f'{kind}_total_loss': cll, f'{kind}_rec_loss': rec_loss,
+        self.log_dict({f'{kind}_total_loss': cll, f'{kind}_clip_loss': clip_loss, f'{kind}_rec_loss': rec_loss,
                        'lr': self.lr_schedulers().get_last_lr()[0]}, on_epoch=True,
                       prog_bar=True, rank_zero_only=True)
 
@@ -169,7 +176,7 @@ class TargetEmbedding(FlatModule):
 class DecoderHead(LightningModule):
 
     def __init__(self, latent_dim: int, channel_sz: int, in_channels: int, out_sz: tuple, in_sz: tuple,
-                 nonlinearity: nn.Module, levels: int, *args: Any, **kwargs: Any):
+                 nonlinearity: str, levels: int, *args: Any, **kwargs: Any):
         super().__init__(*args, **kwargs)
         self.latent_dim = latent_dim
         self.channel_sz = channel_sz
@@ -178,16 +185,17 @@ class DecoderHead(LightningModule):
         inter_channels = channel_sz // (2**levels)
 
         n_dec_layers = int(in_sz[0] / out_sz[0])
+        nlin = nonlinearities[nonlinearity]
 
         self.decoder_inflate = nn.Sequential(
             nn.ConvTranspose2d(1, inter_channels, (out_sz[0], 1), 1, 0),
-            nonlinearity,
+            nlin,
         )
         self.z_fc = nn.Sequential(
             nn.Linear(self.latent_dim, self.latent_dim),
-            nonlinearity,
+            nlin,
             nn.Linear(self.latent_dim, out_sz[1]),
-            nonlinearity,
+            nlin,
         )
 
         self.dec_layers = nn.ModuleList()
@@ -195,7 +203,7 @@ class DecoderHead(LightningModule):
             inc = inter_channels * 2
             self.dec_layers.append(nn.Sequential(
                 nn.ConvTranspose2d(inter_channels, inc, 4, 2, 1),
-                nonlinearity,
+                nlin,
                 # LKATranspose(inc, (5, 3), dilation=3, activation='silu'),
                 Block2dTranspose(inc, 3 + l * 2, 1, 1 + l, nonlinearity=nonlinearity),
                 CBAM(inc, reduction_factor=4, kernel_size=3 + l * 2),
