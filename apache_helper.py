@@ -34,7 +34,7 @@ class ApachePlatform(RadarPlatform):
                  params: dict = None,
                  **kwargs):
         super().__init__(e, n, u, r, p, y, t, tx_offset, rx_offset, gimbal, gimbal_offset, gimbal_rotations, dep_angle,
-                         0., params['az_min_bw'], params['el_min_bw'], fs, gps_t, gps_az, gps_rxpos,
+                         0., params.az_min_bw, params.el_min_bw, fs, gps_t, gps_az, gps_rxpos,
                          gps_txpos, tx_num, rx_num,
                          wavenumber)
 
@@ -43,27 +43,27 @@ class ApachePlatform(RadarPlatform):
     def getValidPulseTimings(self, prf, pulse_time, cpi_len, as_blocks=False):
         tcpi = self.gpst[0] + np.arange(self.gpst[0], self.gpst[-1], 1 / prf)
         th_b = self.att(tcpi)[:, 1]
-        u = self.params['wheel_height_m'] * np.cos(th_b) - self.params['phase_center_offset_m'] * np.sin(th_b)
+        u = self.params.wheel_height_m * np.cos(th_b) - self.params.phase_center_offset_m * np.sin(th_b)
         u /= -np.sin(self.tilt(tcpi)) * np.sin(th_b) - np.cos(self.tilt(tcpi)) * np.cos(th_b)
         cp0 = np.matmul(rotateY(self.tilt(tcpi)),
-                        np.array([[-u * np.sin(self.el_half_bw) + self.params['phase_center_offset_m']],
+                        np.array([[-u * np.sin(self.el_half_bw) + self.params.phase_center_offset_m],
                                   [u * np.tan(self.az_half_bw)],
-                                  [u * np.cos(self.el_half_bw) + self.params['wheel_height_m']]]).swapaxes(0,
+                                  [u * np.cos(self.el_half_bw) + self.params.wheel_height_m]]).swapaxes(0,
                                                                                                            2).swapaxes(
                             1, 2)).squeeze(2)
         cp1 = np.matmul(rotateY(self.tilt(tcpi)),
-                        np.array([[-u * np.sin(self.el_half_bw) + self.params['phase_center_offset_m']],
+                        np.array([[-u * np.sin(self.el_half_bw) + self.params.phase_center_offset_m],
                                   [-u * np.tan(self.az_half_bw)],
-                                  [u * np.cos(self.el_half_bw) + self.params['wheel_height_m']]]).swapaxes(0,
+                                  [u * np.cos(self.el_half_bw) + self.params.wheel_height_m]]).swapaxes(0,
                                                                                                            2).swapaxes(
                             1, 2)).squeeze(2)
 
         arclen = np.linalg.norm(cp0, axis=1) * np.arccos(1 - (np.linalg.norm(cp0 - cp1, axis=1)) / (2 * np.linalg.norm(cp0, axis=1)**2))
         sweep_radius = 2 * np.pi * np.linalg.norm(cp0)
-        tb = (sweep_radius - 4 * (2 * arclen + self.params['blade_chord_m']))
-        tb /= 4 * np.linalg.norm(cp0) * self.params['rotor_velocity_rad_s']
-        ti = ((2 * arclen + self.params['blade_chord_m']) /
-              (4 * np.linalg.norm(cp0) * self.params['rotor_velocity_rad_s']))
+        tb = (sweep_radius - 4 * (2 * arclen + self.params.blade_chord_m))
+        tb /= 4 * np.linalg.norm(cp0) * self.params.rotor_velocity_rad_s
+        ti = ((2 * arclen + self.params.blade_chord_m) /
+              (4 * np.linalg.norm(cp0) * self.params.rotor_velocity_rad_s))
         Npi = int(min(tb * prf))
         extra_pulses = Npi % cpi_len
         Npi -= extra_pulses

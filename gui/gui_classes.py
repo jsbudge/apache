@@ -39,7 +39,7 @@ class MplWidget(QWidget):
 
     def plot_basic_line(self, X, Y, label):
         # plot a basic line plot from x and y values.
-        self.ax = self.can.figure.add_axes([.1, .2, .8, .6])
+        self.ax = self.can.figure.add_axes([.13, .23, .8, .6])
         self.ax.cla()  # clears the axis
         self.ax.plot(X, Y, label=label)
         self.ax.grid(True)

@@ -180,6 +180,7 @@ class GeneratorModel(FlatModule):
         # Predict the next clutter step using transformer
         for _ in range(self.passes):
             x = self.predict_decoder(x, x)
+            x = torch.cat([x, target.unsqueeze(1)], dim=1)
 
         # Final pass
         x = self.predict_decoder(x[:, :-1], x[:, 1:])[:, -1, ...].unsqueeze(1)

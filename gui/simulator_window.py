@@ -329,8 +329,7 @@ class MainWindow(QMainWindow):
     def loadPersistentSettings(self):
         settings = QSettings("ARTEMIS_SIM", "Simulator")
         self._mesh_path = settings.value('mesh_path')
-        self.mesh_params = (float(settings.value("mesh_scaling", 7.)), int(settings.value("mesh_ntris", 10000)),
-                            settings.value('n_iters', 5))
+        self.mesh_params = (0, 0, settings.value('n_iters', 5))
         self.grid_vals = (float(settings.value("grid_height", 10.)), float(settings.value("grid_width", 10.)),
                           int(settings.value("grid_ncols", 10)), int(settings.value("grid_nrows", 10)))
         self.target_params = (int(settings.value("current_target", 0)), settings.value("sar_file", ""),
@@ -346,8 +345,6 @@ class MainWindow(QMainWindow):
     def savePersistentSettings(self):
         settings = QSettings("ARTEMIS_SIM", "Simulator")
         settings.setValue('mesh_path', self.mesh_load_path.line_edit.text())
-        settings.setValue('mesh_ntris', self.triangle_spinbox.value())
-        settings.setValue('mesh_scaling', self.scaling_spinbox.value())
         settings.setValue('grid_ncols', self.grid_ncols.value())
         settings.setValue('grid_nrows', self.grid_nrows.value())
         settings.setValue('grid_width', self.grid_width.value())
@@ -374,14 +371,14 @@ class MainWindow(QMainWindow):
         a_event.accept()
 
     def run_simulation(self):
-        self.thread = SimulationThread(self._mode, self.openGL.mesh, self.sdr_file.line_edit.text(),
+        self.thread = SimulationThread(self._mode, self.openGL.scene, self.sdr_file.line_edit.text(),
                                        self.clutter_save_path.line_edit.text(), self.target_save_path.line_edit.text(),
-                                       True, self.scaling_spinbox.value(), self.target_combo_box.currentText(),
+                                       True,
                                        TruncatedSVD(n_components=self.azimuth_spinbox.value() *
                                                                  self.elevation_spinbox.value()),
                                        self.azimuth_spinbox.value(), self.elevation_spinbox.value(), self.radar_coeff,
-                                       self.waves,
-                                       ranges=[self.range_spinbox.value()], fft_len=8192)
+                                       self.waves, ranges=[self.range_spinbox.value()],
+                                       iterations=self.iteration_spinbox.value(), fft_len=8192)
         self.thread.signal_update_progress.connect(self.slot_update_progress)
         self.thread.signal_update_percentage.connect(self.slot_update_percentage)
         self.thread.signal_file_generated.connect(self.slot_show_file)
@@ -420,7 +417,7 @@ class MainWindow(QMainWindow):
     def slot_update_position(self, centered=True):
         self.virtual_pos = np.array([self.lat_spinbox.value(), self.lon_spinbox.value(), self.alt_spinbox.value()])
         self.openGL.modify_mesh(pos=llh2enu(*self.virtual_pos, self._bg.ref if centered else self.virtual_pos))
-        self.openGL.look_at(self.openGL.mesh.get_center(), self.openGL.mesh.get_center() + np.array([15., 0, 0]))
+        self.openGL.look_at(self.openGL.scene.center, self.openGL.scene.center + np.array([15., 0, 0]))
         self.updateProgress(i='Updated Position')
 
     def slot_update_attitude(self):
@@ -506,8 +503,8 @@ class SimulationThread(QThread):
     signal_update_percentage = pyqtSignal(int)
     signal_file_generated = pyqtSignal(object)
 
-    def __init__(self, mode, mesh, clutter_file_path, tensor_clutter_path, tensor_target_path, save_files, scaling,
-                 target_index, tsvd, n_az_samples, n_el_samples, radar_coeff, waves, ranges, fft_len=8192):
+    def __init__(self, mode, mesh, clutter_file_path, tensor_clutter_path, tensor_target_path, save_files, tsvd,
+                 n_az_samples, n_el_samples, radar_coeff, waves, ranges, iterations=4, fft_len=8192):
         super().__init__()
         self.mesh = mesh
         self.clut = clutter_file_path
@@ -515,10 +512,10 @@ class SimulationThread(QThread):
         self.tensor_target_path = tensor_target_path
         self.save_files = save_files
         self.mode = 0 if mode == 'Profile' else 1
-        self.scaling = scaling
-        self.tidx = target_index
+        self.tidx = 0
         self.tsvd = tsvd
         self.fft_len = fft_len
+        self.iterations = iterations
         self.n_az_samples = n_az_samples
         self.n_el_samples = n_el_samples
         self.radar_coeff = radar_coeff
@@ -537,16 +534,17 @@ class SimulationThread(QThread):
     def run_sdr_train(self, fnmes):
         abs_clutter_idx = 0
         self.signal_update_progress.emit('Loading clutter and target spectra...')
-        for ntpsd, sdata in loadClutterTargetSpectrum(self.clut, self.radar_coeff, self.mesh, 5, 8, 32, 2**16, self.fft_len):
+        for ntpsd, sdata in loadClutterTargetSpectrum(self.clut, self.radar_coeff, self.mesh, self.iterations, 8, 32,
+                                                      2**16, 9.6e9, 1, self.fft_len, [cuda.stream() for _ in range(1)]):
             self.signal_update_progress.emit('Running simulation...')
             if self.save_files and (not np.any(np.isnan(ntpsd)) and not np.any(np.isnan(sdata))):
                 fnme = f"{self.tensor_clutter_path}/tc_{abs_clutter_idx}.pt"
                 torch.save([torch.tensor(sdata, dtype=torch.float32),
-                            torch.tensor(ntpsd, dtype=torch.float32), tidx],
-                           f"{tensor_clutter_path}/tc_{abs_clutter_idx}.pt")
+                            torch.tensor(ntpsd, dtype=torch.float32), 0],
+                           f"{self.tensor_clutter_path}/tc_{abs_clutter_idx}.pt")
                 fnmes.append(fnme)
                 abs_clutter_idx += 1
-                self.signal_update_percentage.emit(abs_clutter_idx * 20)
+                self.signal_update_percentage.emit(int(100 // self.iterations * abs_clutter_idx))
         return fnmes
 
     def run_target_profile(self, fnmes):
@@ -560,7 +558,7 @@ class SimulationThread(QThread):
             mf_chirp = mf_chirp * mf_chirp.conj()
             streams = [cuda.stream() for _ in range(1)]
             self.signal_update_progress.emit('Loading mesh parameters...')
-            gen_iter = iter(genProfileFromMesh(self.mesh, 4, [mf_chirp], 2**16, streams,
+            gen_iter = iter(genProfileFromMesh(self.mesh, self.iterations, [mf_chirp], 2**16, streams,
                        self.ranges, self.fft_len, self.radar_coeff, nsam, fs, fc, num_bounces=1,
                        a_naz=self.n_az_samples, a_nel=self.n_el_samples))
             self.signal_update_progress.emit('Running simulation...')
@@ -577,7 +575,7 @@ class SimulationThread(QThread):
                     # Save the block out to a torch file for the dataloader later
                     torch.save([torch.tensor(pd_cat, dtype=torch.float32), self.tidx], fnme)
                     fnmes.append(fnme)
-                prog_num += progress_div
+                prog_num += int((100 // self.iterations) / progress_div)
                 self.signal_update_percentage.emit(prog_num)
         return fnmes
 

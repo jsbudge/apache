@@ -10,7 +10,7 @@ Main window GUI for generating waveforms.
 
 import pandas as pd
 from sdrparse.SDRParsing import SDRBase
-from simulib.mesh_functions import readCombineMeshFile
+from simulib.mesh_functions import readCombineMeshFile, loadTarget
 from simulib.simulation_functions import db
 from gui_classes import ProgressBarWithText, MplWidget
 from mesh_viewer import QGLControllerWidget
@@ -26,6 +26,8 @@ import numpy as np
 from config import get_config
 import os
 import sys
+from glob import glob
+import pickle
 
 from settings_window import SettingsWindow
 from waveform_model import GeneratorModel
@@ -43,7 +45,7 @@ class WaveformGeneratorWindow(QMainWindow):
     win_full_width: int = 1200
     _model_fnme: str = None
     _target_info_file: str = '../data/target_info.csv'
-    _target_mesh_path: str = '/home/jeff/Documents/target_meshes'
+    _target_mesh_path: str = '/home/jeff/repo/apache/data/target_meshes'
     _model_path: str = '../vae_config.yaml'
 
     def __init__(self, model):
@@ -68,7 +70,7 @@ class WaveformGeneratorWindow(QMainWindow):
         settings_layout.addLayout(grid_layout)
 
         # Target combo box and information
-        self.target_info = pd.read_csv(self._target_info_file)
+        self.target_info = glob(f'{self._target_mesh_path}/*.model')
         # Load mean tensors
         try:
             self.patterns = torch.load('../data/target_tensors/target_embedding_means.pt')
@@ -77,7 +79,7 @@ class WaveformGeneratorWindow(QMainWindow):
         grid_layout.addWidget(QLabel("Target:"), 0, 0)
         self.target_combo_box = QComboBox(self)
         grid_layout.addWidget(self.target_combo_box, 0, 1, 1, 2)
-        self.target_combo_box.addItems(self.target_info['name'])
+        self.target_combo_box.addItems(self.target_info)
         self.target_combo_box.setStyleSheet("background-color: white;")
         self.target_combo_box.setEditable(True)
         self.target_combo_box.lineEdit().setAlignment(Qt.AlignCenter)
@@ -272,7 +274,6 @@ class WaveformGeneratorWindow(QMainWindow):
     def loadPersistentSettings(self):
         settings = QSettings("ARTEMIS", "WaveformGenerator")
         self.load_sar_file(settings.value("sar_file", ""))
-        self.target_combo_box.setCurrentText(settings.value("target", ""))
         self.output_folder_line_edit.setText(settings.value("output_folder", ""))
         self.pulse_length_spin_box.setValue(float(settings.value("pulse_length_us", 0)))
         self.bandwidth_spin_box.setValue(float(settings.value("bandwidth_mhz", 0)))
@@ -281,10 +282,9 @@ class WaveformGeneratorWindow(QMainWindow):
         self._model_path = settings.value("model_path", "")
 
     def target_selected(self, index):
-        tinfo = self.target_info.loc[index]
-        mesh = readCombineMeshFile(
-            f"{self._target_mesh_path}/{tinfo['filename']}", 10000,
-            scale=1 / tinfo['scaling'])
+        tinfo = self.target_info[index]
+        with open(tinfo, 'rb') as f:
+            mesh = pickle.load(f)
         self.mview.set_mesh(mesh)
 
     def sar_file_drop_event(self, event):
@@ -315,7 +315,6 @@ class WaveformGeneratorWindow(QMainWindow):
     def savePersistentSettings(self):
         settings = QSettings("ARTEMIS", "WaveformGenerator")
         settings.setValue("sar_file", self.sar_file_line_edit.text())
-        settings.setValue("target", self.target_combo_box.currentText())
         settings.setValue("output_folder", self.output_folder_line_edit.text())
         settings.setValue("pulse_length_us", self.pulse_length_spin_box.value())
         settings.setValue("bandwidth_mhz", self.bandwidth_spin_box.value())

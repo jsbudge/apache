@@ -37,13 +37,14 @@ class TargetEmbedding(FlatModule):
 
         nonlinearity = nonlinearities[config.nonlinearity]
 
+
         # Encoder
         # self.encoder_inflate = nn.Conv2d(self.in_channels, self.channel_sz, 1, 1, 0)
         self.encoder_inflate = nn.Sequential(
             nn.Conv2d(self.in_channels, self.in_channels // 2, 1, 1, 0),
             nonlinearity,
             nn.Conv2d(self.in_channels // 2, self.channel_sz, 1, 1, 0),
-            nonlinearity,
+            nn.LeakyReLU(),
             # CBAM(self.channel_sz, reduction_factor=1, kernel_size=9),
         )
         prev_lev_enc = self.channel_sz
@@ -65,9 +66,7 @@ class TargetEmbedding(FlatModule):
 
         prev_lev_dec = prev_lev_enc
         self.encoder_flatten = nn.Sequential(
-            nn.Conv2d(prev_lev_enc, 1, 1, 1, 0),
-            nonlinearity,
-            nn.Conv2d(1, 1, (out_sz[0], 1), 1, 0),
+            nn.Conv2d(prev_lev_enc, 1, (out_sz[0], 1), 1, 0),
             nonlinearity,
         )
         self.fc_z = nn.Sequential(
@@ -159,11 +158,14 @@ class TargetEmbedding(FlatModule):
         )'''
 
         # CLIP LOSS
-        clip_loss = (-idx * torch.nn.LogSoftmax(dim=-1)(feats @ feats.T)).sum(1).mean()
+        idx = idx + 1
+        clip_loss = torch.cosine_similarity(feats[None, :, :], feats[:, None, :], dim=-1)**2
+        clip_loss = clip_loss * torch.nn.Hardsigmoid()(abs(1e-9 + torch.outer(idx, idx) - idx ** 2) ** 2 - 3)
+        clip_loss = clip_loss.sum(1).mean() / img.shape[0]
 
 
         # COMBINATION LOSS
-        cll = rec_loss + clip_loss * .0001
+        cll = rec_loss + clip_loss * .01
 
         # Logging ranking metrics
         self.log_dict({f'{kind}_total_loss': cll, f'{kind}_clip_loss': clip_loss, f'{kind}_rec_loss': rec_loss,
@@ -188,14 +190,14 @@ class DecoderHead(LightningModule):
         nlin = nonlinearities[nonlinearity]
 
         self.decoder_inflate = nn.Sequential(
-            nn.ConvTranspose2d(1, inter_channels, (out_sz[0], 1), 1, 0),
+            nn.ConvTranspose2d(1, inter_channels, 4, 2, 1),
             nlin,
         )
         self.z_fc = nn.Sequential(
             nn.Linear(self.latent_dim, self.latent_dim),
             nlin,
-            nn.Linear(self.latent_dim, out_sz[1]),
-            nlin,
+            nn.Linear(self.latent_dim, self.latent_dim),
+            nn.LeakyReLU(),
         )
 
         self.dec_layers = nn.ModuleList()
@@ -215,7 +217,7 @@ class DecoderHead(LightningModule):
 
     def forward(self, x):
         x = self.z_fc(x)
-        x = self.decoder_inflate(x.view(-1, 1, 1, self.out_sz[1]))
+        x = self.decoder_inflate(x.view(-1, 1, 32, 32))
         for l in self.dec_layers:
             x = l(x)
         return x

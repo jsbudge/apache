@@ -81,19 +81,28 @@ if __name__ == '__main__':
             print('Checkpoint saved.')
 
         with torch.no_grad():
+            wave_stack = []
             wave_mdl.to(device)
             wave_mdl.eval()
+            cc = None
+            ts = None
 
-            cc, tc, ts, plength, bandwidth = next(iter(data.train_dataloader()))
-            cc = cc.to(device)
-            ts = ts.to(device)
-            plength = plength.to(device)
-            bandwidth = bandwidth.to(device)
+            for _ in range(5):
+                cct, tc, tst, _, _ = next(iter(data.train_dataloader()))
+                # cc = cct.to(device) if cc is None else cc
+                ts = tst.to(device) if ts is None else ts
+                cc = cct.to(device)
+                # ts = tst.to(device)
+                plength = torch.tensor([3178]).to(device)
+                bandwidth = torch.tensor([.3806]).to(device)
+                # plength = plength.to(device)
+                # bandwidth = bandwidth.to(device)
 
-            nn_output = wave_mdl(cc, ts, plength, bandwidth)
-            # nn_numpy = nn_output[0, 0, ...].cpu().data.numpy()
+                nn_output = wave_mdl(cc, ts, plength, bandwidth)
+                # nn_numpy = nn_output[0, 0, ...].cpu().data.numpy()
 
-            waves = wave_mdl.getWaveform(nn_output=nn_output).cpu().data.numpy()
+                wave_stack.append(wave_mdl.getWaveform(nn_output=nn_output).cpu().data.numpy())
+            waves = np.concatenate(wave_stack)
             # waves = save_waves
             # waves = np.fft.fft(np.fft.ifft(waves, axis=2)[:, :, :nr], fft_len, axis=2)
             print('Loaded waveforms...')
@@ -191,6 +200,14 @@ if __name__ == '__main__':
                 plt.plot(plot_t, np.fft.ifft(wave1[0, 1]).real[:nr])
                 plt.legend(['Waveform 1', 'Waveform 2'])
             plt.xlabel('Time')
+
+            plt.figure('Waveform Differences')
+            plt.subplot(2, 1, 1)
+            for w in waves:
+                plt.plot(np.fft.fftshift(db(w[0])))
+            plt.subplot(2, 1, 2)
+            for w in waves:
+                plt.plot(np.fft.fftshift(db(w[1])))
 
             wave_t = np.fft.ifft(waves[0, 0])[:nr]
             win = torch.windows.hann(256).data.numpy()

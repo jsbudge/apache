@@ -4,8 +4,11 @@ import torch
 from numba import cuda
 from simulib.backproject_functions import backprojectPulseSet, backprojectPulseStream
 from simulib.mesh_objects import Mesh, Scene
+from simulib.mesh_functions import loadTarget
+from wandb.util import load_yaml
+
 from apache_helper import ApachePlatform
-from config import get_config
+from config import get_config, parse_yaml, load_yaml_config
 from models import TargetEmbedding
 from simulib.simulation_functions import llh2enu, db, azelToVec, genChirp, genTaylorWindow, getRadarCoeff
 from simulib.cuda_kernels import applyRadiationPatternCPU
@@ -32,29 +35,24 @@ GPS_UPDATE_RATE_HZ = 100
 
 if __name__ == '__main__':
     # Load all the settings files
-    with open('./wave_simulator.yaml') as y:
-        settings = yaml.safe_load(y.read())
-    with open('./vae_config.yaml', 'r') as file:
-        try:
-            wave_config = yaml.safe_load(file)
-        except yaml.YAMLError as exc:
-            print(exc)
+    settings = load_yaml_config('./wave_simulator.yaml')
+    wave_config = load_yaml_config('./vae_config.yaml')
 
     nbpj_pts = (
-        int(settings['grid_height'] * settings['pts_per_m']), int(settings['grid_width'] * settings['pts_per_m']))
-    sim_settings = settings['simulation_params']
-    grid_origin = settings['origin']
+        int(settings.grid_height * settings.pts_per_m), int(settings.grid_width * settings.pts_per_m))
+    sim_settings = settings.simulation_params
+    grid_origin = settings.origin
 
     # This is all the constants in the radar equation for this simulation
-    fc = settings['fc']
-    radar_coeff = getRadarCoeff(fc, settings['antenna_params']['transmit_power'][0],
-                                settings['antenna_params']['gain'][0],
-                                settings['antenna_params']['gain'][0],
-                                settings['antenna_params']['rec_gain'][0])
-    noise_power = 10**(sim_settings['noise_power_db'] / 10)
+    fc = settings.fc
+    radar_coeff = getRadarCoeff(fc, settings.antenna_params.transmit_power[0],
+                                settings.antenna_params.gain[0],
+                                settings.antenna_params.gain[0],
+                                settings.antenna_params.rec_gain[0])
+    noise_power = 10**(sim_settings.noise_power_db / 10)
 
     # Calculate out mesh extent
-    bg = MapEnvironment(grid_origin, (settings['grid_width'], settings['grid_height']), background=np.ones(nbpj_pts))
+    bg = MapEnvironment(grid_origin, (settings.grid_width, settings.grid_height), background=np.ones(nbpj_pts))
 
     plane_pos = llh2enu(40.138052, -111.660027, 1365, bg.ref)
 
@@ -62,14 +60,14 @@ if __name__ == '__main__':
     print('Generating platform...', end='')
     # Run directly at the plane from the south
     grid_origin = llh2enu(*bg.origin, bg.ref)
-    # full_scan = int(sim_settings['az_bw'] / sim_settings['scan_rate'] * sim_settings['prf'])
+    # full_scan = int(sim_settings.az_bw / sim_settings.scan_rate * sim_settings.prf)
     # full_scan -= 0 if full_scan % 2 == 0 else 1
     # Get parameters for the Apache specs
-    req_slant_range = sim_settings['standoff_range']
-    req_alt = wave_config['apache_params']['alt_max']
+    req_slant_range = sim_settings.standoff_range
+    req_alt = wave_config.apache_params.alt_max
     ground_range = np.sqrt(req_slant_range ** 2 - req_alt ** 2)
-    req_dep_ang = np.arccos(req_alt / req_slant_range) + sim_settings['el_bw'] * DTR
-    ngpssam = int(sim_settings['collect_duration'] * GPS_UPDATE_RATE_HZ)
+    req_dep_ang = np.arccos(req_alt / req_slant_range) + sim_settings.el_bw * DTR
+    ngpssam = int(sim_settings.collect_duration * GPS_UPDATE_RATE_HZ)
     e = np.linspace(ground_range + .01, ground_range, ngpssam) + grid_origin[0]
     n = np.linspace(0, 0, ngpssam) + grid_origin[1]
     u = np.linspace(req_alt, req_alt, ngpssam) + grid_origin[2]
@@ -77,54 +75,54 @@ if __name__ == '__main__':
     p = np.zeros_like(e)
     y = np.zeros_like(e) + np.pi / 2
     t = np.arange(ngpssam) / GPS_UPDATE_RATE_HZ
-    gim_pan = (sawtooth(np.pi * sim_settings['scan_rate'] / sim_settings['scan_angle'] *
+    gim_pan = (sawtooth(np.pi * sim_settings.scan_rate / sim_settings.scan_angle *
                         np.arange(ngpssam) / GPS_UPDATE_RATE_HZ, .5)
-               * sim_settings['scan_angle'] / 2 * DTR)
+               * sim_settings.scan_angle / 2 * DTR)
     gim_el = np.zeros_like(gim_pan) + np.arccos(req_alt / req_slant_range)
     goff = np.array(
-        [wave_config['apache_params']['phase_center_offset_m'], 0., wave_config['apache_params']['wheel_height_m']])
+        [wave_config.apache_params.phase_center_offset_m, 0., wave_config.apache_params.wheel_height_m])
     grot = np.array([0., 0., 0.])
-    wave_fft_len = wave_config['settings']['fft_len']
-    cpi_len = settings['cpi_len']
+    wave_fft_len = wave_config.settings.fft_len
+    cpi_len = settings.cpi_len
 
-    rpref, rps, vx_array = genChannels(settings['antenna_params']['n_rx'], settings['antenna_params']['n_tx'],
-                                       settings['antenna_params']['tx_pos'], settings['antenna_params']['rx_pos'],
+    rpref, rps, vx_array = genChannels(settings.antenna_params.n_rx, settings.antenna_params.n_tx,
+                                       settings.antenna_params.tx_pos, settings.antenna_params.rx_pos,
                                        e, n, u, r, p, y, t,
                                        np.array([gim_pan, gim_el]).T, goff, grot,
-                                       req_dep_ang / DTR, wave_config['apache_params']['az_min_bw'] / 2,
-                                       wave_config['apache_params']['el_min_bw'] / 2, 2e9, ApachePlatform,
-                                       dict(params=wave_config['apache_params']))
+                                       req_dep_ang / DTR, wave_config.apache_params.az_min_bw / 2,
+                                       wave_config.apache_params.el_min_bw / 2, 2e9, ApachePlatform,
+                                       dict(params=wave_config.apache_params))
 
     nsam, nr, ranges, ranges_sampled, near_range_s, granges, fft_len, up_fft_len = (
-        rpref.getRadarParams(u.mean(), settings['plp'], settings['upsample']))
+        rpref.getRadarParams(u.mean(), settings.plp, settings.upsample))
     print(f'Plane slant range is {np.linalg.norm(plane_pos - rpref.rxpos(rpref.gpst), axis=1).mean()}')
     near_range_s = _float(near_range_s)
 
     # Get reference data
     fs = rpref.fs
-    bwidth = settings['bandwidth']
-    fc = settings['fc']
+    bwidth = settings.bandwidth
+    fc = settings.fc
     print('Done.')
 
     # Generate values needed for backprojection
     print('Calculating grid parameters...')
 
     # Run through loop to get data simulated
-    data_t = rpref.getValidPulseTimings(settings['simulation_params']['prf'], nr / TAC, cpi_len, as_blocks=True)
+    data_t = rpref.getValidPulseTimings(settings.simulation_params.prf, nr / TAC, cpi_len, as_blocks=True)
     gap_len = len(data_t[0])
     # data_t = np.concatenate(data_t)
 
-    ang_dist_traveled_over_cpi = cpi_len / sim_settings['prf'] * sim_settings['scan_rate'] * DTR
+    ang_dist_traveled_over_cpi = cpi_len / sim_settings.prf * sim_settings.scan_rate * DTR
 
     try:
         target_target = int(sys.argv[1])
     except IndexError:
-        target_target = sim_settings['target_target']
+        target_target = sim_settings.target_target
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    chirps = [np.fft.fft(genChirp(nr, fs, fc, settings['bandwidth']), fft_len)]
-    taytays = [genTaylorWindow(fc % fs, settings['bandwidth'] / 2, fs, fft_len)]
+    chirps = [np.fft.fft(genChirp(nr, fs, fc, settings.bandwidth), fft_len)]
+    taytays = [genTaylorWindow(fc % fs, settings.bandwidth / 2, fs, fft_len)]
     mfilts = [taytay / fft_chirp for fft_chirp, taytay in zip(chirps, taytays)]
-    pdd = np.fft.fftshift(np.fft.fft(genChirp(nr, fs, fc, settings['bandwidth']), wave_fft_len))
+    pdd = np.fft.fftshift(np.fft.fft(genChirp(nr, fs, fc, settings.bandwidth), wave_fft_len))
     pulse_data = np.stack([pdd.real, pdd.imag])
     print('Setting up wavemodel...')
     model_config = get_config('wave_exp', './vae_config.yaml')
@@ -135,12 +133,12 @@ if __name__ == '__main__':
     patterns = torch.tensor(torch.load('/home/jeff/repo/apache/data/target_tensors/target_embedding_means.pt')[2],
                             dtype=torch.float32)
 
-    lfm_chirps = [np.fft.fft(genChirp(nr, fs, fc, settings['bandwidth']), fft_len)]
+    lfm_chirps = [np.fft.fft(genChirp(nr, fs, fc, settings.bandwidth), fft_len)]
     lfm_mfilts = [fft_chirp.conj() * taytay for fft_chirp, taytay in zip(chirps, taytays)]
 
     # Calculate out points on the ground
-    gx, gy, gz = bg.getGrid(settings['origin'], settings['grid_width'], settings['grid_height'], *nbpj_pts,
-                            rpref.heading if settings['rotate_grid'] else 0)
+    gx, gy, gz = bg.getGrid(settings.origin, settings.grid_width, settings.grid_height, *nbpj_pts,
+                            rpref.heading if settings.rotate_grid else 0)
     grid_points = np.array([gx.flatten(), gy.flatten(), gz.flatten()]).T
     flight_path = rpref.txpos(rpref.gpst)
 
@@ -157,24 +155,26 @@ if __name__ == '__main__':
     array_factor = fine_ucavec.conj().T.dot(np.eye(vx_array.shape[0])).dot(fine_ucavec)[:, 0] / vx_array.shape[0]
 
     print('Loading mesh and settings...')
-    mesh = readCombineMeshFile('/home/jeff/Documents/roman_facade/scene.gltf', points=3000000)
-    mesh = mesh.rotate(mesh.get_rotation_matrix_from_xyz(np.array([np.pi / 2, 0, 0])))
-    mesh = mesh.translate(llh2enu(*grid_origin, grid_origin), relative=False)
-
-    bgmesh = Mesh(mesh, max_tris_per_split=64)
-
-    # Add in the target mesh
-    mesh = readCombineMeshFile('/home/jeff/Documents/target_meshes/cessna-172-obj.obj', points=3000000)
-    mesh = mesh.rotate(mesh.get_rotation_matrix_from_xyz(np.array([np.pi / 2, 0, 0])))
-    mesh = mesh.translate(llh2enu(*grid_origin, grid_origin), relative=False)
-
-    planemesh = Mesh(mesh, max_tris_per_split=64)
-    scene = Scene([bgmesh, planemesh])
+    scene = Scene()
+    mesh, mesh_materials = loadTarget('/home/jeff/Documents/roman_facade/scene.targ')
+    # mesh = mesh.rotate(mesh.get_rotation_matrix_from_xyz(np.array([np.pi / 2, 0, 0])))
+    # mesh = mesh.translate(llh2enu(*grid_origin, bg.ref), relative=False)
+    scene.add(
+        Mesh(
+            mesh,
+            max_tris_per_split=64,
+            material_sigma=[mesh_materials[mtid][0] for mtid in
+                            range(np.asarray(mesh.triangle_material_ids).max() + 1)],
+            material_emissivity=[mesh_materials[mtid][1] for mtid in
+                                 range(np.asarray(mesh.triangle_material_ids).max() + 1)],
+        )
+    )
+    scene.shift(llh2enu(*grid_origin, bg.ref))
 
     test = None
     print('Running simulation...')
     # Data blocks for imaging
-    rbi_image = np.zeros(gx.shape, dtype=np.complex128)
+    rbi_image = np.zeros(gx.shape, dtype=np.complex64)
 
     nz = np.zeros(cpi_len)
     ang_spread = np.linspace(-ang_dist_traveled_over_cpi / 2, ang_dist_traveled_over_cpi / 2,
@@ -196,11 +196,11 @@ if __name__ == '__main__':
     det_pts = []
     ex_chirps = []
 
-    sample_points = scene.sample(2**16, view_pos=rpref.txpos(rpref.gpst[np.linspace(0, len(rpref.gpst) - 1, 4).astype(int)]),
-                                 fc=fc, fs=fs, near_range_s=near_range_s, radar_equation_constant=radar_coeff)
+    sample_points = scene.sample(2**16,
+                                 a_obs_pts=rpref.txpos(rpref.gpst[np.linspace(0, len(rpref.gpst) - 1, 4).astype(int)]))
     # bpj_grid = np.zeros_like(gx).astype(np.complex128)
 
-    if settings['simulation_params']['load_targets']:
+    if settings.simulation_params.load_targets:
         pass
     ts = data_t[10]
     txposes = [rp.txpos(ts).astype(_float) for rp in rps]
@@ -208,8 +208,8 @@ if __name__ == '__main__':
     pans = [rp.pan(ts).astype(_float) for rp in rps]
     tilts = [rp.tilt(ts).astype(_float) for rp in rps]
     init_rp = getRangeProfileFromScene(scene, sample_points, txposes, rxposes, pans, tilts,
-                                         radar_coeff, rpref.az_half_bw, rpref.el_half_bw, nsam, fc, near_range_s,
-                                         num_bounces=1, streams=streams)
+                                         radar_coeff, rpref.az_half_bw, rpref.el_half_bw, nsam, fc, near_range_s, fs,
+                                         num_bounces=1, streams=streams, use_supersampling=False)
     single_data = [np.ascontiguousarray(np.fft.fft(srp, fft_len, axis=1) * mfilt * pulse)
                    for srp, mfilt, pulse in zip(init_rp, mfilts, chirps)]
     pdd = np.stack(single_data).swapaxes(0, 1)
@@ -218,22 +218,22 @@ if __name__ == '__main__':
     pulse_data = np.stack([pdd.real, pdd.imag])
 
     '''wave_mdl.to(device)
-    waves = wave_mdl.full_forward(pulse_data, patterns.squeeze(0).to(device), nr, settings['bandwidth'] / fs)
+    waves = wave_mdl.full_forward(pulse_data, patterns.squeeze(0).to(device), nr, settings.bandwidth / fs)
     wave_mdl.to('cpu')
     waves = np.fft.fft(np.fft.ifft(waves, axis=1)[:, :nr], fft_len, axis=1) * 1e6
     chirps = [np.roll(waves, -3277) for _ in rps]
-    taytays = [genTaylorWindow(fc % fs, settings['bandwidth'] / 2, fs, fft_len)]
+    taytays = [genTaylorWindow(fc % fs, settings.bandwidth / 2, fs, fft_len)]
     mfilts = [fft_chirp.conj() * taytay for fft_chirp, taytay in zip(chirps, taytays)]'''
 
     for idx, ts in enumerate(data_t):
         # Modify the pulse
         ex_chirps.append(chirps)
         wave_mdl.to(device)
-        waves = wave_mdl.full_forward(pulse_data, patterns.squeeze(0).to(device), nr, settings['bandwidth'] / fs)
+        waves = wave_mdl.full_forward(pulse_data, patterns.squeeze(0).to(device), nr, settings.bandwidth / fs)
         wave_mdl.to('cpu')
         waves = np.fft.fft(np.fft.ifft(waves, axis=1)[:, :nr], fft_len, axis=1) * 1e6
         chirps = [np.roll(waves[rp.tx_num], -3277) for n, rp in enumerate(rps)]
-        taytays = [genTaylorWindow(fc % fs, settings['bandwidth'] / 2, fs, fft_len) for _ in rps]
+        taytays = [genTaylorWindow(fc % fs, settings.bandwidth / 2, fs, fft_len) for _ in rps]
         mfilts = [fft_chirp.conj() * taytay for fft_chirp, taytay in zip(chirps, taytays)]
         txposes = [rp.txpos(ts).astype(_float) for rp in rps]
         rxposes = [rp.rxpos(ts).astype(_float) for rp in rps]
@@ -241,7 +241,7 @@ if __name__ == '__main__':
         tilts = [rp.tilt(ts).astype(_float) for rp in rps]
         single_rp = getRangeProfileFromScene(scene, sample_points, txposes, rxposes, pans, tilts,
                                       _float(radar_coeff), _float(rpref.az_half_bw), _float(rpref.el_half_bw), nsam, _float(fc), _float(near_range_s),
-                                      num_bounces=1, streams=streams)
+                                      fs, num_bounces=1, streams=streams, use_supersampling=False)
         if sum(np.sum(abs(s)) for s in single_rp) < 1e-10:
             continue
         single_data = [np.ascontiguousarray(np.fft.ifft(np.fft.fft(srp, fft_len, axis=1) * mfilt * pulse, axis=1)[:, :nsam])
@@ -249,7 +249,7 @@ if __name__ == '__main__':
         compressed_data = np.stack(single_data).swapaxes(0, 1)
         compressed_data = np.sum(compressed_data * avec[None, :, None], axis=1)
 
-        # bpj_grid += backprojectPulseStream([compressed_data.T], pans, tilts, rxposes, txposes, gz.astype(_float), c0 / fc, near_range_s, fs * settings['upsample'],
+        # bpj_grid += backprojectPulseStream([compressed_data.T], pans, tilts, rxposes, txposes, gz.astype(_float), c0 / fc, near_range_s, fs * settings.upsample,
         #                                    rpref.az_half_bw, rpref.el_half_bw, gx=gx.astype(_float), gy=gy.astype(_float), streams=streams)
         ts_hat = ts.min()
         panrx = rpref.pan(ts[:H_hat.shape[1]])
@@ -268,8 +268,8 @@ if __name__ == '__main__':
                 panbins_pt = np.digitize(pans[valids], panrx)
                 rbins_pt = np.digitize(pt_ranges[valids], ranges)
                 rbi_image[valids.reshape(rbi_image.shape)] += sig_min[rbins_pt, panbins_pt]
-            if settings['live_figures']:
-                pt_proj = rpref.rxpos(ts_hat)[:, None] + azelToVec(panrx, elrx) * sim_settings['standoff_range']
+            if settings.live_figures:
+                pt_proj = rpref.rxpos(ts_hat)[:, None] + azelToVec(panrx, elrx) * sim_settings.standoff_range
                 plt.clf()
                 plt.subplot(2, 1, 1)
                 plt.title(f'CPI {idx}')
@@ -281,7 +281,7 @@ if __name__ == '__main__':
                 plt.draw()
                 plt.pause(.1)
             pulse_data = np.fft.fftshift(np.fft.fft(np.fft.ifft(compressed_data, axis=1),
-                                        wave_config['settings']['fft_len'], axis=1), axes=1)
+                                        wave_config.settings.fft_len, axis=1), axes=1)
 
     print('Simulation complete. Plotting stuff...')
 
@@ -289,7 +289,7 @@ if __name__ == '__main__':
     ----------------------------PLOTS-------------------------------
     """
 
-    if settings['output_figures']:
+    if settings.output_figures:
         plt.figure(f'RBI image for {target_target}')
         plt.imshow(db(rbi_image))
         plt.axis('tight')

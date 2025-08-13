@@ -35,7 +35,7 @@ class QGLControllerWidget(QtOpenGL.QGLWidget):
     vao = None
     vaos: list = []
     def __init__(self, parent=None, grid_mode=0):
-        self.mesh = None
+        self.scene = None
         self.parent = parent
         self.grid_mode = grid_mode
         super(QGLControllerWidget, self).__init__(parent)
@@ -103,7 +103,7 @@ class QGLControllerWidget(QtOpenGL.QGLWidget):
         self.color.value = (1.0, 1.0, 1.0, 1.0)
 
         # Setting mesh parameters
-        self.mesh = None
+        self.scene = None
         self.ctx.point_size = 5.
         self.ctx.depth_func = '1'
 
@@ -113,7 +113,7 @@ class QGLControllerWidget(QtOpenGL.QGLWidget):
         self.ctx.enable(moderngl.BLEND)
         self.ctx.enable(moderngl.DEPTH_TEST | moderngl.CULL_FACE)
         self.ctx.wireframe = self.is_wireframe
-        if self.mesh is None:
+        if self.scene is None:
             return
 
         proj = Matrix44.perspective_projection(self.fov, self.aspect_ratio, .1, 10000.)
@@ -130,29 +130,29 @@ class QGLControllerWidget(QtOpenGL.QGLWidget):
             v[0].render(v[1])
 
     def set_mesh(self, new_mesh):
-        self.mesh = new_mesh
-        self.mesh.shift(np.array([0, 0, 0.]), relative=False)
+        self.scene = new_mesh
+        self.scene.shift(np.array([0, 0, 0.]), relative=False)
 
         # Creates an index buffer
-        index_buffer = self.ctx.buffer(np.asarray(self.mesh.tri_idx, dtype="u4").tobytes())
+        index_buffer = self.ctx.buffer(np.asarray(self.scene.meshes[0].tri_idx, dtype="u4").tobytes())
 
         # Creates a list of vertex buffer objects (VBOs)
-        vao_content = [(self.ctx.buffer(np.asarray(self.mesh.vertices, dtype="f4").tobytes()), '3f', 'in_position'),
-                       (self.ctx.buffer(np.asarray(self.mesh.vertex_normals, dtype="f4").tobytes()), '3f', 'in_normal')]
+        vao_content = [(self.ctx.buffer(np.asarray(self.scene.meshes[0].vertices, dtype="f4").tobytes()), '3f', 'in_position'),
+                       (self.ctx.buffer(np.asarray(self.scene.meshes[0].vertex_normals, dtype="f4").tobytes()), '3f', 'in_normal')]
         self.vao = self.ctx.vertex_array(self.prog, vao_content, index_buffer, 4)
 
     def modify_mesh(self, pos=None, att=None):
         if pos is not None:
-            self.mesh.shift(pos, relative=False)
+            self.scene.shift(pos, relative=False)
         if att is not None:
-            self.mesh.rotate(att)
+            self.scene.rotate(att)
 
         # Creates an index buffer
-        index_buffer = self.ctx.buffer(np.asarray(self.mesh.triangles, dtype="u4").tobytes())
+        index_buffer = self.ctx.buffer(np.asarray(self.scene.meshes[0].tri_idx, dtype="u4").tobytes())
 
         # Creates a list of vertex buffer objects (VBOs)
-        vao_content = [(self.ctx.buffer(np.asarray(self.mesh.vertices, dtype="f4").tobytes()), '3f', 'in_position'),
-                       (self.ctx.buffer(np.asarray(self.mesh.vertex_normals, dtype="f4").tobytes()), '3f',
+        vao_content = [(self.ctx.buffer(np.asarray(self.scene.meshes[0].vertices, dtype="f4").tobytes()), '3f', 'in_position'),
+                       (self.ctx.buffer(np.asarray(self.scene.meshes[0].vertex_normals, dtype="f4").tobytes()), '3f',
                         'in_normal')]
         self.vao = self.ctx.vertex_array(self.prog, vao_content, index_buffer, 4)
 

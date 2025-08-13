@@ -6,6 +6,7 @@ from dataloaders import TargetEncoderModule
 from models import TargetEmbedding
 import matplotlib.pyplot as plt
 import numpy as np
+from glob import glob
 
 
 def setupTrainer(a_gpu_num, tconf, do_logs=True, **trainer_args):
@@ -61,41 +62,45 @@ if __name__ == '__main__':
         model.to(device)
         model.eval()
 
-        # Snag the first 50 batches
-        batch_sz = target_config.val_batch_size
+        # Get one example from each target
+        examples = []
+        example_files = glob('/home/jeff/repo/apache/data/target_tensors/target_*')
+        for ex in example_files:
+            if fls := glob(f'{ex}/target_*_*.pt'):
+                examples.append(torch.load(fls[0], weights_only=True))
 
-        example = torch.load('/home/jeff/repo/apache/data/target_tensors/target_3/target_3_168.pt', weights_only=True)
         model.to('cuda:0')
-        reconstruction = model(example[0].unsqueeze(0).to(model.device)).squeeze(0).cpu().data.numpy()
-        example_data = example[0].cpu().data.numpy()
-        plt.figure()
-        plt.subplot(221)
-        plt.title('Original')
-        plt.imshow(db(example_data[0] + 1j * example_data[1]))
-        plt.axis('tight')
-        # plt.clim(-10, 10)
-        plt.xticks([])
-        plt.yticks([])
-        plt.subplot(222)
-        plt.title('Reconstruction')
-        plt.imshow(db(reconstruction[0] + 1j * reconstruction[1]))
-        plt.axis('tight')
-        # plt.clim(-10, 10)
-        plt.xticks([])
-        plt.yticks([])
-        plt.subplot(223)
-        plt.title('Phase Error')
-        plt.imshow(np.angle((example_data[0] + 1j * example_data[1]) - (reconstruction[0] + 1j * reconstruction[1])))
-        plt.axis('tight')
-        # plt.clim(-10, 10)
-        plt.xticks([])
-        plt.yticks([])
-        plt.subplot(224)
-        plt.title('Mag Error')
-        plt.imshow(abs((example_data[0] + 1j * example_data[1]) - (reconstruction[0] + 1j * reconstruction[1])))
-        plt.axis('tight')
-        # plt.clim(-10, 10)
-        plt.xticks([])
-        plt.yticks([])
+        for idx, example in enumerate(examples):
+            reconstruction = model(example[0].unsqueeze(0).to(model.device)).squeeze(0).cpu().data.numpy()
+            example_data = example[0].cpu().data.numpy()
+            plt.figure(f'Target {idx}')
+            plt.subplot(221)
+            plt.title('Original')
+            plt.imshow(db(example_data[0] + 1j * example_data[1]))
+            plt.axis('tight')
+            # plt.clim(-10, 10)
+            plt.xticks([])
+            plt.yticks([])
+            plt.subplot(222)
+            plt.title('Reconstruction')
+            plt.imshow(db(reconstruction[0] + 1j * reconstruction[1]))
+            plt.axis('tight')
+            # plt.clim(-10, 10)
+            plt.xticks([])
+            plt.yticks([])
+            plt.subplot(223)
+            plt.title('Phase Error')
+            plt.imshow(np.angle((example_data[0] + 1j * example_data[1]) - (reconstruction[0] + 1j * reconstruction[1])))
+            plt.axis('tight')
+            # plt.clim(-10, 10)
+            plt.xticks([])
+            plt.yticks([])
+            plt.subplot(224)
+            plt.title('Mag Error')
+            plt.imshow(abs((example_data[0] + 1j * example_data[1]) - (reconstruction[0] + 1j * reconstruction[1])))
+            plt.axis('tight')
+            # plt.clim(-10, 10)
+            plt.xticks([])
+            plt.yticks([])
 
-        plt.show()
+            plt.show()
