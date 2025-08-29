@@ -1,6 +1,3 @@
-import pickle
-from pathlib import Path
-
 from config import get_config
 from utils import upsample, normalize, fs, narrow_band
 import numpy as np
@@ -11,7 +8,6 @@ import torch
 from pytorch_lightning import Trainer, loggers, seed_everything
 from pytorch_lightning.callbacks import EarlyStopping, StochasticWeightAveraging, ModelCheckpoint
 from dataloaders import WaveDataModule
-from models import TargetEmbedding, load
 from waveform_model import GeneratorModel
 
 
@@ -84,14 +80,21 @@ if __name__ == '__main__':
             wave_stack = []
             wave_mdl.to(device)
             wave_mdl.eval()
-            cc = None
-            ts = None
+            ccs = []
+            tss = []
+            tcs = []
+            data_iter = iter(data.train_dataloader())
 
             for _ in range(5):
-                cct, tc, tst, _, _ = next(iter(data.train_dataloader()))
+                cct, tct, tst, _, _, _ = next(data_iter)
+                ccs.append(cct)
+                tss.append(tst)
+                tcs.append(tct)
+
+            for ts, cc in zip(tss, ccs):
                 # cc = cct.to(device) if cc is None else cc
-                ts = tst.to(device) if ts is None else ts
-                cc = cct.to(device)
+                ts = ts.to(device)
+                cc = cc.to(device)
                 # ts = tst.to(device)
                 plength = torch.tensor([3178]).to(device)
                 bandwidth = torch.tensor([.3806]).to(device)
@@ -102,15 +105,21 @@ if __name__ == '__main__':
                 # nn_numpy = nn_output[0, 0, ...].cpu().data.numpy()
 
                 wave_stack.append(wave_mdl.getWaveform(nn_output=nn_output).cpu().data.numpy())
-            waves = np.concatenate(wave_stack)
+            waves = np.concatenate(wave_stack) # / np.sum(waves * waves.conj(), axis=2)[..., None]
             # waves = save_waves
             # waves = np.fft.fft(np.fft.ifft(waves, axis=2)[:, :, :nr], fft_len, axis=2)
             print('Loaded waveforms...')
 
             clutter = cc.cpu().data.numpy()
             clutter = normalize(clutter[:, 0, 0, :] + 1j * clutter[:, 0, 1, :])
-            targets = tc.cpu().data.numpy()
+            targets = tcs[0].cpu().data.numpy()
             targets = normalize(targets[:, 0, :] + 1j * targets[:, 1, :])
+
+            linear = np.fft.fft(genPulse(np.linspace(0, 1, 10),
+                         np.linspace(0, 1, 10), nr, fs, config.fc,
+                         bandwidth[0].cpu().data.numpy() * fs), fft_len)
+            linear = linear / np.sqrt(sum(linear * linear.conj()))  # Unit energy
+            # linear = linear / sum(linear * linear.conj())  # Unit energy
             print('Loaded clutter and target data...')
 
             # Run some plots for an idea of what's going on
@@ -133,8 +142,10 @@ if __name__ == '__main__':
                     np.fft.fftshift(clutter[0]) * waves[0, 0] * waves[0, 0].conj() + np.fft.fftshift(clutter[0]) * waves[
                         0, 1] * waves[0, 1].conj())
                 target_corr = np.fft.ifft(
-                    np.fft.fftshift(targets[0]) * waves[0, 0] * waves[0, 0].conj() + np.fft.fftshift(targets[0]) * waves[
+                    np.fft.fftshift(targets[0] + clutter[0]) * waves[0, 0] * waves[0, 0].conj() + np.fft.fftshift(targets[0] + clutter[0]) * waves[
                         0, 1] * waves[0, 1].conj())
+                linear_corr = np.fft.ifft(
+                    np.fft.fftshift(targets[0] + clutter[0]) * linear * linear.conj())
             else:
                 clutter_corr = np.fft.ifft(
                     np.fft.fftshift(clutter[0]) * waves[0, 0] * waves[0, 0].conj())
@@ -143,7 +154,8 @@ if __name__ == '__main__':
             plt.figure('MIMO Correlations')
             plt.plot(db(clutter_corr))
             plt.plot(db(target_corr))
-            plt.legend(['Clutter', 'Target'])
+            plt.plot(db(linear_corr))
+            plt.legend(['Clutter', 'Target', 'Linear'])
             plt.xlabel('Lag')
             plt.ylabel('Power (dB)')
 
@@ -162,11 +174,6 @@ if __name__ == '__main__':
             # plot_model(mdl, to_file='./mdl_plot.png', show_shapes=True)
             # waveforms = np.fft.fftshift(waveforms, axes=2)
             plt.figure('Autocorrelation')
-            linear = np.fft.fft(
-                genPulse(np.linspace(0, 1, 10),
-                         np.linspace(0, 1, 10), nr, fs, config.fc,
-                         bandwidth[0].cpu().data.numpy() * fs), fft_len)
-            linear = linear / sum(linear * linear.conj())  # Unit energy
             inp_wave = waves[0, 0] * waves[0, 0].conj()
             autocorr1 = np.fft.fftshift(db(np.fft.ifft(upsample(inp_wave))))
             if wave_mdl.n_ants > 1:
@@ -202,12 +209,24 @@ if __name__ == '__main__':
             plt.xlabel('Time')
 
             plt.figure('Waveform Differences')
-            plt.subplot(2, 1, 1)
+            plt.subplot(2, 3, 1)
             for w in waves:
                 plt.plot(np.fft.fftshift(db(w[0])))
-            plt.subplot(2, 1, 2)
+            plt.subplot(2, 3, 4)
             for w in waves:
                 plt.plot(np.fft.fftshift(db(w[1])))
+            plt.subplot(2, 3, 2)
+            for t in tcs:
+                plt.plot(np.fft.fftshift(db(t[0][0].data.numpy())))
+            plt.subplot(2, 3, 5)
+            for t in tcs:
+                plt.plot(np.fft.fftshift(db(t[0][1].data.numpy())))
+            plt.subplot(2, 3, 3)
+            for c in ccs:
+                plt.plot(np.fft.fftshift(db(c[0][0][0].data.numpy())))
+            plt.subplot(2, 3, 6)
+            for c in ccs:
+                plt.plot(np.fft.fftshift(db(c[0][0][1].data.numpy())))
 
             wave_t = np.fft.ifft(waves[0, 0])[:nr]
             win = torch.windows.hann(256).data.numpy()
@@ -249,3 +268,5 @@ for step, dt in enumerate(tqdm(data.train_dataloader())):
         resultses.append(wave_mdl(bd[0], bd[2], bd[3], bd[4]).to('cpu'))
         losses.append(wave_mdl.loss_function(results, *bd)['target_loss'].to('cpu'))
         culprits.append(dt)'''
+
+# .5 * (-2 * 65 + np.trace(np.linalg.pinv(eb) @ ea) + np.trace(np.linalg.pinv(ea) @ eb) + (mub - mua).dot(np.linalg.pinv(ea) + np.linalg.pinv(eb)).dot(mub-mua))

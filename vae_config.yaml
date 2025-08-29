@@ -57,11 +57,11 @@ target_exp_params:
   training_params:
     lr: 0.000001
     weight_decay: 0.0
-    scheduler_gamma: 0.999  # Exponential decay
+    scheduler_gamma: 0.9999  # Exponential decay
     eta_min: .000000001  # Cosine annealing minimum - 1e-9
     betas: [ .9, .99 ]
     log_epoch: 1
-    save_model: True
+    save_model: False
     transform_data: False
     warm_start: False
     loss_landscape: False
@@ -91,9 +91,9 @@ target_exp_params:
     fft_len: 8192
     range_samples: 2
     latent_dim: 1024
-    channel_sz: 256
+    channel_sz: 300
     label_sz: 23
-    nonlinearity: silu
+    nonlinearity: grow
     temperature: 1.
     levels: 1
     # These values are taken from a sampling of data, should be the same as the dataset params
@@ -103,8 +103,8 @@ target_exp_params:
 # For training of wavemodel
 wave_exp_params:
   training_params:
-    lr: 0.000001
-    weight_decay: 0.01
+    lr: 0.0001
+    weight_decay: 0.0
     scheduler_gamma: 0.999
     swa_start: .6
     warm_start: False
@@ -112,7 +112,7 @@ wave_exp_params:
     log_epoch: 100
     accumulation_steps: 16
     is_tuning: False
-    save_model: False
+    save_model: True
     loss_landscape: False
     max_epochs: 1200
     patience: 500
@@ -122,19 +122,19 @@ wave_exp_params:
     fft_len: 8192
     fs: 2000000000.
     fc: 9600000000.
-    transformer_passes: 15
+    transformer_passes: 3
     encoder_start_channel_sz: 2
-    embedding_concatenation_channels: 128
-    n_skip_layers: 5
-    clutter_target_channels: 128
-    flowthrough_channels: 114
-    wave_decoder_channels: 156
-    target_channels: 128
-    waveform_channels: 128
+    embedding_concatenation_channels: 32
+    n_skip_layers: 20
+    clutter_target_channels: 32
+    flowthrough_channels: 32
+    wave_decoder_channels: 32
+    target_channels: 32
+    waveform_channels: 32
     target_latent_size: 1024
-    n_fourier_modes: 128
+    n_fourier_modes: 64
     bandwidth: 400000000.
-    nonlinearity: grow
+    nonlinearity: silu
   logging_params:
     log_dir: ./logs
     weights_path: ./model

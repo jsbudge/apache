@@ -1,12 +1,11 @@
 import pickle
 from typing import Any
 import torch
-from neuralop import TFNO1d, TFNO2d
-from torch import nn, optim, Tensor
+from torch import nn, Tensor
 import numpy as np
 from cbam import CBAM
 from config import Config
-from layers import LKA, LKATranspose, LKA1d, LKATranspose1d, Block2d, Block2dTranspose
+from layers import Block2d, Block2dTranspose
 from pytorch_lightning import LightningModule
 from utils import _xavier_init, nonlinearities
 from waveform_model import FlatModule
@@ -73,6 +72,7 @@ class TargetEmbedding(FlatModule):
             nn.Linear(out_sz[1], self.latent_dim),
             nonlinearity,
             nn.Linear(self.latent_dim, self.latent_dim),
+            nn.Softsign(),
         )
 
         self.decoder = DecoderHead(config.latent_dim, config.channel_sz, self.in_channels, out_sz,
@@ -135,9 +135,9 @@ class TargetEmbedding(FlatModule):
                                       eps=1e-7)
         if self.config.scheduler_gamma is None:
             return optimizer
-        # scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=self.config.scheduler_gamma,
-        #                                                    verbose=True)
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, 100, eta_min=self.config.eta_min)
+        scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=self.config.scheduler_gamma,
+                                                           verbose=True)
+        # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, 100, eta_min=self.config.eta_min)
         '''scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, cooldown=self.params['step_size'],
                                                          factor=self.params['scheduler_gamma'], threshold=1e-5)'''
 
@@ -184,6 +184,7 @@ class DecoderHead(LightningModule):
         self.channel_sz = channel_sz
         self.in_channels = in_channels
         self.out_sz = out_sz
+        self.latent_sqrt = int(np.sqrt(self.latent_dim))
         inter_channels = channel_sz // (2**levels)
 
         n_dec_layers = int(in_sz[0] / out_sz[0])
@@ -192,6 +193,7 @@ class DecoderHead(LightningModule):
         self.decoder_inflate = nn.Sequential(
             nn.ConvTranspose2d(1, inter_channels, 4, 2, 1),
             nlin,
+            Block2dTranspose(inter_channels, 3, 1, 1, nonlinearity=nonlinearity)
         )
         self.z_fc = nn.Sequential(
             nn.Linear(self.latent_dim, self.latent_dim),
@@ -212,12 +214,14 @@ class DecoderHead(LightningModule):
             ))
             inter_channels = inc
         self.dec_layers.append(nn.Sequential(
+            Block2dTranspose(inter_channels, 3, 1, 1, nonlinearity=nonlinearity),
+            Block2dTranspose(inter_channels, 3, 1, 1, nonlinearity=nonlinearity),
             nn.ConvTranspose2d(inter_channels, in_channels, 4, 2, 1),
         ))
 
     def forward(self, x):
         x = self.z_fc(x)
-        x = self.decoder_inflate(x.view(-1, 1, 32, 32))
+        x = self.decoder_inflate(x.view(-1, 1, self.latent_sqrt, self.latent_sqrt))
         for l in self.dec_layers:
             x = l(x)
         return x

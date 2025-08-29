@@ -10,7 +10,7 @@ from torch.nn import functional as nn_func
 from pytorch_lightning.utilities import grad_norm
 from torch.optim import Optimizer
 from config import Config
-from layers import FourierFeature, PulseLength, LKA1d, LKATranspose1d, WindowGenerate
+from layers import FourierFeature, PulseLength, LKA1d, LKATranspose1d, WindowGenerate, PositionalEncoding
 import numpy as np
 
 from utils import normalize, get_pslr, _xavier_init, nonlinearities
@@ -88,13 +88,17 @@ class GeneratorModel(FlatModule):
 
         '''TRANSFORMER'''
         # self.predict_lstm = nn.LSTM(self.target_latent_size, self.target_latent_size, self.lstm_layers, batch_first=True)
-        self.predict_decoder = nn.Transformer(self.target_latent_size, num_decoder_layers=7, num_encoder_layers=7, nhead=8,
-                                              batch_first=True, activation=nlin)
+        self.predict_decoder = nn.Transformer(self.target_latent_size, num_decoder_layers=4, num_encoder_layers=4, nhead=8,
+                                              batch_first=True, activation='gelu')
+        self.pos_enc = PositionalEncoding(self.target_latent_size, .1, 32)
         # self.predict_decoder.apply(init_weights)
 
         '''CLUTTER AND TARGET COMBINATION LAYERS'''
         self.clutter_encoder = nn.Sequential(
             nn.Linear(self.fft_len, self.target_latent_size),
+            nlin,
+            nn.LayerNorm(self.target_latent_size),
+            nn.Linear(self.target_latent_size, self.target_latent_size),
             nlin,
         )
         self.clutter_squash = nn.Sequential(
@@ -105,7 +109,7 @@ class GeneratorModel(FlatModule):
         self.clutter_target_init = nn.Sequential(
             TFNO1d(n_modes_height=self.n_fourier_modes, in_channels=2, out_channels=self.flowthrough_channels,
                    hidden_channels=self.clutter_target_channels, non_linearity=nlin),
-            LKA1d(self.flowthrough_channels, kernel_sizes=(255, 129), dilation=12, activation=self.nonlinearity),
+            LKA1d(self.flowthrough_channels, kernel_sizes=(65, 65), dilation=12, activation=self.nonlinearity),
         )
 
         '''SKIP LAYERS'''
@@ -116,7 +120,8 @@ class GeneratorModel(FlatModule):
             TFNO1d(n_modes_height=self.n_fourier_modes, in_channels=self.flowthrough_channels + 2,
                    out_channels=self.waveform_channels, non_linearity=nlin,
                    hidden_channels=self.waveform_channels),
-            LKA1d(self.waveform_channels, kernel_sizes=(129, 65), dilation=6, activation=self.nonlinearity),
+            LKA1d(self.waveform_channels, kernel_sizes=(129, 129), dilation=6, activation=self.nonlinearity),
+            LKA1d(self.waveform_channels, kernel_sizes=(129, 129), dilation=6, activation=self.nonlinearity),
             TFNO1d(n_modes_height=self.n_fourier_modes, in_channels=self.waveform_channels,
                    out_channels=self.flowthrough_channels, non_linearity=nlin, hidden_channels=self.waveform_channels),
             ))
@@ -130,12 +135,6 @@ class GeneratorModel(FlatModule):
 
         self.wave_decoder = nn.Sequential(
             TFNO1d(n_modes_height=self.n_fourier_modes, in_channels=self.flowthrough_channels + 2,
-                   out_channels=self.wave_decoder_channels, non_linearity=nlin,
-                   hidden_channels=self.wave_decoder_channels),
-            TFNO1d(n_modes_height=self.n_fourier_modes, in_channels=self.wave_decoder_channels,
-                   out_channels=self.wave_decoder_channels, non_linearity=nlin,
-                   hidden_channels=self.wave_decoder_channels),
-            TFNO1d(n_modes_height=self.n_fourier_modes, in_channels=self.wave_decoder_channels,
                    out_channels=self.wave_decoder_channels, non_linearity=nlin,
                    hidden_channels=self.wave_decoder_channels),
             TFNO1d(n_modes_height=self.n_fourier_modes, in_channels=self.wave_decoder_channels, non_linearity=nlin,
@@ -175,12 +174,13 @@ class GeneratorModel(FlatModule):
         # Run clutter through the encoder
         x = self.clutter_encoder(clutter)
         x = self.clutter_squash(x.swapaxes(-2, -1))
-        x = x.squeeze(-1)
+        x = self.pos_enc(x.squeeze(-1))
 
         # Predict the next clutter step using transformer
         for _ in range(self.passes):
+            # x = x + target.unsqueeze(1)
             x = self.predict_decoder(x, x)
-            x = torch.cat([x, target.unsqueeze(1)], dim=1)
+
 
         # Final pass
         x = self.predict_decoder(x[:, :-1], x[:, 1:])[:, -1, ...].unsqueeze(1)
@@ -243,6 +243,20 @@ class GeneratorModel(FlatModule):
         gen_waveform = self.getWaveform(nn_output=args[0])
         mfiltered = gen_waveform * gen_waveform.conj()
 
+        #  KLD between the target and clutter functions
+        target_stft = torch.abs(torch.stft(torch.fft.ifft(target_spectrum.unsqueeze(1) * mfiltered, dim=2)[0], 64, window=torch.hann_window(64, device=self.device)))
+        clutter_stft = torch.abs(torch.stft(torch.fft.ifft(clutter_spectrum.unsqueeze(1) * mfiltered, dim=2)[0], 64, window=torch.hann_window(64, device=self.device)))
+        eas = [torch.cov(t) for t in target_stft]
+        ebs = [torch.cov(t) for t in clutter_stft]
+        muas = [t.mean(dim=1) for t in target_stft]
+        mubs = [t.mean(dim=1) for t in clutter_stft]
+        kld = [.5 * (torch.trace(torch.linalg.pinv(eb) @ ea) + torch.trace(torch.linalg.pinv(ea) @ eb) + (mub - mua) @ (
+            torch.linalg.pinv(ea) + torch.linalg.pinv(eb)) @ (mub - mua)) for ea, eb, mua, mub in zip(eas, ebs, muas, mubs)]
+
+        kld_loss = sum(kld)
+
+        # target_loss =
+
         # Target and clutter power functions
         targ_ac = torch.sum(
             torch.abs(torch.fft.ifft(target_spectrum.unsqueeze(1) * mfiltered, dim=2)), dim=1)
@@ -281,7 +295,7 @@ class GeneratorModel(FlatModule):
         target_loss = torch.abs(target_loss)
 
         return {'target_loss': target_loss,
-                'sidelobe_loss': sidelobe_loss, 'ortho_loss': ortho_loss}
+                'sidelobe_loss': sidelobe_loss, 'ortho_loss': ortho_loss, 'kld_loss': kld_loss}
 
     # def example_input_array(self) -> Optional[Union[Tensor, Tuple, Dict]]:
     #     return self.example_input_array
@@ -317,15 +331,15 @@ class GeneratorModel(FlatModule):
 
     def training_step(self, batch, batch_idx):
         train_loss = self.train_val_get(batch, batch_idx)
-        self.manual_backward(train_loss['loss'])
-        opt = self.optimizers()
+        self.manual_backward(train_loss['loss'] / self.config.accumulation_steps)
+        '''opt = self.optimizers()
         opt.step()
-        opt.zero_grad()
+        opt.zero_grad()'''
         # self.clip_gradients(opt, gradient_clip_val=0.5, gradient_clip_algorithm="norm")
-        '''if self.global_step % self.config.accumulation_steps == 0:
+        if (batch_idx + 1) % self.config.accumulation_steps == 0:
             opt = self.optimizers()
             opt.step()
-            opt.zero_grad()'''
+            opt.zero_grad()
         self.log_dict(train_loss, sync_dist=True,
                       prog_bar=True, rank_zero_only=True, on_epoch=True)
 
@@ -364,13 +378,13 @@ class GeneratorModel(FlatModule):
         return {'optimizer': optimizer, 'lr_scheduler': scheduler}
 
     def train_val_get(self, batch, batch_idx):
-        clutter_spec, target_spec, target_enc, pulse_length, bandwidth = batch
+        clutter_spec, target_spec, target_enc, pulse_length, bandwidth, _ = batch
 
         results = self.forward(clutter_spec, target_enc, pulse_length, bandwidth)
         train_loss = self.loss_function(results, clutter_spec, target_spec, target_enc, pulse_length, bandwidth)
 
         train_loss['loss'] = torch.sqrt(torch.abs(
-            train_loss['target_loss'] * (1 + train_loss['sidelobe_loss'] + train_loss['ortho_loss'])))# + train_loss['bandwidth_loss']
+            train_loss['target_loss'] * (1 + train_loss['sidelobe_loss'] * self.global_step + train_loss['ortho_loss'])))
         return train_loss
 
     def on_before_optimizer_step(self, optimizer: Optimizer) -> None:

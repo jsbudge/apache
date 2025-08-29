@@ -135,7 +135,7 @@ class TargetDataset(Dataset):
 
 class WaveDataset(Dataset):
     def __init__(self, root_dir: str, split: float = 1., single_example: bool = False, min_pulse_length: int = 1,
-                 max_pulse_length: int = 2, seq_len: int = 32, is_val=False, seed=42):
+                 max_pulse_length: int = 2, seq_len: int = 32, is_val=False, seed=43):
         assert Path(root_dir).is_dir()
         self.datapath = f'{root_dir}/target_tensors/clutter_tensors'
 
@@ -161,11 +161,9 @@ class WaveDataset(Dataset):
         self.seed = seed
 
     def __getitem__(self, idx):
-        if self.single:
-            idx = 720
         # File contains target range profile, compressed clutter data, and the target index
-        data = torch.load(f'{self.datapath}/tc_{idx}.pt')
-        return data[0], data[1][-1], self.patterns[data[2]].clone().detach(), np.random.randint(self.min_pulse_length, self.max_pulse_length), np.random.rand() * .6 + .2
+        data = torch.load(f'{self.datapath}/tc_{self.idxes[idx]}.pt')
+        return data[0], data[1][-1], self.patterns[data[2]].clone().detach(), np.random.randint(self.min_pulse_length, self.max_pulse_length), np.random.rand() * .6 + .2, data[2]
         # return (torch.cat([c.unsqueeze(0) for c, t, i in data], dim=0), data[-1][1], self.patterns[data[-1][2]].clone().detach(),
         #        np.random.randint(self.min_pulse_length, self.max_pulse_length), np.random.rand() * .6 + .2)
 
