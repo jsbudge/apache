@@ -236,3 +236,24 @@ def load(mdl, param_file):
         return loaded_mdl
     except RuntimeError as e:
         return None
+
+if __name__ == '__main__':
+    from config import get_config
+    from torchviz import make_dot
+    from pytorch_lightning import Trainer, loggers, seed_everything
+    torch.set_float32_matmul_precision('medium')
+    gpu_num = 1
+    device = f'cuda:{gpu_num}' if torch.cuda.is_available() else 'cpu'
+    seed_everything(np.random.randint(1, 2048), workers=True)
+    # seed_everything(43, workers=True)
+
+    target_config = get_config('target_exp', './vae_config.yaml')
+    mdl = TargetEmbedding(target_config)
+
+    dummy = torch.zeros((1, 4, target_config.angle_samples, target_config.angle_samples))
+    output = mdl(dummy)
+    dot = make_dot(output, params=dict(mdl.named_parameters()))
+
+    dot.format = 'png'
+    dot.render('target_autoencoder')
+

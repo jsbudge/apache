@@ -26,17 +26,18 @@ settings:
   fft_len: 8192
 
 generate_data_settings:
-  iterations: 50
+  iterations: 1
   use_local_storage: True
   save_files: True
   overwrite_files: True  # Don't set this to False without cleaning the folders first
   local_path: ./data
   obj_path: /home/jeff/repo/apache/data/target_meshes
   run_target: False
-  run_clutter: False
+  run_clutter: True
   seq_min_length: 8
-  seq_max_length: 32
-  clutter_iterations: 5
+  seq_max_length: 16
+  clutter_iterations: 50
+  supersamples: 12
   n_az_samples: 16
   n_el_samples: 8
   num_bounces: 1
@@ -48,7 +49,7 @@ generate_data_settings:
   ant_transmit_power: 100  # Watts
   nsam: 4600
   nstreams: 1
-  num_sample_points_power: 16  # Power of two for samples (2**n)
+  num_sample_points_power: 17  # Power of two for samples (2**n)
 
 
     
@@ -110,10 +111,11 @@ wave_exp_params:
     warm_start: False
     betas: [.9, .99]
     log_epoch: 100
-    accumulation_steps: 16
+    accumulation_steps: 8
     is_tuning: False
-    save_model: True
+    save_model: False
     loss_landscape: False
+    gradient_flow: False
     max_epochs: 1200
     patience: 500
     distributed: False
@@ -122,19 +124,19 @@ wave_exp_params:
     fft_len: 8192
     fs: 2000000000.
     fc: 9600000000.
-    transformer_passes: 3
+    transformer_passes: 2
     encoder_start_channel_sz: 2
-    embedding_concatenation_channels: 32
-    n_skip_layers: 20
-    clutter_target_channels: 32
-    flowthrough_channels: 32
-    wave_decoder_channels: 32
-    target_channels: 32
-    waveform_channels: 32
+    embedding_concatenation_channels: 128
+    n_skip_layers: 2
+    clutter_target_channels: 128
+    flowthrough_channels: 128
+    wave_decoder_channels: 128
+    target_channels: 128
+    waveform_channels: 128
     target_latent_size: 1024
     n_fourier_modes: 64
     bandwidth: 400000000.
-    nonlinearity: silu
+    nonlinearity: selu
   logging_params:
     log_dir: ./logs
     weights_path: ./model

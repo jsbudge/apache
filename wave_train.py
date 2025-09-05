@@ -142,10 +142,10 @@ if __name__ == '__main__':
                     np.fft.fftshift(clutter[0]) * waves[0, 0] * waves[0, 0].conj() + np.fft.fftshift(clutter[0]) * waves[
                         0, 1] * waves[0, 1].conj())
                 target_corr = np.fft.ifft(
-                    np.fft.fftshift(targets[0] + clutter[0]) * waves[0, 0] * waves[0, 0].conj() + np.fft.fftshift(targets[0] + clutter[0]) * waves[
+                    np.fft.fftshift(targets[0]) * waves[0, 0] * waves[0, 0].conj() + np.fft.fftshift(targets[0]) * waves[
                         0, 1] * waves[0, 1].conj())
                 linear_corr = np.fft.ifft(
-                    np.fft.fftshift(targets[0] + clutter[0]) * linear * linear.conj())
+                    np.fft.fftshift(targets[0]) * linear * linear.conj())
             else:
                 clutter_corr = np.fft.ifft(
                     np.fft.fftshift(clutter[0]) * waves[0, 0] * waves[0, 0].conj())
@@ -160,10 +160,8 @@ if __name__ == '__main__':
             plt.ylabel('Power (dB)')
 
             plt.figure('Target-Clutter Correlations')
-            comb_corr = np.fft.ifft(
-                np.fft.fftshift(targets[0] + clutter[0]) * waves[0, 0] * waves[0, 0].conj())
-            truth_corr = np.fft.ifft(
-                np.fft.fftshift(targets[0] + clutter[0]))
+            comb_corr = np.fft.fftshift(targets[0] + clutter[0])
+            truth_corr = np.fft.fftshift(clutter[0])
             plt.plot(db(comb_corr))
             plt.plot(db(truth_corr))
             plt.legend(['Comb', 'Truth'])

@@ -556,9 +556,8 @@ class SimulationThread(QThread):
                 os.mkdir(tensor_path)
             mf_chirp = np.fft.fft(wavedata, self.fft_len)
             mf_chirp = mf_chirp * mf_chirp.conj()
-            streams = [cuda.stream() for _ in range(1)]
             self.signal_update_progress.emit('Loading mesh parameters...')
-            gen_iter = iter(genProfileFromMesh(self.mesh, self.iterations, [mf_chirp], 2**16, streams,
+            gen_iter = iter(genProfileFromMesh(self.mesh, self.iterations, [mf_chirp], 2**16, 0,
                        self.ranges, self.fft_len, self.radar_coeff, nsam, fs, fc, num_bounces=1,
                        a_naz=self.n_az_samples, a_nel=self.n_el_samples))
             self.signal_update_progress.emit('Running simulation...')

@@ -3,10 +3,10 @@ import os
 import numpy as np
 from pathlib import Path
 from numba import cuda
-from simulib.mesh_objects import Scene, Mesh
 from simulib.simulation_functions import azelToVec, genChirp
-from simulib.mesh_functions import readCombineMeshFile, getRangeProfileFromScene, _float
+from simulib.mesh_functions import getRangeProfileFromScene
 from simulib.platform_helper import SDRPlatform
+from simulib.utils import _float, _complex_float
 from scipy.signal.windows import taylor, tukey
 import plotly.io as pio
 from tqdm import tqdm
@@ -16,13 +16,11 @@ import torch
 import matplotlib as mplib
 import pickle
 from config import load_yaml_config
-
 mplib.use('TkAgg')
 from sklearn.decomposition import TruncatedSVD
 import matplotlib.pyplot as plt
 from simulib.simulation_functions import db
 import pandas as pd
-
 from utils import scale_normalize, get_radar_coeff, normalize
 
 pio.renderers.default = 'browser'
@@ -41,7 +39,7 @@ MAX_EL_BEAMWIDTH = 25 * DTR
 
 
 def formatTargetClutterData(data: np.ndarray, bin_bandwidth: int):
-    split = np.zeros((data.shape[0], 2, bin_bandwidth), dtype=np.float32)
+    split = np.zeros((data.shape[0], 2, bin_bandwidth), dtype=_float)
     split[:, 0, :bin_bandwidth // 2] = data[:, -bin_bandwidth // 2:].real
     split[:, 0, -bin_bandwidth // 2:] = data[:, :bin_bandwidth // 2].real
     split[:, 1, :bin_bandwidth // 2] = data[:, -bin_bandwidth // 2:].imag
@@ -70,7 +68,7 @@ def readVCS(filepath):
     return _scat_data, np.array(_angles) * DTR
 
 
-def genProfileFromMesh(a_scene, niters, a_mf_chirp, a_points_to_sample, a_streams,
+def genProfileFromMesh(a_scene, niters, a_mf_chirp, a_points_to_sample, a_supersamples,
                        a_standoff, a_fft_len, a_radarc, a_nsam, a_fs, a_fc, num_bounces=1,
                        a_naz=8, a_nel=8):
 
@@ -82,9 +80,9 @@ def genProfileFromMesh(a_scene, niters, a_mf_chirp, a_points_to_sample, a_stream
         chirp_idx = np.random.randint(0, len(a_mf_chirp))
         az_bw = MAX_AZ_BEAMWIDTH * np.random.rand() + DTR
         el_bw = MAX_EL_BEAMWIDTH * np.random.rand() + DTR
-        block = np.zeros((len(a_standoff), poses.shape[0], a_fft_len), dtype=np.complex64)
+        block = np.zeros((len(a_standoff), poses.shape[0], a_fft_len), dtype=_complex_float)
         for k, s in enumerate(a_standoff):
-            msrp, block[k] = getTargetProfile(a_scene, m_sample_points, s, a_streams, num_bounces,
+            msrp, block[k] = getTargetProfile(a_scene, m_sample_points, s, a_supersamples, num_bounces,
                                               a_mf_chirp[chirp_idx], a_naz, a_nel, a_radarc, a_nsam, a_fs, a_fc,
                                               a_fft_len, az_bw, el_bw)
         yield msrp, block, m_i
@@ -97,7 +95,7 @@ def genProfileFromVCS(a_obj_path, a_standoff, a_niters, a_mf_chirp):
     # Generate target profile on CPU
     for m_i in range(a_niters):
         chirp_idx = np.random.randint(0, len(a_mf_chirp))
-        block = np.zeros((len(a_standoff), n_az_samples * n_el_samples, fft_len), dtype=np.complex64)
+        block = np.zeros((len(a_standoff), n_az_samples * n_el_samples, fft_len), dtype=_complex_float)
         for k, s in enumerate(a_standoff):
             m_near_range_s, poses, bore_az, bore_el = calcPosBoresight(s)
             m_bore_ang = np.array([bore_az, bore_el]).T
@@ -153,24 +151,23 @@ def loadClutterFiles():
     return m_clutter_files
 
 
-def loadClutterTargetSpectrum(a_clut, a_radarc, scene, iterations, seq_min, seq_max, a_points_to_sample, fc, num_bounces, fft_len=8192, a_streams=None):
-    sdr_ch = load(a_clut, import_pickle=False, use_jump_correction=False)
+def loadClutterTargetSpectrum(a_clut, a_radarc, scene, iterations, seq_min, seq_max, a_points_to_sample, fc,
+                              num_bounces, fft_len=8192):
+    sdr_ch = load(a_clut, import_pickle=True, use_jump_correction=False)
     rp = SDRPlatform(sdr_ch)
     m_nsam, nr, ranges, ranges_sampled, near_range_s, granges, full_fft_len, up_fft_len = (
-        rp.getRadarParams(0., .5, 1))
+        rp.getRadarParams(0., .21, 1))
+    scene.shift(np.array([0., 0., 0.]), relative=False)
 
     downsample_rate = full_fft_len // fft_len
 
     flight_path = rp.rxpos(sdr_ch[0].pulse_time)
-    # Locate the extrema to speed up the optimization
 
-    nstreams = len(a_streams)
     sample_points = scene.sample(a_points_to_sample, a_obs_pts=flight_path[::10])
-    sample_center = scene.center + 0.
 
     # Get pulse data and modify accordingly
-    pulse = np.fft.fft(sdr_ch[0].cal_chirp, fft_len)
-    mfilt = sdr_ch.genMatchedFilter(0, fft_len=fft_len)
+    pulse = np.fft.fft(sdr_ch[0].cal_chirp, full_fft_len)
+    mfilt = sdr_ch.genMatchedFilter(0, fft_len=full_fft_len)
     for _ in range(iterations):
         pt_pt = np.random.choice(sdr_ch[0].nframes - seq_max)
         frame_idxes = np.arange(pt_pt, pt_pt + np.random.choice(np.arange(seq_min, seq_max)))
@@ -184,30 +181,52 @@ def loadClutterTargetSpectrum(a_clut, a_radarc, scene, iterations, seq_min, seq_
 
         mpos = floc + r_d * proj_rng
 
-        txposes = [rp.txpos(pulse_times).astype(_float) for _ in range(nstreams)]
-        rxposes = [rp.rxpos(pulse_times).astype(_float) for _ in range(nstreams)]
-        pans = [rp.pan(pulse_times).astype(_float) for _ in range(nstreams)]
-        tilts = [rp.tilt(pulse_times).astype(_float) for _ in range(nstreams)]
-        sdr_data = [sdr_ch.getPulses(sdr_ch[0].frame_num[frame_idxes], 0)[1] for _ in range(nstreams)]
+        txposes = [rp.txpos(pulse_times).astype(_float)]
+        rxposes = [rp.rxpos(pulse_times).astype(_float)]
+        pans = [rp.pan(pulse_times).astype(_float)]
+        tilts = [rp.tilt(pulse_times).astype(_float)]
+        sdr_data = [sdr_ch.getPulses(sdr_ch[0].frame_num[frame_idxes], 0)[1]]
 
         scene.shift(mpos, relative=False)
-        sample_points = sample_points - sample_center + scene.center
-        sample_center = scene.center + 0.
+        shifted_points = [sample_points + scene.center]
 
-        single_rp = getRangeProfileFromScene(scene, sample_points, txposes, rxposes, pans, tilts,
+        single_rp = getRangeProfileFromScene(scene, shifted_points, txposes, rxposes, pans, tilts,
                                              a_radarc, rp.az_half_bw, rp.el_half_bw, m_nsam,
                                              fc, near_range_s, fs=fs,
-                                             num_bounces=num_bounces, streams=a_streams)
-        tpsds = [np.fft.fft(srp[:, ::downsample_rate], fft_len, axis=1) * mfilt * pulse for srp in single_rp]
+                                             num_bounces=num_bounces, supersamples=0)
+        tpsds = [[np.fft.fft(s[:, ::downsample_rate], fft_len, axis=1) * mfilt[::downsample_rate] * pulse[::downsample_rate] for s in srp] for srp in single_rp][0]
         for sdrd, tpsd in zip(sdr_data, tpsds):
             if len(tpsd[tpsd != 0]) == 0:
                 continue
-            m_sdata = np.fft.fft(sdrd, fft_len, axis=0).T * mfilt
+            m_sdata = np.fft.fft(sdrd, fft_len, axis=0).T * mfilt[::downsample_rate]
             if tpsd[tpsd != 0].std() == 0 or m_sdata[m_sdata != 0].std() == 0:
                 continue
-            # Unit energy and scale to have std of one
-            m_ntpsd = normalize(tpsd) * 1e2
-            m_sdata = normalize(m_sdata) * 1e2
+
+            sdtime = np.fft.ifft(m_sdata, axis=1)
+            tptime = np.fft.ifft(tpsd, axis=1)
+            # dbtime = db(np.fft.ifft(tpsd, axis=1))
+            up_fac = (abs(sdtime).mean(axis=1) + abs(sdtime).std(axis=1) * 6) / np.max(abs(tptime), axis=1)
+            comb = sdtime + tptime * up_fac[:, None]
+
+            comb = np.fft.fft(comb, axis=1)
+
+            '''plt.figure()
+            plt.subplot(3, 1, 1)
+            plt.title('sd')
+            plt.imshow(db(sdtime))
+            plt.axis('tight')
+            plt.subplot(3, 1, 2)
+            plt.title('sd')
+            plt.imshow(db(tptime))
+            plt.axis('tight')
+            plt.subplot(3, 1, 3)
+            plt.title('sd')
+            plt.imshow(db(comb))
+            plt.axis('tight')'''
+            # Unit energy and scale to have std of one based on the original
+            norm_factor = np.expand_dims(np.sqrt(np.sum(m_sdata * m_sdata.conj(), axis=-1).real), axis=len(m_sdata.shape) - 1)
+            m_ntpsd = comb / norm_factor
+            m_sdata = m_sdata / norm_factor
             # Shift the data so it's centered around zero (for the autoencoder)
             if sdr_ch[0].baseband_fc != 0.:
                 shift_bin = int(sdr_ch[0].baseband_fc / sdr_ch[0].fs * fft_len)
@@ -218,17 +237,16 @@ def loadClutterTargetSpectrum(a_clut, a_radarc, scene, iterations, seq_min, seq_
             yield m_ntpsd, m_sdata
 
 
-def getTargetProfile(a_scene, a_sample_points, a_standoff, a_streams, a_num_bounces, a_mf_chirp, a_naz, a_nel, a_radarc,
+def getTargetProfile(a_scene, a_sample_points, a_standoff, a_supersamples, a_num_bounces, a_mf_chirp, a_naz, a_nel, a_radarc,
                      a_nsam, a_fs, a_fc, a_fft_len, a_azbw, a_elbw):
     m_near_range_s, poses, m_pan, m_tilt = calcPosBoresight(a_standoff, a_naz=a_naz, a_nel=a_nel)
     m_rxposes = poses + 0.0
-    m_single_rp, ray_origins, ray_directions, ray_powers = getRangeProfileFromScene(a_scene, a_sample_points, [poses.astype(_float)],
+    m_single_rp, ray_origins, ray_directions, ray_powers = getRangeProfileFromScene(a_scene, [a_sample_points], [poses.astype(_float)],
                                            [m_rxposes.astype(_float)], [m_pan.astype(_float)],
                                            [m_tilt.astype(_float)], a_radarc, a_azbw, a_elbw, a_nsam,
                                            a_fc, m_near_range_s, fs=a_fs, num_bounces=a_num_bounces,
-                                           streams=a_streams, debug=True)
-    msrp = m_single_rp[
-        0]  # + (np.random.randn(*m_single_rp[0].shape) + 1j * np.random.randn(*m_single_rp[0].shape)) * abs(m_single_rp[0][m_single_rp[0] > 0.]).mean() / 10
+                                           supersamples=a_supersamples, debug=True)
+    msrp = m_single_rp[0][0]
     return msrp, np.fft.fft(msrp, a_fft_len, axis=1) * a_mf_chirp
 
 
@@ -266,8 +284,6 @@ if __name__ == '__main__':
     # target_info = pd.read_csv('./data/target_info.csv')
 
     tsvd = TruncatedSVD(n_components=cfig_generate.n_el_samples * cfig_generate.n_az_samples)
-
-    streams = [cuda.stream() for _ in range(cfig_generate.nstreams)]
 
     # Standardize the FFT length for training purposes (this may cause data loss)
     fft_len = cfig_settings.fft_len
@@ -322,7 +338,7 @@ if __name__ == '__main__':
             # bandwidths and pulse lengths.
             if True:
                 gen_iter = iter(genProfileFromMesh(model, iterations, mf_chirp,
-                                                   2**cfig_generate.num_sample_points_power, streams, standoff, fft_len,
+                                                   2**cfig_generate.num_sample_points_power, cfig_generate.supersamples, standoff, fft_len,
                                                    radar_coeff, cfig_generate.nsam, fs, cfig_generate.fc,
                                                    cfig_generate.num_bounces, a_naz=n_az_samples, a_nel=n_el_samples))
             else:
@@ -350,14 +366,18 @@ if __name__ == '__main__':
             tensor_clutter_path = f"{config.target_exp_params.dataset_params.data_path}/clutter_tensors"
             if not Path(tensor_clutter_path).exists():
                 os.mkdir(tensor_clutter_path)
-            print(f'Saving clutter spec for target {tname}')
+            print(f'Clutter spec for target {tname}')
             for clut in clutter_files:
                 # Load the sar file that the clutter came from
+                print(f'{clut}')
                 for ntpsd, sdata in loadClutterTargetSpectrum(clut, radar_coeff, model, cfig_generate.clutter_iterations,
                                                                 cfig_generate.seq_min_length, cfig_generate.seq_max_length,
-                                                              2**cfig_generate.num_sample_points_power, cfig_generate.fc, cfig_generate.num_bounces,
-                                                              a_streams=streams):
+                                                              2**cfig_generate.num_sample_points_power, cfig_generate.fc, cfig_generate.num_bounces):
+                    '''plt.figure(f'{clut}')
+                    plt.plot(db(ntpsd[0, 0]))
+                    plt.plot(db(sdata[0, 0]))'''
                     if cfig_generate.save_files and (not np.any(np.isnan(ntpsd)) and not np.any(np.isnan(sdata))):
+                        # Generate a list with sdata (sdr pulses), ntpsd (target profile added to sdr pulse) and tidx (target index)
                         torch.save([torch.tensor(sdata, dtype=torch.float32),
                                     torch.tensor(ntpsd, dtype=torch.float32), tidx],
                                    f"{tensor_clutter_path}/tc_{abs_clutter_idx}.pt")
