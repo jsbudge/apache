@@ -263,7 +263,7 @@ class GeneratorModel(FlatModule):
             torch.abs(torch.fft.ifft(target_spectrum.unsqueeze(1) * mfiltered, dim=2)), dim=1)
         clut_ac = torch.sum(
             torch.abs(torch.fft.ifft(clutter_spectrum.unsqueeze(1) * mfiltered, dim=2)), dim=1)
-        target_loss = torch.nanmean(clut_ac / (EPS + targ_ac))
+        target_loss = torch.nanmean(clut_ac / (EPS + targ_ac)) + 1. / kld_loss
         # target_loss = torch.nanmean(nn_func.logsigmoid(clut_ac - targ_ac))# + kld_loss
 
         # Sidelobe loss functions

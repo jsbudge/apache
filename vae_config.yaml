@@ -36,8 +36,8 @@ generate_data_settings:
   run_clutter: True
   seq_min_length: 8
   seq_max_length: 16
-  clutter_iterations: 50
-  supersamples: 12
+  clutter_iterations: 5
+  supersamples: 0
   n_az_samples: 16
   n_el_samples: 8
   num_bounces: 1
@@ -56,13 +56,13 @@ generate_data_settings:
 # This is for setting up training of target embedding
 target_exp_params:
   training_params:
-    lr: 0.000001
-    weight_decay: 0.0
+    lr: 0.00001
+    weight_decay: 0.01
     scheduler_gamma: 0.9999  # Exponential decay
     eta_min: .000000001  # Cosine annealing minimum - 1e-9
     betas: [ .9, .99 ]
     log_epoch: 1
-    save_model: False
+    save_model: True
     transform_data: False
     warm_start: False
     loss_landscape: False
@@ -91,10 +91,9 @@ target_exp_params:
   model_params:
     fft_len: 8192
     range_samples: 2
-    latent_dim: 1024
-    channel_sz: 300
-    label_sz: 23
-    nonlinearity: grow
+    latent_dim: 1000
+    channel_sz: 256
+    nonlinearity: selu
     temperature: 1.
     levels: 1
     # These values are taken from a sampling of data, should be the same as the dataset params
@@ -124,16 +123,16 @@ wave_exp_params:
     fft_len: 8192
     fs: 2000000000.
     fc: 9600000000.
-    transformer_passes: 2
+    transformer_passes: 1
     encoder_start_channel_sz: 2
     embedding_concatenation_channels: 128
-    n_skip_layers: 2
+    n_skip_layers: 3
     clutter_target_channels: 128
     flowthrough_channels: 128
     wave_decoder_channels: 128
     target_channels: 128
-    waveform_channels: 128
-    target_latent_size: 1024
+    waveform_channels: 256
+    target_latent_size: 1000
     n_fourier_modes: 64
     bandwidth: 400000000.
     nonlinearity: selu

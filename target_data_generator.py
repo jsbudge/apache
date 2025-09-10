@@ -174,7 +174,8 @@ def loadClutterTargetSpectrum(a_clut, a_radarc, scene, iterations, seq_min, seq_
         pulse_times = sdr_ch[0].pulse_time[frame_idxes]
 
         # Place the model in the scene at a random location
-        proj_rng = np.random.choice(ranges_sampled)
+        proj_rbin = np.random.choice(np.arange(len(ranges_samples)))
+        proj_rng = ranges_samples[proj_rbin]
         r_d = azelToVec(rp.pan(pulse_times).mean() + np.random.normal() * rp.az_half_bw,
                         rp.tilt(pulse_times).mean() + np.random.normal() * rp.el_half_bw)
         floc = rp.rxpos(pulse_times).mean(axis=0)
@@ -234,7 +235,7 @@ def loadClutterTargetSpectrum(a_clut, a_radarc, scene, iterations, seq_min, seq_
                 m_sdata = np.roll(m_sdata, -shift_bin, 1)
             m_ntpsd = formatTargetClutterData(m_ntpsd, fft_len)
             m_sdata = formatTargetClutterData(m_sdata, fft_len)
-            yield m_ntpsd, m_sdata
+            yield m_ntpsd, m_sdata, proj_rbin
 
 
 def getTargetProfile(a_scene, a_sample_points, a_standoff, a_supersamples, a_num_bounces, a_mf_chirp, a_naz, a_nel, a_radarc,
@@ -370,7 +371,7 @@ if __name__ == '__main__':
             for clut in clutter_files:
                 # Load the sar file that the clutter came from
                 print(f'{clut}')
-                for ntpsd, sdata in loadClutterTargetSpectrum(clut, radar_coeff, model, cfig_generate.clutter_iterations,
+                for ntpsd, sdata, rbin in loadClutterTargetSpectrum(clut, radar_coeff, model, cfig_generate.clutter_iterations,
                                                                 cfig_generate.seq_min_length, cfig_generate.seq_max_length,
                                                               2**cfig_generate.num_sample_points_power, cfig_generate.fc, cfig_generate.num_bounces):
                     '''plt.figure(f'{clut}')
@@ -379,7 +380,7 @@ if __name__ == '__main__':
                     if cfig_generate.save_files and (not np.any(np.isnan(ntpsd)) and not np.any(np.isnan(sdata))):
                         # Generate a list with sdata (sdr pulses), ntpsd (target profile added to sdr pulse) and tidx (target index)
                         torch.save([torch.tensor(sdata, dtype=torch.float32),
-                                    torch.tensor(ntpsd, dtype=torch.float32), tidx],
+                                    torch.tensor(ntpsd, dtype=torch.float32), rbin, tidx],
                                    f"{tensor_clutter_path}/tc_{abs_clutter_idx}.pt")
                         abs_clutter_idx += 1
 

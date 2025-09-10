@@ -5,7 +5,7 @@ from torch import nn, Tensor
 import numpy as np
 from cbam import CBAM
 from config import Config
-from layers import Block2d, Block2dTranspose
+from layers import Block2d, Block2dTranspose, Fourier2D
 from pytorch_lightning import LightningModule
 from utils import _xavier_init, nonlinearities
 from waveform_model import FlatModule
@@ -30,20 +30,22 @@ class TargetEmbedding(FlatModule):
         self.mode = training_mode
 
         # Parameters for normalizing data correctly
-        levels = config.levels
+        latent_pow2_square = np.ceil(np.log2(self.latent_dim))
+        latent_pow2_square = int(
+            2 ** latent_pow2_square if latent_pow2_square % 2 == 0 else 2 ** (latent_pow2_square + 1))
+        levels = int(config.angle_samples / np.sqrt(latent_pow2_square)) - 2
+        # levels = config.levels
         # out_sz = (config.angle_samples // (2 ** levels), config.fft_len // (2 ** levels))
-        out_sz = (config.angle_samples // (2 ** levels), config.angle_samples // (2 ** levels))
+        out_sz = config.angle_samples // (2 ** levels)
 
         nonlinearity = nonlinearities[config.nonlinearity]
-
 
         # Encoder
         # self.encoder_inflate = nn.Conv2d(self.in_channels, self.channel_sz, 1, 1, 0)
         self.encoder_inflate = nn.Sequential(
-            nn.Conv2d(self.in_channels, self.in_channels // 2, 1, 1, 0),
+            Fourier2D(10., 6),
+            nn.Conv2d(self.in_channels * 6 * 2, self.channel_sz, 1, 1, 0),
             nonlinearity,
-            nn.Conv2d(self.in_channels // 2, self.channel_sz, 1, 1, 0),
-            nn.LeakyReLU(),
             # CBAM(self.channel_sz, reduction_factor=1, kernel_size=9),
         )
         prev_lev_enc = self.channel_sz
@@ -65,18 +67,18 @@ class TargetEmbedding(FlatModule):
 
         prev_lev_dec = prev_lev_enc
         self.encoder_flatten = nn.Sequential(
-            nn.Conv2d(prev_lev_enc, 1, (out_sz[0], 1), 1, 0),
+            nn.Conv2d(prev_lev_enc, 1, (out_sz, 1), 1, 0),
             nonlinearity,
         )
         self.fc_z = nn.Sequential(
-            nn.Linear(out_sz[1], self.latent_dim),
+            nn.Linear(out_sz, self.latent_dim),
             nonlinearity,
             nn.Linear(self.latent_dim, self.latent_dim),
             nn.Softsign(),
         )
 
         self.decoder = DecoderHead(config.latent_dim, config.channel_sz, self.in_channels, out_sz,
-                                   (config.angle_samples, config.fft_len), nonlinearity=config.nonlinearity, levels=levels)
+                                   config.angle_samples, nonlinearity=config.nonlinearity, levels=levels)
 
         _xavier_init(self)
 
@@ -93,7 +95,7 @@ class TargetEmbedding(FlatModule):
         inp = self.encoder_inflate(inp)
         for conv, red in zip(self.encoder_conv, self.encoder_reduce):
             inp = conv(red(inp))
-        return self.fc_z(self.encoder_flatten(inp).view(-1, self.out_sz[1]))
+        return self.fc_z(self.encoder_flatten(inp).view(-1, self.out_sz))
 
     def forward(self, inp: Tensor, **kwargs) -> Tensor:
         enc = self.encode(inp, **kwargs)
@@ -177,37 +179,42 @@ class TargetEmbedding(FlatModule):
 
 class DecoderHead(LightningModule):
 
-    def __init__(self, latent_dim: int, channel_sz: int, in_channels: int, out_sz: tuple, in_sz: tuple,
+    def __init__(self, latent_dim: int, channel_sz: int, in_channels: int, out_sz: int, in_sz: int,
                  nonlinearity: str, levels: int, *args: Any, **kwargs: Any):
         super().__init__(*args, **kwargs)
         self.latent_dim = latent_dim
         self.channel_sz = channel_sz
         self.in_channels = in_channels
-        self.out_sz = out_sz
-        self.latent_sqrt = int(np.sqrt(self.latent_dim))
         inter_channels = channel_sz // (2**levels)
 
-        n_dec_layers = int(in_sz[0] / out_sz[0])
+        latent_pow2_square = np.ceil(np.log2(self.latent_dim))
+        latent_pow2_square = int(2**latent_pow2_square if latent_pow2_square % 2 == 0 else 2**(latent_pow2_square + 1))
+        self.latent_sqrt = int(np.sqrt(latent_pow2_square))
+
+        n_dec_layers = int(in_sz / np.sqrt(latent_pow2_square)) - 2
         nlin = nonlinearities[nonlinearity]
 
         self.decoder_inflate = nn.Sequential(
-            nn.ConvTranspose2d(1, inter_channels, 4, 2, 1),
+            Fourier2D(.33, 6),
+            nn.ConvTranspose2d(6 * 2, inter_channels, 3, 1, 1),
             nlin,
             Block2dTranspose(inter_channels, 3, 1, 1, nonlinearity=nonlinearity)
         )
+
+
         self.z_fc = nn.Sequential(
-            nn.Linear(self.latent_dim, self.latent_dim),
             nlin,
-            nn.Linear(self.latent_dim, self.latent_dim),
-            nn.LeakyReLU(),
+            nn.Linear(self.latent_dim, latent_pow2_square),
+            nlin,
+            nn.Linear(latent_pow2_square, latent_pow2_square),
         )
 
         self.dec_layers = nn.ModuleList()
-        for l in range(levels - 1):
+        for l in range(n_dec_layers - 1):
             inc = inter_channels * 2
             self.dec_layers.append(nn.Sequential(
-                nn.ConvTranspose2d(inter_channels, inc, 4, 2, 1),
                 nlin,
+                nn.ConvTranspose2d(inter_channels, inc, 4, 2, 1),
                 # LKATranspose(inc, (5, 3), dilation=3, activation='silu'),
                 Block2dTranspose(inc, 3 + l * 2, 1, 1 + l, nonlinearity=nonlinearity),
                 CBAM(inc, reduction_factor=4, kernel_size=3 + l * 2),

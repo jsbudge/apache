@@ -55,6 +55,22 @@ class FourierFeature(nn.Module):
         return vp_cat.flatten(-2, -1)
 
 
+class Fourier2D(nn.Module):
+    def __init__(self, sigma: float = 10., n_fourier: int = 6, *args: Any, **kwargs: Any):
+        super().__init__(*args, **kwargs)
+        self.out_features = n_fourier * 2
+        self.sigma = sigma
+        self.n_fourier = n_fourier
+
+    def forward(self, x):
+        j = torch.arange(self.n_fourier, device=x.device)
+        coeffs = 2 * np.pi * self.sigma ** (j / self.n_fourier)
+        # vp = coeffs[:, None, None] * x
+        vp_cos = torch.cat([torch.cos(coeffs[None, :, None, None] * x[:, xx, ...].unsqueeze(1)) for xx in range(x.shape[1])], dim=1)
+        vp_sin = torch.cat([torch.sin(coeffs[None, :, None, None] * x[:, xx, ...].unsqueeze(1)) for xx in range(x.shape[1])], dim=1)
+        return torch.cat((vp_cos, vp_sin), dim=1)# vp_cat.flatten(-2, -1)
+
+
 class Linear2d(nn.Module):
     def __init__(self, width, height, nchan):
         super(Linear2d, self).__init__()
@@ -234,12 +250,13 @@ class Block2d(nn.Module):
             nn.Conv2d(channel_sz, channel_sz, kernel, stride, padding),
             nlin,
             nn.Conv2d(channel_sz, channel_sz, kernel, stride, padding),
-            nlin,
-            nn.Conv2d(channel_sz, channel_sz, kernel, stride, padding),
-            nlin,
-            nn.Conv2d(channel_sz, channel_sz, kernel, stride, padding),
-            nlin,
             nn.BatchNorm2d(channel_sz),
+            nlin,
+            nn.Conv2d(channel_sz, channel_sz, kernel, stride, padding),
+            nlin,
+            nn.Conv2d(channel_sz, channel_sz, kernel, stride, padding),
+            nn.BatchNorm2d(channel_sz),
+            nlin,
         )
 
     def forward(self, x):
@@ -255,12 +272,13 @@ class Block2dTranspose(nn.Module):
             nn.ConvTranspose2d(channel_sz, channel_sz, kernel, stride, padding),
             nlin,
             nn.ConvTranspose2d(channel_sz, channel_sz, kernel, stride, padding),
-            nlin,
-            nn.ConvTranspose2d(channel_sz, channel_sz, kernel, stride, padding),
-            nlin,
-            nn.ConvTranspose2d(channel_sz, channel_sz, kernel, stride, padding),
-            nlin,
             nn.BatchNorm2d(channel_sz),
+            nlin,
+            nn.ConvTranspose2d(channel_sz, channel_sz, kernel, stride, padding),
+            nlin,
+            nn.ConvTranspose2d(channel_sz, channel_sz, kernel, stride, padding),
+            nn.BatchNorm2d(channel_sz),
+            nlin,
         )
 
     def forward(self, x):
