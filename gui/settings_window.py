@@ -1,5 +1,5 @@
 from PyQt5.QtCore import pyqtSignal
-from PyQt5.QtWidgets import QMainWindow, QVBoxLayout, QWidget, QLabel, QGridLayout, QLineEdit, QPushButton, QFileDialog
+from PyQt5.QtWidgets import QMainWindow, QWidget, QLabel, QGridLayout, QLineEdit, QPushButton, QFileDialog
 
 
 class SettingsWindow(QMainWindow):

@@ -96,7 +96,9 @@ class GeneratorModel(FlatModule):
             nlin,
         )
         self.clutter_squash = nn.Sequential(
-            nn.Linear(2, 1),
+            nn.Linear(2, 16),
+            nlin,
+            nn.Linear(16, 1),
             nlin,
         )
 
@@ -238,7 +240,7 @@ class GeneratorModel(FlatModule):
         mfiltered = gen_waveform * gen_waveform.conj()
 
         #  KLD between the target and clutter functions
-        target_stft = torch.abs(torch.stft(torch.fft.ifft(target_spectrum.unsqueeze(1) * mfiltered, dim=2)[0], 64, window=torch.hann_window(64, device=self.device)))
+        '''target_stft = torch.abs(torch.stft(torch.fft.ifft(target_spectrum.unsqueeze(1) * mfiltered, dim=2)[0], 64, window=torch.hann_window(64, device=self.device)))
         clutter_stft = torch.abs(torch.stft(torch.fft.ifft(clutter_spectrum.unsqueeze(1) * mfiltered, dim=2)[0], 64, window=torch.hann_window(64, device=self.device)))
         eas = [torch.cov(t) for t in target_stft]
         ebs = [torch.cov(t) for t in clutter_stft]
@@ -247,7 +249,8 @@ class GeneratorModel(FlatModule):
         kld = [.5 * (torch.trace(torch.linalg.pinv(eb) @ ea) + torch.trace(torch.linalg.pinv(ea) @ eb) + (mub - mua) @ (
             torch.linalg.pinv(ea) + torch.linalg.pinv(eb)) @ (mub - mua)) for ea, eb, mua, mub in zip(eas, ebs, muas, mubs)]
 
-        kld_loss = torch.sqrt(sum(kld) / target_stft.shape[0])
+        kld_loss = torch.sqrt(sum(kld) / target_stft.shape[0])'''
+        kld_loss = 3.
 
         # Target and clutter power functions
         targ_ac = torch.sum(
@@ -256,7 +259,7 @@ class GeneratorModel(FlatModule):
             torch.abs(torch.fft.ifft(clutter_spectrum.unsqueeze(1) * mfiltered, dim=2)), dim=1)
         target_softmax = ((torch.arange(targ_ac.shape[-1], device=self.device) - args[6] + EPS) / targ_ac.shape[-1])**2
         target_softmax = torch.exp(-target_softmax / (2 * self.config.temperature)**2)
-        target_loss = torch.nanmean(targ_ac / (EPS + clut_ac) * target_softmax)# + 1. / kld_loss
+        target_loss = torch.nanmean(clut_ac / (EPS + targ_ac) * target_softmax)# + 1. / kld_loss
         # target_loss = torch.nanmean(nn_func.logsigmoid(clut_ac - targ_ac))# + kld_loss
 
         # Sidelobe loss functions
@@ -265,7 +268,7 @@ class GeneratorModel(FlatModule):
         theoretical_mainlobe_width = torch.max(torch.ceil(1 / (2 * args[5]))).int()
         pslrs = torch.max(sidelobe_func, dim=-1)[0] - torch.mean(sidelobe_func[..., theoretical_mainlobe_width:-theoretical_mainlobe_width], dim=-1)
         # pslrs = get_pslr(sidelobe_func.squeeze(1))
-        sidelobe_loss = (1. / (EPS + torch.nanmean(pslrs)))**2
+        sidelobe_loss = (1e3 / (EPS + torch.nanmean(pslrs)))**2
         # sidelobe_loss = torch.tensor(0., device=self.device)
 
         # Orthogonality

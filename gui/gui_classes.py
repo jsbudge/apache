@@ -1,12 +1,11 @@
-from PyQt5.QtWidgets import (QApplication, QComboBox, QDoubleSpinBox, QFileDialog, QGridLayout, QHBoxLayout, QLabel,
-                             QLineEdit, QMainWindow, QMessageBox, QProgressBar, QPushButton, QVBoxLayout, QWidget, QListWidget, QTabWidget)
-from PyQt5.QtCore import pyqtSignal, QObject, Qt, QSettings, QThread, QTimer
+from PyQt5.QtWidgets import (QDoubleSpinBox, QFileDialog, QHBoxLayout, QLabel,
+                             QLineEdit, QMainWindow, QProgressBar, QPushButton, QVBoxLayout, QWidget, QListWidget, QTabWidget)
+from PyQt5.QtCore import pyqtSignal, Qt
 
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT
 from matplotlib.figure import Figure
 import numpy as np
-from scipy.spatial.transform import Rotation as R
 from simulib.simulation_functions import genChirp, db
 from superqt import QLargeIntSpinBox
 import torch
@@ -167,7 +166,7 @@ class SimulationDataWindow(QMainWindow):
         self.tabs = QTabWidget()
         for f in files:
             viewer = MplWidget()
-            viewer.plot_dopp_map(torch.load(f)[0][0])
+            viewer.plot_dopp_map(torch.load(f, weights_only=True)[0][0])
             self.tabs.addTab(viewer, Path(f).stem)
         layout.addWidget(self.tabs)
 

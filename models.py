@@ -34,8 +34,6 @@ class TargetEmbedding(FlatModule):
         latent_pow2_square = int(
             2 ** latent_pow2_square if latent_pow2_square % 2 == 0 else 2 ** (latent_pow2_square + 1))
         levels = int(config.angle_samples / np.sqrt(latent_pow2_square)) - 2
-        # levels = config.levels
-        # out_sz = (config.angle_samples // (2 ** levels), config.fft_len // (2 ** levels))
         out_sz = config.angle_samples // (2 ** levels)
 
         nonlinearity = nonlinearities[config.nonlinearity]
@@ -43,8 +41,8 @@ class TargetEmbedding(FlatModule):
         # Encoder
         # self.encoder_inflate = nn.Conv2d(self.in_channels, self.channel_sz, 1, 1, 0)
         self.encoder_inflate = nn.Sequential(
-            Fourier2D(10., 6),
-            nn.Conv2d(self.in_channels * 6 * 2, self.channel_sz, 1, 1, 0),
+            Fourier2D(config.fourier_std, config.fourier_features),
+            nn.Conv2d(self.in_channels * config.fourier_features * 2, self.channel_sz, 1, 1, 0),
             nonlinearity,
             # CBAM(self.channel_sz, reduction_factor=1, kernel_size=9),
         )
@@ -53,7 +51,6 @@ class TargetEmbedding(FlatModule):
         self.encoder_conv = nn.ModuleList()
         for l in range(levels):
             ch_lev_enc = prev_lev_enc * 2
-            layer_sz = (config.angle_samples // (2 ** (l + 1)), config.fft_len // (2 ** (l + 1)))
             self.encoder_reduce.append(nn.Sequential(
                 nn.Conv2d(prev_lev_enc, ch_lev_enc, 4, 2, 1),
                 nonlinearity,
@@ -77,13 +74,12 @@ class TargetEmbedding(FlatModule):
             nn.Softsign(),
         )
 
-        self.decoder = DecoderHead(config.latent_dim, config.channel_sz, self.in_channels, out_sz,
+        self.decoder = DecoderHead(config.latent_dim, config.channel_sz, self.in_channels, config.fourier_features,
                                    config.angle_samples, nonlinearity=config.nonlinearity, levels=levels)
 
         _xavier_init(self)
 
         self.out_sz = out_sz
-        # self.example_input_array = torch.randn((1, self.in_channels, config.angle_samples, config.fft_len))
 
     def encode(self, inp: Tensor, **kwargs) -> Tensor:
         """
@@ -167,7 +163,7 @@ class TargetEmbedding(FlatModule):
 
 
         # COMBINATION LOSS
-        cll = rec_loss + clip_loss * .01
+        cll = clip_loss + rec_loss * .01
 
         # Logging ranking metrics
         self.log_dict({f'{kind}_total_loss': cll, f'{kind}_clip_loss': clip_loss, f'{kind}_rec_loss': rec_loss,
@@ -179,7 +175,7 @@ class TargetEmbedding(FlatModule):
 
 class DecoderHead(LightningModule):
 
-    def __init__(self, latent_dim: int, channel_sz: int, in_channels: int, out_sz: int, in_sz: int,
+    def __init__(self, latent_dim: int, channel_sz: int, in_channels: int, fourier_features: int, in_sz: int,
                  nonlinearity: str, levels: int, *args: Any, **kwargs: Any):
         super().__init__(*args, **kwargs)
         self.latent_dim = latent_dim
@@ -195,8 +191,8 @@ class DecoderHead(LightningModule):
         nlin = nonlinearities[nonlinearity]
 
         self.decoder_inflate = nn.Sequential(
-            Fourier2D(.33, 6),
-            nn.ConvTranspose2d(6 * 2, inter_channels, 3, 1, 1),
+            Fourier2D(.33, fourier_features),
+            nn.ConvTranspose2d(fourier_features * 2, inter_channels, 3, 1, 1),
             nlin,
             Block2dTranspose(inter_channels, 3, 1, 1, nonlinearity=nonlinearity)
         )

@@ -1,12 +1,9 @@
-import math
-import time
 import moderngl
-from PyQt5 import QtOpenGL, QtWidgets, QtCore
+from PyQt5 import QtOpenGL, QtCore
 import numpy as np
 from moderngl import Context, Program
 from pyrr import Matrix44
 from simulib.simulation_functions import azelToVec
-from moderngl_window.context.pyqt5 import Window
 from scipy.spatial.transform import Rotation as rot
 
 

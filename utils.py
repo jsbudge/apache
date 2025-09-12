@@ -135,8 +135,22 @@ class ELiSH(nn.Module):
         return torch.where(x > 0, x * torch.sigmoid(x), (torch.exp(x) - 1) * torch.sigmoid(x))
 
 
+class SinLU(nn.Module):
+    def forward(self, x):
+        return (x + torch.sin(x)) * torch.sigmoid(x)
+
+
+class ParameterSinLU(nn.Module):
+    def __init__(self):
+        super(ParameterSinLU,self).__init__()
+        self.a = nn.Parameter(torch.ones(1))
+        self.b = nn.Parameter(torch.ones(1))
+    def forward(self,x):
+        return torch.sigmoid(x)*(x+self.a*torch.sin(self.b*x))
+
+
 nonlinearities = {'silu': nn.SiLU(), 'gelu': nn.GELU(), 'selu': nn.SELU(), 'leaky': nn.LeakyReLU(),
-                  'grow': GrowingCosine(), 'elish': ELiSH()}
+                  'grow': GrowingCosine(), 'elish': ELiSH(), 'sinlu': SinLU(), 'psinlu': ParameterSinLU()}
 
 
 def plot_grad_flow(named_parameters):

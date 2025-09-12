@@ -1,4 +1,4 @@
-from PyQt5.QtWidgets import QColorDialog, QMessageBox
+from PyQt5.QtWidgets import QColorDialog
 from PyQt5 import QtWidgets
 from OpenGL.GLUT import *
 import re

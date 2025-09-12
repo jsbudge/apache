@@ -62,7 +62,7 @@ target_exp_params:
     eta_min: .000000001  # Cosine annealing minimum - 1e-9
     betas: [ .9, .99 ]
     log_epoch: 1
-    save_model: True
+    save_model: False
     transform_data: False
     warm_start: False
     loss_landscape: False
@@ -93,6 +93,8 @@ target_exp_params:
     range_samples: 2
     latent_dim: 1000
     channel_sz: 256
+    fourier_features: 12
+    fourier_std: 100.
     nonlinearity: selu
     temperature: 1.
     levels: 1
@@ -103,7 +105,7 @@ target_exp_params:
 # For training of wavemodel
 wave_exp_params:
   training_params:
-    lr: 0.00001
+    lr: 0.001
     weight_decay: 0.00000
     scheduler_gamma: 0.999
     swa_start: .6
@@ -125,16 +127,16 @@ wave_exp_params:
     fc: 9600000000.
     encoder_start_channel_sz: 2
     embedding_concatenation_channels: 128
-    n_skip_layers: 10
+    n_skip_layers: 3
     clutter_target_channels: 128
-    flowthrough_channels: 128
+    flowthrough_channels: 32
     wave_decoder_channels: 128
     target_channels: 128
     waveform_channels: 128
     target_latent_size: 1000
     bandwidth: 400000000.
-    nonlinearity: selu
-    temperature: .005
+    nonlinearity: psinlu
+    temperature: .003
   logging_params:
     log_dir: ./logs
     weights_path: ./model

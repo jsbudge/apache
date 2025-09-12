@@ -2,30 +2,26 @@ from functools import partial
 import moderngl
 import pandas as pd
 import torch
-from PyQt5.QtCore import QThread, QSettings, pyqtSignal, Qt, QTimer
+from PyQt5.QtCore import QThread, QSettings, pyqtSignal, QTimer
 from OpenGL.GLUT import *
-from PyQt5.QtWidgets import QAction, QHBoxLayout, QVBoxLayout, QGridLayout, QWidget, QDoubleSpinBox, QLabel, \
-    QRadioButton, QButtonGroup, QPushButton, QComboBox, QSplashScreen, QApplication, QMainWindow, QListWidget, \
+from PyQt5.QtWidgets import QHBoxLayout, QGridLayout, QWidget, QDoubleSpinBox, QLabel, \
+    QRadioButton, QButtonGroup, QPushButton, QComboBox, QApplication, QMainWindow, \
     QListWidgetItem
-from sdrparse.SDRParsing import SDRBase, load
+from sdrparse.SDRParsing import load
 from simulib.grid_helper import SDREnvironment
-from simulib.mesh_functions import readCombineMeshFile
 from simulib.platform_helper import SDRPlatform
-from simulib.simulation_functions import genChirp, llh2enu, enu2llh
+from simulib.simulation_functions import llh2enu
 from sklearn.decomposition import TruncatedSVD
 from simulib.backproject_functions import getRadarAndEnvironment
 from superqt import QLargeIntSpinBox
 from pathlib import Path
 from utils import get_radar_coeff
-from numba import cuda
 from gui.gui_classes import FileSelectWidget, ProgressBarWithText, WaveformCreateWindow, DropList, SimulationDataWindow
 from mesh_viewer import QGLControllerWidget, ball
-import gui_utils as f
-import argparse
 import numpy as np
 from glob import glob
 import pickle
-from target_data_generator import loadClutterTargetSpectrum, getTargetProfile, processTargetProfile, genProfileFromMesh
+from target_data_generator import loadClutterTargetSpectrum, processTargetProfile, genProfileFromMesh
 
 DTR = np.pi / 180.
 
@@ -534,48 +530,54 @@ class SimulationThread(QThread):
     def run_sdr_train(self, fnmes):
         abs_clutter_idx = 0
         self.signal_update_progress.emit('Loading clutter and target spectra...')
-        for ntpsd, sdata in loadClutterTargetSpectrum(self.clut, self.radar_coeff, self.mesh, self.iterations, 8, 32,
-                                                      2**16, 9.6e9, 1, self.fft_len, [cuda.stream() for _ in range(1)]):
-            self.signal_update_progress.emit('Running simulation...')
-            if self.save_files and (not np.any(np.isnan(ntpsd)) and not np.any(np.isnan(sdata))):
-                fnme = f"{self.tensor_clutter_path}/tc_{abs_clutter_idx}.pt"
-                torch.save([torch.tensor(sdata, dtype=torch.float32),
-                            torch.tensor(ntpsd, dtype=torch.float32), 0],
-                           f"{self.tensor_clutter_path}/tc_{abs_clutter_idx}.pt")
-                fnmes.append(fnme)
-                abs_clutter_idx += 1
-                self.signal_update_percentage.emit(int(100 // self.iterations * abs_clutter_idx))
+        try:
+            for ntpsd, sdata, rbin in loadClutterTargetSpectrum(self.clut, self.radar_coeff, self.mesh, self.iterations, 8, 16,
+                                                          2**16, 9.6e9, 1, self.fft_len):
+                self.signal_update_progress.emit('Running simulation...')
+                if self.save_files and (not np.any(np.isnan(ntpsd)) and not np.any(np.isnan(sdata))):
+                    fnme = f"{self.tensor_clutter_path}/tc_{abs_clutter_idx}.pt"
+                    torch.save([torch.tensor(sdata, dtype=torch.float32),
+                                torch.tensor(ntpsd, dtype=torch.float32), rbin, 0],
+                               f"{self.tensor_clutter_path}/tc_{abs_clutter_idx}.pt")
+                    fnmes.append(fnme)
+                    abs_clutter_idx += 1
+                    self.signal_update_percentage.emit(int(100 // self.iterations * abs_clutter_idx))
+        except Exception as e:
+            self.signal_update_progress.emit(f'Error: {e}')
         return fnmes
 
     def run_target_profile(self, fnmes):
         progress_div = len(self.waves)
         prog_num = 0
-        for wavename, wavedata, nsam, fs, fc in self.waves:
-            tensor_path = f"{self.tensor_target_path}/{wavename}"
-            if not Path(tensor_path).exists():
-                os.mkdir(tensor_path)
-            mf_chirp = np.fft.fft(wavedata, self.fft_len)
-            mf_chirp = mf_chirp * mf_chirp.conj()
-            self.signal_update_progress.emit('Loading mesh parameters...')
-            gen_iter = iter(genProfileFromMesh(self.mesh, self.iterations, [mf_chirp], 2**16, 0,
-                       self.ranges, self.fft_len, self.radar_coeff, nsam, fs, fc, num_bounces=1,
-                       a_naz=self.n_az_samples, a_nel=self.n_el_samples))
-            self.signal_update_progress.emit('Running simulation...')
-            for abs_idx, (rprof, pd, i) in enumerate(gen_iter):
-                if np.all(pd == 0):
-                    print(f'Skipping on target {self.tidx}, pd {i}')
-                    continue
+        try:
+            for wavename, wavedata, nsam, fs, fc in self.waves:
+                tensor_path = f"{self.tensor_target_path}/{wavename}"
+                if not Path(tensor_path).exists():
+                    os.mkdir(tensor_path)
+                mf_chirp = np.fft.fft(wavedata, self.fft_len)
+                mf_chirp = mf_chirp * mf_chirp.conj()
+                self.signal_update_progress.emit('Loading mesh parameters...')
+                gen_iter = iter(genProfileFromMesh(self.mesh, self.iterations, [mf_chirp], 2**16, 0,
+                           self.ranges, self.fft_len, self.radar_coeff, nsam, fs, fc, num_bounces=1,
+                           a_naz=self.n_az_samples, a_nel=self.n_el_samples))
+                self.signal_update_progress.emit('Running simulation...')
+                for abs_idx, (rprof, pd, i) in enumerate(gen_iter):
+                    if np.all(pd == 0):
+                        print(f'Skipping on target {self.tidx}, pd {i}')
+                        continue
 
-                pd_cat = processTargetProfile(pd, self.fft_len, self.tsvd)
+                    pd_cat = processTargetProfile(pd, self.fft_len, self.tsvd)
 
-                # Append to master target list
-                if self.save_files and pd_cat is not None:
-                    fnme = f"{tensor_path}/target_{self.tidx}_{abs_idx}.pt"
-                    # Save the block out to a torch file for the dataloader later
-                    torch.save([torch.tensor(pd_cat, dtype=torch.float32), self.tidx], fnme)
-                    fnmes.append(fnme)
-                prog_num += int((100 // self.iterations) / progress_div)
-                self.signal_update_percentage.emit(prog_num)
+                    # Append to master target list
+                    if self.save_files and pd_cat is not None:
+                        fnme = f"{tensor_path}/target_{self.tidx}_{abs_idx}.pt"
+                        # Save the block out to a torch file for the dataloader later
+                        torch.save([torch.tensor(pd_cat, dtype=torch.float32), self.tidx], fnme)
+                        fnmes.append(fnme)
+                    prog_num += int((100 // self.iterations) / progress_div)
+                    self.signal_update_percentage.emit(prog_num)
+        except Exception as e:
+            self.signal_update_progress.emit(f'Error: {e}')
         return fnmes
 
 

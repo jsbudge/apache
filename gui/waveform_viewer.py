@@ -8,9 +8,7 @@ Main window GUI for generating waveforms.
 @author: John Rocco <jrocco@artemisinc.net>
 """
 
-import pandas as pd
 from sdrparse.SDRParsing import SDRBase
-from simulib.mesh_functions import readCombineMeshFile, loadTarget
 from simulib.simulation_functions import db
 from gui_classes import ProgressBarWithText, MplWidget
 from mesh_viewer import QGLControllerWidget
