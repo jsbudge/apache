@@ -3,7 +3,6 @@ import math
 import numpy as np
 import torch
 from torch import nn, Tensor
-from pytorch_lightning import LightningModule
 from torch.nn import functional as tf
 from torch.distributions import Normal
 from utils import nonlinearities
@@ -287,32 +286,35 @@ class Block2dTranspose(nn.Module):
 
 class Block1d(nn.Module):
 
-    def __init__(self, channel_sz, transpose=False):
+    def __init__(self, channel_sz, kernel, stride, padding, nonlinearity='gelu', norm_strategy='batch', transpose=False):
         super(Block1d, self).__init__()
         self.channel_sz = channel_sz
+        nlin = nonlinearities[nonlinearity]
+        norm = nn.BatchNorm1d(channel_sz) if norm_strategy == 'batch' else nn.GroupNorm(1, channel_sz)
         if transpose:
             self.block = nn.Sequential(
-                nn.ConvTranspose1d(channel_sz, channel_sz, 3, 1, 1),
-                nn.GELU(),
-                nn.ConvTranspose1d(channel_sz, channel_sz, 3, 1, 1),
-                nn.GELU(),
-                nn.ConvTranspose1d(channel_sz, channel_sz, 3, 1, 1),
-                nn.GELU(),
-                nn.ConvTranspose1d(channel_sz, channel_sz, 3, 1, 1),
-                nn.GELU(),
-                nn.BatchNorm1d(channel_sz),
+                nn.ConvTranspose1d(channel_sz, channel_sz, kernel, stride, padding),
+                nlin,
+                nn.ConvTranspose1d(channel_sz, channel_sz, kernel, stride, padding),
+                nlin,
+                nn.ConvTranspose1d(channel_sz, channel_sz, kernel, stride, padding),
+                norm,
+                nlin,
+                nn.ConvTranspose1d(channel_sz, channel_sz, kernel, stride, padding),
+                nlin,
             )
         else:
             self.block = nn.Sequential(
-                nn.Conv1d(channel_sz, channel_sz, 3, 1, 1),
-                nn.GELU(),
-                nn.Conv1d(channel_sz, channel_sz, 3, 1, 1),
-                nn.GELU(),
-                nn.Conv1d(channel_sz, channel_sz, 3, 1, 1),
-                nn.GELU(),
-                nn.Conv1d(channel_sz, channel_sz, 3, 1, 1),
-                nn.GELU(),
-                nn.BatchNorm1d(channel_sz),
+                nn.Conv1d(channel_sz, channel_sz, kernel, stride, padding),
+                nlin,
+                nn.Conv1d(channel_sz, channel_sz, kernel, stride, padding),
+                nlin,
+                nn.Conv1d(channel_sz, channel_sz, kernel, stride, padding),
+                norm,
+                nlin,
+                nn.Conv1d(channel_sz, channel_sz, kernel, stride, padding),
+                nlin,
+
             )
 
     def forward(self, x):

@@ -83,13 +83,20 @@ if __name__ == '__main__':
             ccs = []
             tss = []
             tcs = []
+            tbin = []
             data_iter = iter(data.train_dataloader())
+            tidx_list = []
 
-            for _ in range(5):
-                cct, tct, tst, _, _, _ = next(data_iter)
-                ccs.append(cct)
-                tss.append(tst)
-                tcs.append(tct)
+            for _ in range(len(data.train_dataloader())):
+                cct, tct, tst, _, _, tidx, tb = next(data_iter)
+                if tidx not in tidx_list:
+                    ccs.append(cct)
+                    tss.append(tst)
+                    tcs.append(tct)
+                    tbin.append(tb)
+                    tidx_list.append(tidx)
+                if len(tidx_list) >= 25:
+                    break
 
             for ts, cc in zip(tss, ccs):
                 # cc = cct.to(device) if cc is None else cc
@@ -155,6 +162,7 @@ if __name__ == '__main__':
             plt.plot(db(clutter_corr))
             plt.plot(db(target_corr))
             plt.plot(db(linear_corr))
+            plt.vlines(tbin[0], -200, -100)
             plt.legend(['Clutter', 'Target', 'Linear'])
             plt.xlabel('Lag')
             plt.ylabel('Power (dB)')
@@ -225,6 +233,18 @@ if __name__ == '__main__':
             plt.subplot(2, 3, 6)
             for c in ccs:
                 plt.plot(np.fft.fftshift(db(c[0][0][1].data.numpy())))
+
+            plt.figure('Target Clutter Profiles')
+            for ts, cc, ti, tloc in zip(tcs, ccs, tidx_list, tbin):
+                tnumpy = ti.cpu().data.numpy()[0]
+                tloc_numpy = tloc.cpu().data.numpy()[0]
+                plt.subplot(5, 5, tnumpy + 1)
+                plt.title(f'Target {tnumpy}')
+                ts_db = db(np.fft.ifft((ts[0][0] + 1j * ts[0][1]).cpu().data.numpy()))
+                cc_db = db(np.fft.ifft((cc[0][0][0] + 1j * cc[0][0][1]).cpu().data.numpy()))
+                plt.plot(ts_db)
+                plt.plot(cc_db)
+                plt.vlines(tloc_numpy, -200, 0, color='red')
 
             wave_t = np.fft.ifft(waves[0, 0])[:nr]
             win = torch.windows.hann(256).data.numpy()

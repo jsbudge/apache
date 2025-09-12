@@ -1,6 +1,5 @@
 from math import log2
 from typing import Optional, Union, Tuple
-
 import torch
 from torch import nn
 from torch.nn import functional as F

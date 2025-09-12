@@ -7,10 +7,9 @@ from simulib.simulation_functions import azelToVec, genChirp
 from simulib.mesh_functions import getRangeProfileFromScene
 from simulib.platform_helper import SDRPlatform
 from simulib.utils import _float, _complex_float
-from scipy.signal.windows import taylor, tukey
+from scipy.signal.windows import taylor
 import plotly.io as pio
 from tqdm import tqdm
-import yaml
 from sdrparse.SDRParsing import load, loadXMLFile
 import torch
 import matplotlib as mplib
@@ -18,10 +17,8 @@ import pickle
 from config import load_yaml_config
 mplib.use('TkAgg')
 from sklearn.decomposition import TruncatedSVD
-import matplotlib.pyplot as plt
-from simulib.simulation_functions import db
 import pandas as pd
-from utils import scale_normalize, get_radar_coeff, normalize
+from utils import get_radar_coeff, normalize
 
 pio.renderers.default = 'browser'
 
@@ -174,8 +171,8 @@ def loadClutterTargetSpectrum(a_clut, a_radarc, scene, iterations, seq_min, seq_
         pulse_times = sdr_ch[0].pulse_time[frame_idxes]
 
         # Place the model in the scene at a random location
-        proj_rbin = np.random.choice(np.arange(len(ranges_samples)))
-        proj_rng = ranges_samples[proj_rbin]
+        proj_rbin = np.random.choice(np.arange(len(ranges_sampled)))
+        proj_rng = ranges_sampled[proj_rbin]
         r_d = azelToVec(rp.pan(pulse_times).mean() + np.random.normal() * rp.az_half_bw,
                         rp.tilt(pulse_times).mean() + np.random.normal() * rp.el_half_bw)
         floc = rp.rxpos(pulse_times).mean(axis=0)
@@ -206,7 +203,7 @@ def loadClutterTargetSpectrum(a_clut, a_radarc, scene, iterations, seq_min, seq_
             sdtime = np.fft.ifft(m_sdata, axis=1)
             tptime = np.fft.ifft(tpsd, axis=1)
             # dbtime = db(np.fft.ifft(tpsd, axis=1))
-            up_fac = (abs(sdtime).mean(axis=1) + abs(sdtime).std(axis=1) * 6) / np.max(abs(tptime), axis=1)
+            up_fac = (abs(sdtime).mean(axis=1) + abs(sdtime).std(axis=1) * 8) / np.max(abs(tptime), axis=1)
             comb = sdtime + tptime * up_fac[:, None]
 
             comb = np.fft.fft(comb, axis=1)
@@ -235,7 +232,7 @@ def loadClutterTargetSpectrum(a_clut, a_radarc, scene, iterations, seq_min, seq_
                 m_sdata = np.roll(m_sdata, -shift_bin, 1)
             m_ntpsd = formatTargetClutterData(m_ntpsd, fft_len)
             m_sdata = formatTargetClutterData(m_sdata, fft_len)
-            yield m_ntpsd, m_sdata, proj_rbin
+            yield m_ntpsd, m_sdata, int(proj_rbin / downsample_rate)
 
 
 def getTargetProfile(a_scene, a_sample_points, a_standoff, a_supersamples, a_num_bounces, a_mf_chirp, a_naz, a_nel, a_radarc,

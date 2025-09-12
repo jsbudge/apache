@@ -247,7 +247,7 @@ def load(mdl, param_file):
 if __name__ == '__main__':
     from config import get_config
     from torchviz import make_dot
-    from pytorch_lightning import Trainer, loggers, seed_everything
+    from pytorch_lightning import seed_everything
     torch.set_float32_matmul_precision('medium')
     gpu_num = 1
     device = f'cuda:{gpu_num}' if torch.cuda.is_available() else 'cpu'

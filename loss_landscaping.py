@@ -1,22 +1,16 @@
-import pickle
-from pytorch_lightning import Trainer, loggers
-from pytorch_lightning.callbacks import EarlyStopping, StochasticWeightAveraging
-
 import numpy as np
 import plotly.io as pio
 import plotly.graph_objects as go
-import torch
-import yaml
 from sklearn.decomposition import PCA
 import matplotlib.pyplot as plt
-
-from dataloaders import WaveDataModule
-from experiment import GeneratorExperiment
-from models import BetaVAE, InfoVAE, WAE_MMD
-from waveform_model import GeneratorModel
-from data_converter.SDRParsing import load
 from tqdm import tqdm
 from scipy.interpolate import RegularGridInterpolator
+from config import get_config
+import torch
+from pytorch_lightning import Trainer, loggers, seed_everything
+from pytorch_lightning.callbacks import EarlyStopping, StochasticWeightAveraging, ModelCheckpoint
+from dataloaders import WaveDataModule
+from waveform_model import GeneratorModel
 
 # pio.renderers.default = 'svg'
 pio.renderers.default = 'browser'
@@ -31,7 +25,7 @@ def dim_reduce(params_path: list, reduction_method: str = 'pca', seed: int = 43)
     :param seed: Seed integer used in the random states for reduction methods. Only for reproducability.
     :return: dict with directions for reduced dimension projection as well as the optimization path in 2d.
     """
-    optim_path_matrix = np.vstack([np.array(tensor.cpu()) for tensor in params_path])
+    optim_path_matrix = np.vstack(params_path)
     reduce_dict = {'optim_path': optim_path_matrix}
     if reduction_method == 'pca':
         pca = PCA(n_components=2, random_state=seed)
@@ -60,7 +54,7 @@ class LossGrid:
             self,
             optim_path: list,
             model: GeneratorModel,
-            cc: torch.Tensor, tc: torch.Tensor, cs: torch.Tensor, ts: torch.Tensor,
+            train_set: list,
             path_2d: np.ndarray,
             directions: np.ndarray,
             device: str,
@@ -74,6 +68,7 @@ class LossGrid:
 
         alpha = self._compute_stepsize(res, margin)
         model.to(device)
+        cs, ts, tc, pl, bw, _, rbin = train_set
 
         # Build the loss grid
         i, j = np.meshgrid(np.arange(-res, res) * alpha, np.arange(-res, res) * alpha)
@@ -82,10 +77,11 @@ class LossGrid:
             for x in range(losses.shape[0]):
                 for y in range(losses.shape[1]):
                     w_ij = torch.tensor(i[x, y] * directions[0] + j[x, y] * directions[1] +
-                                        self.optim_point.cpu().data.numpy(), device=self.device)
+                                        self.optim_point, device=self.device)
                     model.init_from_flat_params(w_ij)
-                    y_pred = model(cc, tc, [2600], 400e6)
-                    losses[x, y] = model.loss_function(y_pred, cs, ts)['loss']
+                    y_pred = model(cs.to(device), tc.to(device), pl.to(device), bw.to(device))
+                    losses[x, y] = model.loss_function(y_pred, cs.to(device), ts.to(device), tc.to(device),
+                                                       pl.to(device), bw.to(device), rbin.to(device))['loss']
                     pbar.update(1)
 
         self.grid = losses
@@ -175,83 +171,69 @@ class LossGrid:
 
 
 if __name__ == '__main__':
-    with open('./wave_simulator.yaml') as y:
-        settings = yaml.safe_load(y.read())
-    with open('./vae_config.yaml', 'r') as file:
-        try:
-            wave_config = yaml.safe_load(file)
-        except yaml.YAMLError as exc:
-            print(exc)
-
+    torch.set_float32_matmul_precision('medium')
+    torch.autograd.set_detect_anomaly(True)
+    # force_cudnn_initialization()
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    wave_config['dataset_params']['max_pulse_length'] = 5000
-    wave_config['dataset_params']['min_pulse_length'] = wave_config['settings']['stft_win_sz'] + 64
+    # torch.cuda.empty_cache()
 
-    print('Setting up dataloader...')
-    data = WaveDataModule(latent_dim=wave_config['model_params']['latent_dim'], device=device,
-                          **wave_config["dataset_params"])
+    # seed_everything(np.random.randint(1, 2048), workers=True)
+    # seed_everything(107, workers=True)
+
+    config = get_config('wave_exp', './vae_config.yaml')
+
+    fft_len = config.fft_len
+    nr = 5000  # int((config['perf_params']['vehicle_slant_range_min'] * 2 / c0 - 1 / TAC) * fs)
+    # Since these are dependent on apache params, we set them up here instead of in the yaml file
+    print('Setting up data generator...')
+    config.dataset_params['max_pulse_length'] = nr
+    config.dataset_params['min_pulse_length'] = 1000
+
+    config.loss_landscape = True
+
+    data = WaveDataModule(device=device, **config.dataset_params)
     data.setup()
 
-    with open('./model/current_model_params.pic', 'rb') as f:
-        generator_params = pickle.load(f)
-
-    fft_len = wave_config['generate_data_settings']['fft_sz']
-    nr = 5000  # int((config['perf_params']['vehicle_slant_range_min'] * 2 / c0 - 1 / TAC) * fs)
-    print('Setting up wavemodel...')
-    warm_start = False
-    if wave_config['settings']['warm_start']:
-        print('Wavemodel loaded from save state.')
-        try:
-            with open('./model/current_model_params.pic', 'rb') as f:
-                generator_params = pickle.load(f)
-            wave_mdl = GeneratorModel(**generator_params)
-            wave_mdl.load_state_dict(torch.load(generator_params['state_file']))
-            warm_start = True
-        except RuntimeError as e:
-            print(f'Wavemodel save file does not match current structure. Re-running with new structure.\n{e}')
-            wave_mdl = GeneratorModel(fft_len=fft_len,
-                                      stft_win_sz=wave_config['settings']['stft_win_sz'],
-                                      clutter_latent_size=wave_config['model_params']['latent_dim'],
-                                      target_latent_size=wave_config['model_params']['latent_dim'], n_ants=2)
+    print('Initializing wavemodel...')
+    if config.warm_start:
+        wave_mdl = GeneratorModel.load_from_checkpoint(f'{config.weights_path}/{config.model_name}.ckpt', config=config,
+                                                       strict=False)
     else:
-        print('Initializing new wavemodel...')
-        wave_mdl = GeneratorModel(fft_len=fft_len,
-                                  stft_win_sz=wave_config['settings']['stft_win_sz'],
-                                  clutter_latent_size=wave_config['model_params']['latent_dim'],
-                                  target_latent_size=wave_config['model_params']['latent_dim'], n_ants=2)
-
-    wave_config['wave_exp_params']['loss_landscape'] = True
-    experiment = GeneratorExperiment(wave_mdl, wave_config['wave_exp_params'])
-    logger = loggers.TensorBoardLogger(wave_config['train_params']['log_dir'],
-                                       name="WaveModel")
-    trainer = Trainer(logger=logger, max_epochs=wave_config['train_params']['max_epochs'],
-                      log_every_n_steps=wave_config['exp_params']['log_epoch'], devices=1,
-                      strategy='ddp', gradient_clip_val=.5, callbacks=
-                      [EarlyStopping(monitor='loss', patience=wave_config['wave_exp_params']['patience'],
-                                     check_finite=True), StochasticWeightAveraging(swa_lrs=wave_config['wave_exp_params']['LR'])])
-
+        wave_mdl = GeneratorModel(config=config)
+    logger = loggers.TensorBoardLogger(config.log_dir,
+                                       name=config.model_name, log_graph=True)
+    expected_lr = max((config.lr * config.scheduler_gamma ** (config.max_epochs * config.swa_start)), 1e-9)
+    trainer = Trainer(logger=logger, limit_train_batches=32, max_epochs=10, num_sanity_val_steps=0,
+                      default_root_dir=config.weights_path, check_val_every_n_epoch=1000,
+                      log_every_n_steps=config.log_epoch, devices=[1], callbacks=
+                      [EarlyStopping(monitor='target_loss', patience=config.patience, check_finite=True),
+                       StochasticWeightAveraging(swa_lrs=expected_lr, swa_epoch_start=config.swa_start),
+                       ModelCheckpoint(monitor='loss_epoch')])
     print("======= Training =======")
-    trainer.fit(experiment, datamodule=data)
+    try:
+        trainer.fit(wave_mdl, datamodule=data)
+    except KeyboardInterrupt:
+        if trainer.is_global_zero:
+            print('Training interrupted.')
+        else:
+            print('adios!')
+            exit(0)
 
     if trainer.global_rank == 0:
-        reduced_dict = dim_reduce(experiment.optim_path, 'pca')
+        reduced_dict = dim_reduce(wave_mdl.optim_path, 'rando')
         path_2d = reduced_dict["path_2d"]
         directions = reduced_dict["reduced_dirs"]
 
-        cc, tc, cs, ts, _ = next(iter(data.train_dataloader()))
-        cc = cc.to(device)
-        tc = tc.to(device)
-        cs = cs.to(device)
-        ts = ts.to(device)
+        train_set = next(iter(data.train_dataloader()))
 
         loss_grid = LossGrid(
-            experiment.optim_path,
+            wave_mdl.optim_path,
             wave_mdl,
-            cc, tc, cs, cs,
+            train_set,
             path_2d,
             directions,
             device,
-            res=50,
+            res=30,
             margin=1.,
         )
 
@@ -269,9 +251,7 @@ if __name__ == '__main__':
 
         optim_x, optim_y = np.where(loss_grid.grid == grid_min)
         landscape_optim = torch.tensor(loss_grid.coords[0][optim_x[0]] * directions[0] +
-                           loss_grid.coords[1][optim_y[0]] * directions[1] + loss_grid.optim_point.cpu().data.numpy())
-        wave_mdl.init_from_flat_params(landscape_optim)
-        wave_mdl.save('./model')
+                           loss_grid.coords[1][optim_y[0]] * directions[1] + loss_grid.optim_point)
 
         path_interp = RegularGridInterpolator((loss_grid.coords[0], loss_grid.coords[1]), loss_grid.grid,
                                               bounds_error=False, fill_value=0)

@@ -3,7 +3,7 @@ from typing import List, Optional, Union, Iterator
 import os
 import yaml
 from pytorch_lightning import LightningDataModule
-from torch.utils.data import DataLoader, Dataset, BatchSampler, SubsetRandomSampler, Sampler
+from torch.utils.data import DataLoader, Dataset, SubsetRandomSampler, Sampler
 import torch
 from itertools import chain
 from pathlib import Path
@@ -161,9 +161,9 @@ class WaveDataset(Dataset):
         self.seed = seed
 
     def __getitem__(self, idx):
-        # File contains target range profile, compressed clutter data, and the target index
+        # File contains target range profile, compressed clutter data, target index, and the target range bin
         data = torch.load(f'{self.datapath}/tc_{self.idxes[idx]}.pt')
-        return data[0], data[1][-1], self.patterns[data[2]].clone().detach(), np.random.randint(self.min_pulse_length, self.max_pulse_length), np.random.rand() * .6 + .2, data[2]
+        return data[0], data[1][-1], self.patterns[data[3]].clone().detach(), np.random.randint(self.min_pulse_length, self.max_pulse_length), np.random.rand() * .6 + .2, data[3], data[2]
         # return (torch.cat([c.unsqueeze(0) for c, t, i in data], dim=0), data[-1][1], self.patterns[data[-1][2]].clone().detach(),
         #        np.random.randint(self.min_pulse_length, self.max_pulse_length), np.random.rand() * .6 + .2)
 

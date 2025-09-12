@@ -36,8 +36,8 @@ generate_data_settings:
   run_clutter: True
   seq_min_length: 8
   seq_max_length: 16
-  clutter_iterations: 5
-  supersamples: 0
+  clutter_iterations: 50
+  supersamples: 12
   n_az_samples: 16
   n_el_samples: 8
   num_bounces: 1
@@ -103,18 +103,18 @@ target_exp_params:
 # For training of wavemodel
 wave_exp_params:
   training_params:
-    lr: 0.0001
-    weight_decay: 0.0
+    lr: 0.00001
+    weight_decay: 0.00000
     scheduler_gamma: 0.999
     swa_start: .6
     warm_start: False
     betas: [.9, .99]
     log_epoch: 100
-    accumulation_steps: 8
+    accumulation_steps: 16
     is_tuning: False
-    save_model: False
-    loss_landscape: False
-    gradient_flow: False
+    save_model: True
+    loss_landscape: False  # This should always be False; it is set to True inside of the relevant script
+    gradient_flow: False  # This should always be False; it is set to True inside of the relevant script
     max_epochs: 1200
     patience: 500
     distributed: False
@@ -123,19 +123,18 @@ wave_exp_params:
     fft_len: 8192
     fs: 2000000000.
     fc: 9600000000.
-    transformer_passes: 1
     encoder_start_channel_sz: 2
     embedding_concatenation_channels: 128
-    n_skip_layers: 3
+    n_skip_layers: 10
     clutter_target_channels: 128
     flowthrough_channels: 128
     wave_decoder_channels: 128
     target_channels: 128
-    waveform_channels: 256
+    waveform_channels: 128
     target_latent_size: 1000
-    n_fourier_modes: 64
     bandwidth: 400000000.
     nonlinearity: selu
+    temperature: .005
   logging_params:
     log_dir: ./logs
     weights_path: ./model

@@ -1,22 +1,26 @@
-import contextlib
-import math
-import pickle
-from typing import Optional, Union, Tuple, Dict
 import torch
 from neuralop import TFNO1d
 from torch import nn, Tensor
 from pytorch_lightning import LightningModule
 from torch.nn import functional as nn_func
-from pytorch_lightning.utilities import grad_norm
-from torch.optim import Optimizer
 from config import Config
-from layers import FourierFeature, PulseLength, LKA1d, LKATranspose1d, WindowGenerate, PositionalEncoding
+from layers import FourierFeature, PulseLength, LKA1d, WindowGenerate, PositionalEncoding, Block1d
 import numpy as np
+from utils import normalize, _xavier_init, nonlinearities, plot_grad_flow
 
-from utils import normalize, get_pslr, _xavier_init, nonlinearities, plot_grad_flow
-
-EXP_1 = 0.36787944117144233
 EPS = 1e-12
+
+
+def _unflatten_to_state_dict(flat_w, shapes):
+    state_dict = {}
+    counter = 0
+    for shape in shapes:
+        name, tsize, tnum = shape
+        param = flat_w[counter: counter + tnum].reshape(tsize)
+        state_dict[name] = torch.nn.Parameter(param)
+        counter += tnum
+    assert counter == len(flat_w), "counter must reach the end of weight vector"
+    return state_dict
 
 
 class FlatModule(LightningModule):
@@ -28,6 +32,7 @@ class FlatModule(LightningModule):
     def __init__(self, config: Config = None):
         super(FlatModule, self).__init__()
         self.config = config
+        self.optim_path = []
 
     def get_flat_params(self):
         """Get flattened and concatenated params of the model."""
@@ -39,22 +44,11 @@ class FlatModule(LightningModule):
     def init_from_flat_params(self, flat_params):
         """Set all model parameters from the flattened form."""
         assert isinstance(flat_params, torch.Tensor), "Argument to init_from_flat_params() must be torch.Tensor"
-        state_dict = self._unflatten_to_state_dict(flat_params, self._get_param_shapes())
+        state_dict = _unflatten_to_state_dict(flat_params, self._get_param_shapes())
         for name, params in self.state_dict().items():
             if name not in state_dict:
                 state_dict[name] = params
         self.load_state_dict(state_dict, strict=True)
-
-    def _unflatten_to_state_dict(self, flat_w, shapes):
-        state_dict = {}
-        counter = 0
-        for shape in shapes:
-            name, tsize, tnum = shape
-            param = flat_w[counter: counter + tnum].reshape(tsize)
-            state_dict[name] = torch.nn.Parameter(param)
-            counter += tnum
-        assert counter == len(flat_w), "counter must reach the end of weight vector"
-        return state_dict
 
     def _get_param_shapes(self):
         return [
@@ -79,23 +73,24 @@ class GeneratorModel(FlatModule):
         self.waveform_channels = config.waveform_channels
         self.target_channels = config.target_channels
         self.automatic_optimization = False
-        self.n_fourier_modes = config.n_fourier_modes
         self.bandwidth = config.bandwidth
-        self.passes = config.transformer_passes
         self.baseband_fc = (config.fc % self.fs) - self.fs
         self.nonlinearity = config.nonlinearity
         nlin = nonlinearities[self.nonlinearity]
 
         '''TRANSFORMER'''
-        # self.predict_lstm = nn.LSTM(self.target_latent_size, self.target_latent_size, self.lstm_layers, batch_first=True)
-        self.predict_decoder = nn.Transformer(self.target_latent_size, num_decoder_layers=4, num_encoder_layers=4, nhead=8,
+        self.predict_decoder = nn.Transformer(self.target_latent_size, num_decoder_layers=7, num_encoder_layers=7, nhead=8,
                                               batch_first=True, activation='gelu')
         self.pos_enc = PositionalEncoding(self.target_latent_size, .1, 16)
-        # self.predict_decoder.apply(init_weights)
 
         '''CLUTTER AND TARGET COMBINATION LAYERS'''
         self.clutter_encoder = nn.Sequential(
             nn.Linear(self.fft_len, self.target_latent_size),
+            nlin,
+            nn.Linear(self.target_latent_size, self.target_latent_size),
+            nlin,
+            nn.Linear(self.target_latent_size, self.target_latent_size),
+            nn.LayerNorm(self.target_latent_size),
             nlin,
             nn.Linear(self.target_latent_size, self.target_latent_size),
             nlin,
@@ -106,9 +101,13 @@ class GeneratorModel(FlatModule):
         )
 
         self.clutter_target_init = nn.Sequential(
-            TFNO1d(n_modes_height=self.n_fourier_modes, in_channels=2, out_channels=self.flowthrough_channels,
-                   hidden_channels=self.clutter_target_channels, non_linearity=nlin),
-            LKA1d(self.flowthrough_channels, kernel_sizes=(65, 65), dilation=12, activation=self.nonlinearity),
+            nn.Conv1d(2, self.flowthrough_channels, 3, 1, 1),
+            nlin,
+            Block1d(self.flowthrough_channels, 3, 1, 1, self.nonlinearity, 'group'),
+            LKA1d(self.flowthrough_channels, kernel_sizes=(17, 257), dilation=4, activation=self.nonlinearity),
+            LKA1d(self.flowthrough_channels, kernel_sizes=(33, 129), dilation=8, activation=self.nonlinearity),
+            LKA1d(self.flowthrough_channels, kernel_sizes=(65, 65), dilation=15, activation=self.nonlinearity),
+            LKA1d(self.flowthrough_channels, kernel_sizes=(129, 33), dilation=30, activation=self.nonlinearity),
         )
 
         '''SKIP LAYERS'''
@@ -116,32 +115,39 @@ class GeneratorModel(FlatModule):
         self.target_layers = nn.ModuleList()
         for _ in range(config.n_skip_layers):
             self.waveform_layers.append(nn.Sequential(
-                TFNO1d(n_modes_height=self.n_fourier_modes, in_channels=self.flowthrough_channels + 2,
-                       out_channels=self.waveform_channels, non_linearity=nlin,
-                       hidden_channels=self.waveform_channels),
-                LKA1d(self.waveform_channels, kernel_sizes=(129, 129), dilation=6, activation=self.nonlinearity),
-                TFNO1d(n_modes_height=self.n_fourier_modes, in_channels=self.waveform_channels,
-                       out_channels=self.flowthrough_channels, non_linearity=nlin, hidden_channels=self.waveform_channels),
-                nn.LayerNorm((self.target_latent_size,)),
+                nn.Conv1d(self.flowthrough_channels + 2, self.waveform_channels, 3, 1, 1),
+                nlin,
+                LKA1d(self.waveform_channels, kernel_sizes=(3, 257), dilation=4, activation=self.nonlinearity),
+                LKA1d(self.waveform_channels, kernel_sizes=(3, 129), dilation=8, activation=self.nonlinearity),
+                LKA1d(self.waveform_channels, kernel_sizes=(3, 65), dilation=15, activation=self.nonlinearity),
+                LKA1d(self.waveform_channels, kernel_sizes=(3, 33), dilation=30, activation=self.nonlinearity),
+                Block1d(self.waveform_channels, 3, 1, 1, self.nonlinearity, 'group'),
+                nn.Conv1d(self.waveform_channels, self.flowthrough_channels, 3, 1, 1),
+                nlin,
+                nn.LayerNorm(self.target_latent_size),
             ))
             self.target_layers.append(nn.Sequential(
-                TFNO1d(n_modes_height=self.n_fourier_modes, in_channels=self.flowthrough_channels + 1,
-                       out_channels=self.target_channels, non_linearity=nlin,
-                       hidden_channels=self.target_channels),
-                LKA1d(self.target_channels, kernel_sizes=(129, 129), dilation=6, activation=self.nonlinearity),
-                TFNO1d(n_modes_height=self.n_fourier_modes, in_channels=self.target_channels, non_linearity=nlin,
-                       out_channels=self.flowthrough_channels, hidden_channels=self.target_channels),
-                nn.LayerNorm((self.target_latent_size,)),
+                nn.Conv1d(self.flowthrough_channels + 1, self.target_channels, 3, 1, 1),
+                nlin,
+                LKA1d(self.target_channels, kernel_sizes=(3, 257), dilation=4, activation=self.nonlinearity),
+                LKA1d(self.target_channels, kernel_sizes=(3, 129), dilation=8, activation=self.nonlinearity),
+                LKA1d(self.target_channels, kernel_sizes=(3, 65), dilation=15, activation=self.nonlinearity),
+                LKA1d(self.target_channels, kernel_sizes=(3, 33), dilation=30, activation=self.nonlinearity),
+                Block1d(self.target_channels, 3, 1, 1, self.nonlinearity, 'group'),
+                nn.Conv1d(self.target_channels, self.flowthrough_channels, 3, 1, 1),
+                nlin,
+                nn.LayerNorm(self.target_latent_size),
             ))
 
         self.wave_decoder = nn.Sequential(
-            TFNO1d(n_modes_height=self.n_fourier_modes, in_channels=self.flowthrough_channels + 2,
-                   out_channels=self.wave_decoder_channels, non_linearity=nlin,
-                   hidden_channels=self.wave_decoder_channels),
+            nn.Conv1d(self.flowthrough_channels + 2, self.wave_decoder_channels, 3, 1, 1),
+            nlin,
             nn.Linear(self.target_latent_size, self.target_latent_size),
             nlin,
-            TFNO1d(n_modes_height=self.n_fourier_modes, in_channels=self.wave_decoder_channels, non_linearity=nlin,
-                   out_channels=self.n_ants * 2, hidden_channels=self.wave_decoder_channels),
+            Block1d(self.wave_decoder_channels, 3, 1, 1, self.nonlinearity, 'group'),
+            Block1d(self.wave_decoder_channels, 3, 1, 1, self.nonlinearity, 'group'),
+            Block1d(self.wave_decoder_channels, 3, 1, 1, self.nonlinearity, 'group'),
+            nn.Conv1d(self.wave_decoder_channels, self.n_ants * 2, 3, 1, 1),
             nn.Linear(self.target_latent_size, self.fft_len),
         )
 
@@ -167,12 +173,7 @@ class GeneratorModel(FlatModule):
         _xavier_init(self.pinfo)
         _xavier_init(self.bandwidth_info)
 
-
-        '''self.example_input_array = (torch.zeros((1, 32, 2, self.fft_len)),
-                                      torch.zeros((1, self.target_latent_size)),
-                                      torch.Tensor([1250]), torch.Tensor([.4]))'''
-
-    def forward(self, clutter, target, pulse_length, bandwidth) -> torch.tensor:
+    def forward(self, clutter, target, pulse_length, bandwidth) -> torch.Tensor:
 
         # Run clutter through the encoder
         x = self.clutter_encoder(clutter)
@@ -180,12 +181,6 @@ class GeneratorModel(FlatModule):
         x = self.pos_enc(x.squeeze(-1))
 
         # Predict the next clutter step using transformer
-        for _ in range(self.passes):
-            # x = x + target.unsqueeze(1)
-            x = self.predict_decoder(x, x)
-
-
-        # Final pass
         x = self.predict_decoder(x[:, :-1], x[:, 1:])[:, -1, ...].unsqueeze(1)
 
         # Combine clutter prediction with target information
@@ -203,7 +198,7 @@ class GeneratorModel(FlatModule):
         x = x.view(-1, self.n_ants, 2, self.fft_len)
         return x
 
-    def full_forward(self, clutter_array, target_array: Tensor | np.ndarray, pulse_length: int, bandwidth: float) -> torch.tensor:
+    def full_forward(self, clutter_array, target_array: torch.Tensor | np.ndarray, pulse_length: int, bandwidth: float) -> np.ndarray:
         """
         This function is meant to simplify using the waveforms. It takes a set of frequency domain pulses and outputs a set of waveforms.
         :param bandwidth: Normalized bandwidth. Should be between 0 and 1.
@@ -230,17 +225,13 @@ class GeneratorModel(FlatModule):
         # Return it in complex form without the leading dimension
         return unformatted_waveform[0]
 
-    def loss_function(self, *args, **kwargs) -> dict:
+    def loss_function(self, *args) -> dict:
 
         # Get clutter spectrum into complex form and normalize to unit energy
         clutter_spectrum = torch.fft.fftshift(torch.complex(args[1][:, -1, 0, :], args[1][:, -1, 1, :]), dim=1)
-        # clutter_spectrum = clutter_spectrum / torch.sqrt(torch.sum(clutter_spectrum * torch.conj(clutter_spectrum),
-        #                                                            dim=1))[:, None]
 
         # Get target spectrum into complex form and normalize to unit energy
         target_spectrum = torch.fft.fftshift(torch.complex(args[2][:, 0, :], args[2][:, 1, :]), dim=1)
-        # target_spectrum = target_spectrum / torch.sqrt(torch.sum(target_spectrum * torch.conj(target_spectrum),
-        #                                                          dim=1))[:, None]
 
         # Get waveform into complex form and normalize it to unit energy
         gen_waveform = self.getWaveform(nn_output=args[0])
@@ -263,7 +254,9 @@ class GeneratorModel(FlatModule):
             torch.abs(torch.fft.ifft(target_spectrum.unsqueeze(1) * mfiltered, dim=2)), dim=1)
         clut_ac = torch.sum(
             torch.abs(torch.fft.ifft(clutter_spectrum.unsqueeze(1) * mfiltered, dim=2)), dim=1)
-        target_loss = torch.nanmean(clut_ac / (EPS + targ_ac)) + 1. / kld_loss
+        target_softmax = ((torch.arange(targ_ac.shape[-1], device=self.device) - args[6] + EPS) / targ_ac.shape[-1])**2
+        target_softmax = torch.exp(-target_softmax / (2 * self.config.temperature)**2)
+        target_loss = torch.nanmean(targ_ac / (EPS + clut_ac) * target_softmax)# + 1. / kld_loss
         # target_loss = torch.nanmean(nn_func.logsigmoid(clut_ac - targ_ac))# + kld_loss
 
         # Sidelobe loss functions
@@ -274,8 +267,6 @@ class GeneratorModel(FlatModule):
         # pslrs = get_pslr(sidelobe_func.squeeze(1))
         sidelobe_loss = (1. / (EPS + torch.nanmean(pslrs)))**2
         # sidelobe_loss = torch.tensor(0., device=self.device)
-
-        # Bandwidth loss
 
         # Orthogonality
         if self.n_ants > 1:
@@ -288,14 +279,13 @@ class GeneratorModel(FlatModule):
         else:
             ortho_loss = torch.tensor(0., device=self.device)
 
-        return {'target_loss': target_loss,
+        total_loss = target_loss * (1 + sidelobe_loss + ortho_loss)
+
+        return {'target_loss': target_loss, 'loss': total_loss,
                 'sidelobe_loss': sidelobe_loss, 'ortho_loss': ortho_loss, 'kld_loss': kld_loss}
 
-    # def example_input_array(self) -> Optional[Union[Tensor, Tuple, Dict]]:
-    #     return self.example_input_array
-
     def getWaveform(self, cc: Tensor = None, tc: Tensor = None, pulse_length=None,
-                    bandwidth: [Tensor, float] = 400e6, nn_output: tuple[Tensor] = None) -> Tensor:
+                    bandwidth: [Tensor | float] = 400e6, nn_output: tuple[Tensor] = None) -> Tensor:
         """
         Given a clutter and target spectrum, produces a waveform FFT.
         :param custom_fft_sz: If scale is True, outputs waveforms of custom_fft_sz
@@ -326,10 +316,6 @@ class GeneratorModel(FlatModule):
     def training_step(self, batch, batch_idx):
         train_loss = self.train_val_get(batch, batch_idx)
         self.manual_backward(train_loss['loss'] / self.config.accumulation_steps)
-        '''opt = self.optimizers()
-        opt.step()
-        opt.zero_grad()'''
-        # self.clip_gradients(opt, gradient_clip_val=0.5, gradient_clip_algorithm="norm")
         if (batch_idx + 1) % self.config.accumulation_steps == 0:
             if self.config.gradient_flow:
                 plot_grad_flow(self.named_parameters())
@@ -355,7 +341,7 @@ class GeneratorModel(FlatModule):
         else:
             sch.step()
         if self.trainer.is_global_zero and not self.config.is_tuning and self.config.loss_landscape:
-            self.optim_path.append(self.get_flat_params())
+            self.optim_path.append(self.get_flat_params().cpu().data.numpy())
         self.log('lr', self.lr_schedulers().get_last_lr()[0], prog_bar=True, rank_zero_only=True)
 
     def configure_optimizers(self):
@@ -368,28 +354,13 @@ class GeneratorModel(FlatModule):
             return optimizer
         # scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=self.config.scheduler_gamma)
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, 100, eta_min=1e-9)
-        '''scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, cooldown=self.params['step_size'],
-                                                         factor=self.params['scheduler_gamma'], threshold=1e-5)'''
 
         return {'optimizer': optimizer, 'lr_scheduler': scheduler}
 
     def train_val_get(self, batch, batch_idx):
-        clutter_spec, target_spec, target_enc, pulse_length, bandwidth, _ = batch
-
+        clutter_spec, target_spec, target_enc, pulse_length, bandwidth, _, target_rbin = batch
         results = self.forward(clutter_spec, target_enc, pulse_length, bandwidth)
-        train_loss = self.loss_function(results, clutter_spec, target_spec, target_enc, pulse_length, bandwidth)
-
-        train_loss['loss'] = train_loss['target_loss'] * (1 + train_loss['sidelobe_loss'] * self.global_step + train_loss['ortho_loss'])
-        return train_loss
-
-    '''def on_before_optimizer_step(self, optimizer: Optimizer) -> None:
-        if self.global_step % self.config.log_epoch == 0:
-            # norms = grad_norm(self, norm_type=2)  # Compute 2-norm for each layer
-            norms = {**grad_norm(self.clutter_encoder, norm_type=2),
-                     **grad_norm(self.clutter_squash, norm_type=2),
-                     **grad_norm(self.clutter_target_init, norm_type=2),
-                     **grad_norm(self.wave_decoder, norm_type=2)}
-            self.log_dict(norms)'''
+        return self.loss_function(results, clutter_spec, target_spec, target_enc, pulse_length, bandwidth, target_rbin)
 
 if __name__ == '__main__':
     from config import get_config

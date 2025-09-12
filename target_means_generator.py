@@ -11,7 +11,6 @@ import matplotlib as mplib
 mplib.use('TkAgg')
 import yaml
 
-# pio.renderers.default = 'svg'
 pio.renderers.default = 'browser'
 
 
