@@ -26,14 +26,14 @@ settings:
   fft_len: 8192
 
 generate_data_settings:
-  iterations: 1
+  iterations: 200
   use_local_storage: True
   save_files: True
   overwrite_files: True  # Don't set this to False without cleaning the folders first
   local_path: ./data
   obj_path: /home/jeff/repo/apache/data/target_meshes
-  run_target: False
-  run_clutter: True
+  run_target: True
+  run_clutter: False
   seq_min_length: 8
   seq_max_length: 16
   clutter_iterations: 50
@@ -64,7 +64,7 @@ target_exp_params:
     log_epoch: 1
     save_model: False
     transform_data: False
-    warm_start: False
+    warm_start: True
     loss_landscape: False
     max_epochs: 20000
     patience: 10
@@ -91,11 +91,11 @@ target_exp_params:
   model_params:
     fft_len: 8192
     range_samples: 2
-    latent_dim: 1000
-    channel_sz: 256
+    latent_dim: 1256
+    channel_sz: 265
     fourier_features: 12
     fourier_std: 100.
-    nonlinearity: selu
+    nonlinearity: psinlu
     temperature: 1.
     levels: 1
     # These values are taken from a sampling of data, should be the same as the dataset params
@@ -105,14 +105,14 @@ target_exp_params:
 # For training of wavemodel
 wave_exp_params:
   training_params:
-    lr: 0.001
-    weight_decay: 0.00000
+    lr: 0.0001
+    weight_decay: 0.0
     scheduler_gamma: 0.999
     swa_start: .6
     warm_start: False
     betas: [.9, .99]
     log_epoch: 100
-    accumulation_steps: 16
+    accumulation_steps: 8
     is_tuning: False
     save_model: True
     loss_landscape: False  # This should always be False; it is set to True inside of the relevant script
@@ -126,16 +126,17 @@ wave_exp_params:
     fs: 2000000000.
     fc: 9600000000.
     encoder_start_channel_sz: 2
+    clutter_squash_features: 16
     embedding_concatenation_channels: 128
-    n_skip_layers: 3
+    n_skip_layers: 10
     clutter_target_channels: 128
-    flowthrough_channels: 32
+    flowthrough_channels: 64
     wave_decoder_channels: 128
     target_channels: 128
     waveform_channels: 128
-    target_latent_size: 1000
+    target_latent_size: 1256
     bandwidth: 400000000.
-    nonlinearity: psinlu
+    nonlinearity: mish
     temperature: .003
   logging_params:
     log_dir: ./logs

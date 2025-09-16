@@ -2,6 +2,7 @@ import math
 import matplotlib.pyplot as plt
 from typing import Union, List
 from matplotlib.lines import Line2D
+from scipy.signal.windows import taylor
 import numpy as np
 import torch
 from torch import nn
@@ -125,6 +126,19 @@ def narrow_band(signal, lag=None, n_fbins=None):
     return naf, lag, xi
 
 
+def getMatchedFilter(chirp, bw, fs, fc, fft_len):
+    twin = taylor(int(np.round(bw / fs * fft_len)))
+    taytay = np.zeros(fft_len, dtype=np.complex128)
+    winloc = int((fc % fs) * fft_len / fs) - len(twin) // 2
+    if winloc + len(twin) > fft_len:
+        taytay[winloc:fft_len] += twin[:fft_len - winloc]
+        taytay[:len(twin) - (fft_len - winloc)] += twin[fft_len - winloc:]
+    else:
+        taytay[winloc:winloc + len(twin)] += twin
+
+    return taytay / (np.fft.fft(chirp, fft_len) + 1e-12)
+
+
 class GrowingCosine(nn.Module):
     def forward(self, x):
         return x * torch.cos(x)
@@ -150,7 +164,8 @@ class ParameterSinLU(nn.Module):
 
 
 nonlinearities = {'silu': nn.SiLU(), 'gelu': nn.GELU(), 'selu': nn.SELU(), 'leaky': nn.LeakyReLU(),
-                  'grow': GrowingCosine(), 'elish': ELiSH(), 'sinlu': SinLU(), 'psinlu': ParameterSinLU()}
+                  'grow': GrowingCosine(), 'elish': ELiSH(), 'sinlu': SinLU(), 'psinlu': ParameterSinLU(),
+                  'mish': nn.Mish()}
 
 
 def plot_grad_flow(named_parameters):

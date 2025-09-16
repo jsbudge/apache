@@ -2,7 +2,6 @@ import torch
 from pytorch_lightning import Trainer, loggers, seed_everything
 from simulib.simulation_functions import db
 from sklearn.decomposition import KernelPCA
-
 from config import get_config
 from dataloaders import TargetEncoderModule
 from models import TargetEmbedding
@@ -36,7 +35,7 @@ def setupTrainer(a_gpu_num, tconf, do_logs=True, **trainer_args):
 
 if __name__ == '__main__':
     torch.set_float32_matmul_precision('medium')
-    gpu_num = 1
+    gpu_num = 0
     device = f'cuda:{gpu_num}' if torch.cuda.is_available() else 'cpu'
     seed_everything(np.random.randint(1, 2048), workers=True)
     # seed_everything(43, workers=True)

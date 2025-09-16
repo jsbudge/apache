@@ -1,5 +1,5 @@
 from config import get_config
-from utils import upsample, normalize, fs, narrow_band
+from utils import upsample, normalize, fs, narrow_band, getMatchedFilter
 import numpy as np
 from simulib.simulation_functions import genPulse, db, findPowerOf2
 import matplotlib.pyplot as plt
@@ -144,20 +144,22 @@ if __name__ == '__main__':
             plt.ylabel('Relative Power (dB)')
             plt.xlabel('Freq (Hz)')
 
+            mfiltered_wave0 = waves[0, 0] * getMatchedFilter(np.fft.ifft(waves[0, 0]), .3806 * fs, fs, config.fc, fft_len)
+            mfiltered_wave1 = waves[0, 1] * getMatchedFilter(np.fft.ifft(waves[0, 1]), .3806 * fs, fs, config.fc, fft_len)
+            mfiltered_linear = linear * getMatchedFilter(np.fft.ifft(linear), .3806 * fs, fs, config.fc, fft_len)
+
             if wave_mdl.n_ants > 1:
                 clutter_corr = np.fft.ifft(
-                    np.fft.fftshift(clutter[0]) * waves[0, 0] * waves[0, 0].conj() + np.fft.fftshift(clutter[0]) * waves[
-                        0, 1] * waves[0, 1].conj())
+                    np.fft.fftshift(clutter[0]) * mfiltered_wave0 + np.fft.fftshift(clutter[0]) * mfiltered_wave1)
                 target_corr = np.fft.ifft(
-                    np.fft.fftshift(targets[0]) * waves[0, 0] * waves[0, 0].conj() + np.fft.fftshift(targets[0]) * waves[
-                        0, 1] * waves[0, 1].conj())
+                    np.fft.fftshift(targets[0]) * mfiltered_wave0 + np.fft.fftshift(targets[0]) * mfiltered_wave1)
                 linear_corr = np.fft.ifft(
-                    np.fft.fftshift(targets[0]) * linear * linear.conj())
+                    np.fft.fftshift(targets[0]) * mfiltered_linear)
             else:
                 clutter_corr = np.fft.ifft(
-                    np.fft.fftshift(clutter[0]) * waves[0, 0] * waves[0, 0].conj())
+                    np.fft.fftshift(clutter[0]) * mfiltered_wave0)
                 target_corr = np.fft.ifft(
-                    np.fft.fftshift(targets[0]) * waves[0, 0] * waves[0, 0].conj())
+                    np.fft.fftshift(targets[0]) * mfiltered_wave0)
             plt.figure('MIMO Correlations')
             plt.plot(db(clutter_corr))
             plt.plot(db(target_corr))
@@ -180,14 +182,14 @@ if __name__ == '__main__':
             # plot_model(mdl, to_file='./mdl_plot.png', show_shapes=True)
             # waveforms = np.fft.fftshift(waveforms, axes=2)
             plt.figure('Autocorrelation')
-            inp_wave = waves[0, 0] * waves[0, 0].conj()
+            inp_wave = mfiltered_wave0
             autocorr1 = np.fft.fftshift(db(np.fft.ifft(upsample(inp_wave))))
             if wave_mdl.n_ants > 1:
-                inp_wave = waves[0, 1] * waves[0, 1].conj()
+                inp_wave = mfiltered_wave1
                 autocorr2 = np.fft.fftshift(db(np.fft.ifft(upsample(inp_wave))))
-                inp_wave = waves[0, 0] * waves[0, 1].conj()
+                inp_wave = waves[0, 0] * getMatchedFilter(np.fft.ifft(waves[0, 1]), .3806 * fs, fs, config.fc, fft_len)
                 autocorrcr = np.fft.fftshift(db(np.fft.ifft(upsample(inp_wave))))
-            perf_autocorr = np.fft.fftshift(db(np.fft.ifft(upsample(linear * linear.conj()))))
+            perf_autocorr = np.fft.fftshift(db(np.fft.ifft(upsample(mfiltered_linear))))
             lags = np.arange(len(autocorr1)) - len(autocorr1) // 2
             plt.plot(lags[len(lags) // 2 - 200:len(lags) // 2 + 200],
                      autocorr1[len(lags) // 2 - 200:len(lags) // 2 + 200] - autocorr1.max())

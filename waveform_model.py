@@ -74,7 +74,7 @@ class GeneratorModel(FlatModule):
         self.target_channels = config.target_channels
         self.automatic_optimization = False
         self.bandwidth = config.bandwidth
-        self.baseband_fc = (config.fc % self.fs) - self.fs
+        self.baseband_fc = (config.fc % self.fs)
         self.nonlinearity = config.nonlinearity
         nlin = nonlinearities[self.nonlinearity]
 
@@ -96,9 +96,9 @@ class GeneratorModel(FlatModule):
             nlin,
         )
         self.clutter_squash = nn.Sequential(
-            nn.Linear(2, 16),
+            nn.Linear(config.encoder_start_channel_sz, config.clutter_squash_features),
             nlin,
-            nn.Linear(16, 1),
+            nn.Linear(config.clutter_squash_features, 1),
             nlin,
         )
 
@@ -237,26 +237,28 @@ class GeneratorModel(FlatModule):
 
         # Get waveform into complex form and normalize it to unit energy
         gen_waveform = self.getWaveform(nn_output=args[0])
-        mfiltered = gen_waveform * gen_waveform.conj()
+        mfiltered = gen_waveform * self.getMatchedFilter(gen_waveform, args[5] * self.fs)
 
         #  KLD between the target and clutter functions
-        '''target_stft = torch.abs(torch.stft(torch.fft.ifft(target_spectrum.unsqueeze(1) * mfiltered, dim=2)[0], 64, window=torch.hann_window(64, device=self.device)))
-        clutter_stft = torch.abs(torch.stft(torch.fft.ifft(clutter_spectrum.unsqueeze(1) * mfiltered, dim=2)[0], 64, window=torch.hann_window(64, device=self.device)))
-        eas = [torch.cov(t) for t in target_stft]
-        ebs = [torch.cov(t) for t in clutter_stft]
-        muas = [t.mean(dim=1) for t in target_stft]
-        mubs = [t.mean(dim=1) for t in clutter_stft]
-        kld = [.5 * (torch.trace(torch.linalg.pinv(eb) @ ea) + torch.trace(torch.linalg.pinv(ea) @ eb) + (mub - mua) @ (
-            torch.linalg.pinv(ea) + torch.linalg.pinv(eb)) @ (mub - mua)) for ea, eb, mua, mub in zip(eas, ebs, muas, mubs)]
+        try:
+            target_stft = torch.abs(torch.stft(torch.fft.ifft(target_spectrum.unsqueeze(1) * mfiltered, dim=2)[0], 64,
+                                               window=torch.hann_window(64, device=self.device)))
+            clutter_stft = torch.abs(torch.stft(torch.fft.ifft(clutter_spectrum.unsqueeze(1) * mfiltered, dim=2)[0], 64,
+                                                window=torch.hann_window(64, device=self.device)))
+            eas = [torch.cov(t) for t in target_stft]
+            ebs = [torch.cov(t) for t in clutter_stft]
+            muas = [t.mean(dim=1) for t in target_stft]
+            mubs = [t.mean(dim=1) for t in clutter_stft]
+            kld = [.5 * (torch.trace(torch.linalg.pinv(eb) @ ea) + torch.trace(torch.linalg.pinv(ea) @ eb) + (mub - mua) @ (
+                torch.linalg.pinv(ea) + torch.linalg.pinv(eb)) @ (mub - mua)) for ea, eb, mua, mub in zip(eas, ebs, muas, mubs)]
 
-        kld_loss = torch.sqrt(sum(kld) / target_stft.shape[0])'''
-        kld_loss = 3.
+            kld_loss = sum(kld) / target_stft.shape[0]
+        except torch.linalg.LinAlgError:
+            kld_loss = torch.tensor(3., device=self.device)
 
         # Target and clutter power functions
-        targ_ac = torch.sum(
-            torch.abs(torch.fft.ifft(target_spectrum.unsqueeze(1) * mfiltered, dim=2)), dim=1)
-        clut_ac = torch.sum(
-            torch.abs(torch.fft.ifft(clutter_spectrum.unsqueeze(1) * mfiltered, dim=2)), dim=1)
+        targ_ac = torch.abs(torch.sum(torch.fft.ifft(target_spectrum.unsqueeze(1) * mfiltered, dim=2), dim=1))
+        clut_ac = torch.abs(torch.sum(torch.fft.ifft(clutter_spectrum.unsqueeze(1) * mfiltered, dim=2), dim=1))
         target_softmax = ((torch.arange(targ_ac.shape[-1], device=self.device) - args[6] + EPS) / targ_ac.shape[-1])**2
         target_softmax = torch.exp(-target_softmax / (2 * self.config.temperature)**2)
         target_loss = torch.nanmean(clut_ac / (EPS + targ_ac) * target_softmax)# + 1. / kld_loss
@@ -265,10 +267,18 @@ class GeneratorModel(FlatModule):
         # Sidelobe loss functions
         slf = nn_func.threshold(torch.abs(torch.fft.ifft(mfiltered, dim=2)), 1e-9, 1e-9)
         sidelobe_func = 10 * torch.log(slf / 10)
-        theoretical_mainlobe_width = torch.max(torch.ceil(1 / (2 * args[5]))).int()
-        pslrs = torch.max(sidelobe_func, dim=-1)[0] - torch.mean(sidelobe_func[..., theoretical_mainlobe_width:-theoretical_mainlobe_width], dim=-1)
+        sidelobe_window = torch.ones(self.fft_len, device=self.device)
+        theoretical_mainlobe_width = torch.max(torch.ceil(2. / args[5])).int()
+        sidelobe_window[-theoretical_mainlobe_width:] = 1. - torch.sin(
+            torch.pi * torch.arange(theoretical_mainlobe_width * 2, device=self.device)[:theoretical_mainlobe_width] / (theoretical_mainlobe_width * 2))
+        sidelobe_window[:theoretical_mainlobe_width] = 1. - torch.sin(
+            torch.pi * torch.arange(theoretical_mainlobe_width * 2, device=self.device)[-theoretical_mainlobe_width:] / (
+                        theoretical_mainlobe_width * 2))
+        pslrs = torch.max(sidelobe_func, dim=-1)[0] - torch.mean(
+            sidelobe_func * sidelobe_window, dim=-1)
+        # pslrs = torch.max(sidelobe_func, dim=-1)[0] - torch.mean(sidelobe_func[..., theoretical_mainlobe_width:-theoretical_mainlobe_width], dim=-1)
         # pslrs = get_pslr(sidelobe_func.squeeze(1))
-        sidelobe_loss = (1e3 / (EPS + torch.nanmean(pslrs)))**2
+        sidelobe_loss = (1e2 / (EPS + torch.nanmean(pslrs)))**2
         # sidelobe_loss = torch.tensor(0., device=self.device)
 
         # Orthogonality
@@ -278,7 +288,7 @@ class GeneratorModel(FlatModule):
             cross_sidelobe[cross_sidelobe == 0] = 1e-9
             cross_sidelobe = 10 * torch.log(cross_sidelobe / 10)
             ortho_loss = torch.nanmean(torch.abs(sidelobe_func.sum(dim=1)[:, 0]) /
-                                       (EPS + torch.abs(cross_sidelobe.sum(dim=1)[:, 0])))**2 - .09
+                                       (EPS + torch.abs(cross_sidelobe.sum(dim=1)[:, 0])))**2
         else:
             ortho_loss = torch.tensor(0., device=self.device)
 
@@ -315,6 +325,18 @@ class GeneratorModel(FlatModule):
                                                                          torch.conj(complex_wave),
                                                                          dim=1))[:, None])  # Unit energy calculation
         return gen_waveform
+
+    def getMatchedFilter(self, wave: Tensor, bw: float):
+        twin = torch.signal.windows.kaiser(int(bw / self.fs * self.fft_len), device=self.device)
+        taytay = torch.zeros(self.fft_len, dtype=torch.complex128, device=self.device)
+        winloc = int(self.baseband_fc * self.fft_len / self.fs) - len(twin) // 2
+        if winloc + len(twin) > self.fft_len:
+            taytay[winloc:self.fft_len] += twin[:self.fft_len - winloc]
+            taytay[:len(twin) - (self.fft_len - winloc)] += twin[self.fft_len - winloc:]
+        else:
+            taytay[winloc:winloc + len(twin)] += twin
+
+        return taytay / (wave + 1e-12)
 
     def training_step(self, batch, batch_idx):
         train_loss = self.train_val_get(batch, batch_idx)
