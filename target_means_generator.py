@@ -8,7 +8,7 @@ from config import get_config
 import torch
 import os
 import matplotlib as mplib
-mplib.use('TkAgg')
+#mplib.use('TkAgg')
 import yaml
 
 pio.renderers.default = 'browser'

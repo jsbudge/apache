@@ -4,9 +4,9 @@ from torch import nn, Tensor
 from pytorch_lightning import LightningModule
 from torch.nn import functional as nn_func
 from config import Config
-from layers import FourierFeature, PulseLength, LKA1d, WindowGenerate, PositionalEncoding, Block1d
+from layers import FourierFeature, PulseLength, LKA1d, WindowGenerate, PositionalEncoding, Block1d, RBFLayer, SwiGLU
 import numpy as np
-from utils import normalize, _xavier_init, nonlinearities, plot_grad_flow
+from utils import normalize, _xavier_init, nonlinearities, plot_grad_flow, rbf_linear, l_norm
 
 EPS = 1e-12
 
@@ -80,18 +80,16 @@ class GeneratorModel(FlatModule):
 
         '''TRANSFORMER'''
         self.predict_decoder = nn.Transformer(self.target_latent_size, num_decoder_layers=7, num_encoder_layers=7, nhead=8,
-                                              batch_first=True, activation='gelu')
+                                              batch_first=True, norm_first=True,
+                                              dim_feedforward=self.target_latent_size * 4, activation=nlin)
         self.pos_enc = PositionalEncoding(self.target_latent_size, .1, 16)
 
         '''CLUTTER AND TARGET COMBINATION LAYERS'''
         self.clutter_encoder = nn.Sequential(
             nn.Linear(self.fft_len, self.target_latent_size),
             nlin,
-            nn.Linear(self.target_latent_size, self.target_latent_size),
-            nlin,
-            nn.Linear(self.target_latent_size, self.target_latent_size),
-            nn.LayerNorm(self.target_latent_size),
-            nlin,
+            SwiGLU(self.target_latent_size, self.target_latent_size * 2, self.target_latent_size),
+            SwiGLU(self.target_latent_size, self.target_latent_size * 2, self.target_latent_size),
             nn.Linear(self.target_latent_size, self.target_latent_size),
             nlin,
         )
@@ -102,13 +100,17 @@ class GeneratorModel(FlatModule):
             nlin,
         )
 
+        self.rbf_distance = nn.Sequential(
+            RBFLayer(self.target_latent_size, 3, self.target_latent_size, radial_function=rbf_linear, norm_function=l_norm, normalization=True),
+        )
+
         self.clutter_target_init = nn.Sequential(
-            nn.Conv1d(2, self.flowthrough_channels, 3, 1, 1),
+            nn.Conv1d(3, self.flowthrough_channels, 3, 1, 1),
             nlin,
             Block1d(self.flowthrough_channels, 3, 1, 1, self.nonlinearity, 'group'),
             LKA1d(self.flowthrough_channels, kernel_sizes=(17, 257), dilation=4, activation=self.nonlinearity),
-            LKA1d(self.flowthrough_channels, kernel_sizes=(33, 129), dilation=8, activation=self.nonlinearity),
-            LKA1d(self.flowthrough_channels, kernel_sizes=(65, 65), dilation=15, activation=self.nonlinearity),
+            LKA1d(self.flowthrough_channels, kernel_sizes=(129, 33), dilation=30, activation=self.nonlinearity),
+            LKA1d(self.flowthrough_channels, kernel_sizes=(129, 33), dilation=30, activation=self.nonlinearity),
             LKA1d(self.flowthrough_channels, kernel_sizes=(129, 33), dilation=30, activation=self.nonlinearity),
         )
 
@@ -120,8 +122,6 @@ class GeneratorModel(FlatModule):
                 nn.Conv1d(self.flowthrough_channels + 2, self.waveform_channels, 3, 1, 1),
                 nlin,
                 LKA1d(self.waveform_channels, kernel_sizes=(3, 257), dilation=4, activation=self.nonlinearity),
-                LKA1d(self.waveform_channels, kernel_sizes=(3, 129), dilation=8, activation=self.nonlinearity),
-                LKA1d(self.waveform_channels, kernel_sizes=(3, 65), dilation=15, activation=self.nonlinearity),
                 LKA1d(self.waveform_channels, kernel_sizes=(3, 33), dilation=30, activation=self.nonlinearity),
                 Block1d(self.waveform_channels, 3, 1, 1, self.nonlinearity, 'group'),
                 nn.Conv1d(self.waveform_channels, self.flowthrough_channels, 3, 1, 1),
@@ -132,8 +132,6 @@ class GeneratorModel(FlatModule):
                 nn.Conv1d(self.flowthrough_channels + 1, self.target_channels, 3, 1, 1),
                 nlin,
                 LKA1d(self.target_channels, kernel_sizes=(3, 257), dilation=4, activation=self.nonlinearity),
-                LKA1d(self.target_channels, kernel_sizes=(3, 129), dilation=8, activation=self.nonlinearity),
-                LKA1d(self.target_channels, kernel_sizes=(3, 65), dilation=15, activation=self.nonlinearity),
                 LKA1d(self.target_channels, kernel_sizes=(3, 33), dilation=30, activation=self.nonlinearity),
                 Block1d(self.target_channels, 3, 1, 1, self.nonlinearity, 'group'),
                 nn.Conv1d(self.target_channels, self.flowthrough_channels, 3, 1, 1),
@@ -144,8 +142,7 @@ class GeneratorModel(FlatModule):
         self.wave_decoder = nn.Sequential(
             nn.Conv1d(self.flowthrough_channels + 2, self.wave_decoder_channels, 3, 1, 1),
             nlin,
-            nn.Linear(self.target_latent_size, self.target_latent_size),
-            nlin,
+            SwiGLU(self.target_latent_size, self.target_latent_size * 2, self.target_latent_size),
             Block1d(self.wave_decoder_channels, 3, 1, 1, self.nonlinearity, 'group'),
             Block1d(self.wave_decoder_channels, 3, 1, 1, self.nonlinearity, 'group'),
             Block1d(self.wave_decoder_channels, 3, 1, 1, self.nonlinearity, 'group'),
@@ -183,10 +180,13 @@ class GeneratorModel(FlatModule):
         x = self.pos_enc(x.squeeze(-1))
 
         # Predict the next clutter step using transformer
-        x = self.predict_decoder(x[:, :-1], x[:, 1:])[:, -1, ...].unsqueeze(1)
+        x = self.predict_decoder(x[:, :-1], x[:, 1:])[:, -1, ...]# .unsqueeze(1)
+
+        y = (self.rbf_distance(x) - self.rbf_distance(target)).unsqueeze(1)
 
         # Combine clutter prediction with target information
-        x = self.clutter_target_init(torch.cat([x, target.unsqueeze(1)], dim=1))
+        x = self.clutter_target_init(torch.cat([x.unsqueeze(1), y, target.unsqueeze(1)], dim=1))
+        # x = self.clutter_target_init(torch.cat([x)
 
         bw_info = self.bandwidth_info(bandwidth.float().view(-1, 1)).unsqueeze(1)
         pl_info = self.pinfo(pulse_length.float().view(-1, 1)).unsqueeze(1)
@@ -237,10 +237,10 @@ class GeneratorModel(FlatModule):
 
         # Get waveform into complex form and normalize it to unit energy
         gen_waveform = self.getWaveform(nn_output=args[0])
-        mfiltered = gen_waveform * self.getMatchedFilter(gen_waveform, args[5] * self.fs)
+        mfiltered = gen_waveform * gen_waveform.conj()  # self.getMatchedFilter(gen_waveform, args[5] * self.fs)
 
         #  KLD between the target and clutter functions
-        try:
+        '''try:
             target_stft = torch.abs(torch.stft(torch.fft.ifft(target_spectrum.unsqueeze(1) * mfiltered, dim=2)[0], 64,
                                                window=torch.hann_window(64, device=self.device)))
             clutter_stft = torch.abs(torch.stft(torch.fft.ifft(clutter_spectrum.unsqueeze(1) * mfiltered, dim=2)[0], 64,
@@ -254,10 +254,10 @@ class GeneratorModel(FlatModule):
 
             kld_loss = sum(kld) / target_stft.shape[0]
         except torch.linalg.LinAlgError:
-            kld_loss = torch.tensor(3., device=self.device)
+            kld_loss = torch.tensor(3., device=self.device)'''
 
         # Target and clutter power functions
-        targ_ac = torch.abs(torch.sum(torch.fft.ifft(target_spectrum.unsqueeze(1) * mfiltered, dim=2), dim=1))
+        targ_ac = torch.abs(torch.sum(torch.fft.ifft((clutter_spectrum + target_spectrum).unsqueeze(1) * mfiltered, dim=2), dim=1))
         clut_ac = torch.abs(torch.sum(torch.fft.ifft(clutter_spectrum.unsqueeze(1) * mfiltered, dim=2), dim=1))
         target_softmax = ((torch.arange(targ_ac.shape[-1], device=self.device) - args[6] + EPS) / targ_ac.shape[-1])**2
         target_softmax = torch.exp(-target_softmax / (2 * self.config.temperature)**2)
@@ -278,7 +278,7 @@ class GeneratorModel(FlatModule):
             sidelobe_func * sidelobe_window, dim=-1)
         # pslrs = torch.max(sidelobe_func, dim=-1)[0] - torch.mean(sidelobe_func[..., theoretical_mainlobe_width:-theoretical_mainlobe_width], dim=-1)
         # pslrs = get_pslr(sidelobe_func.squeeze(1))
-        sidelobe_loss = (1e2 / (EPS + torch.nanmean(pslrs)))**2
+        sidelobe_loss = (1e3 / (EPS + torch.nanmean(pslrs)))**2
         # sidelobe_loss = torch.tensor(0., device=self.device)
 
         # Orthogonality
@@ -295,7 +295,7 @@ class GeneratorModel(FlatModule):
         total_loss = target_loss * (1 + sidelobe_loss + ortho_loss)
 
         return {'target_loss': target_loss, 'loss': total_loss,
-                'sidelobe_loss': sidelobe_loss, 'ortho_loss': ortho_loss, 'kld_loss': kld_loss}
+                'sidelobe_loss': sidelobe_loss, 'ortho_loss': ortho_loss} #, 'kld_loss': kld_loss}
 
     def getWaveform(self, cc: Tensor = None, tc: Tensor = None, pulse_length=None,
                     bandwidth: [Tensor | float] = 400e6, nn_output: tuple[Tensor] = None) -> Tensor:

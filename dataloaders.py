@@ -10,6 +10,7 @@ from pathlib import Path
 import numpy as np
 from multiprocessing import cpu_count
 from sklearn.model_selection import train_test_split
+import pickle
 
 
 class BatchListSampler(Sampler[List[int]]):
@@ -396,6 +397,79 @@ class TargetEncoderModule(BaseModule):
         self.train_dataset = TargetDataset(self.data_path, self.split, self.single_example, mu=self.mu,
                                           var=self.var)
         self.val_dataset = TargetDataset(self.data_path, split=self.split if self.split < 1 else 1.,
+                                         is_val=True, mu=self.mu, var=self.var)
+        # self.train_sampler = BatchListSampler(self.train_dataset.file_list, batch_size=self.train_batch_size, drop_last=False)
+        # self.val_sampler = BatchListSampler(self.val_dataset.file_list, batch_size=self.val_batch_size, drop_last=False)
+
+
+class ClutterDataset(Dataset):
+    def __init__(self, data_path: str, split: float = 1., is_val: bool = False, mu: np.ndarray = None,
+                 var: np.ndarray = None, seed: int = 7):
+        assert Path(data_path).is_dir()
+        self.datapath = f'{data_path}'
+
+        clutter_spec_files = glob(f'{self.datapath}/*.pic')
+        total_seq = 2000
+        n_per_file = int(np.round(total_seq / len(clutter_spec_files)))
+        clutter_data = []
+
+        for clut in clutter_spec_files:
+            with open(clut, 'rb') as f:
+                params = pickle.load(f)
+                clutter_data.append(params['clutter'][np.random.choice(params['clutter'].shape[0], size=n_per_file)])
+
+        # Clutter data
+        clutter_data = np.concatenate(clutter_data, axis=0)
+        if split < 1:
+            Xs, Xt, _, _ = train_test_split(clutter_data,
+                                            clutter_data,
+                                            test_size=split, random_state=seed)
+        else:
+            Xt = clutter_data
+            Xs = clutter_data
+        data = Xs if is_val else Xt
+        mu = data.mean(axis=(1, 3))
+        sigma = data.std(axis=(1, 3))
+        self.data = torch.tensor((data - mu[:, None, :, None]) / sigma[:, None, :, None], dtype=torch.float32)
+        # self.data = torch.tensor(data, dtype=torch.float32)
+
+        self.seed = seed
+
+    def __getitem__(self, idx):
+        # File contains target range profile, compressed clutter data, target index, and the target range bin
+        return self.data[idx]
+
+    def __len__(self):
+        return self.data.shape[0]
+
+
+class ClutterEncoderModule(BaseModule):
+    def __init__(
+            self,
+            data_path,
+            split: float = 1.,
+            dataset_size: int = 256,
+            train_batch_size: int = 8,
+            val_batch_size: int = 8,
+            pin_memory: bool = False,
+            single_example: bool = False,
+            device: str = 'cpu',
+            mu: np.ndarray = None,
+            var: np.ndarray = None,
+            **kwargs,
+    ):
+        super().__init__(train_batch_size, val_batch_size, pin_memory, single_example, device, **kwargs)
+
+        self.dataset_size = dataset_size
+        self.data_path = data_path
+        self.split = split
+        self.mu = mu
+        self.var = var
+
+    def setup(self, stage: Optional[str] = None) -> None:
+        self.train_dataset = ClutterDataset(self.data_path, self.split, self.single_example, mu=self.mu,
+                                          var=self.var)
+        self.val_dataset = ClutterDataset(self.data_path, split=self.split if self.split < 1 else 1.,
                                          is_val=True, mu=self.mu, var=self.var)
         # self.train_sampler = BatchListSampler(self.train_dataset.file_list, batch_size=self.train_batch_size, drop_last=False)
         # self.val_sampler = BatchListSampler(self.val_dataset.file_list, batch_size=self.val_batch_size, drop_last=False)

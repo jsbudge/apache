@@ -58,8 +58,8 @@ if __name__ == '__main__':
             trainer.save_checkpoint(f'{target_config.weights_path}/{target_config.model_name}.ckpt')
 
     if trainer.is_global_zero:
-        import matplotlib as mplib
-        mplib.use('TkAgg')
+        # import matplotlib as mplib
+        # mplib.use('TkAgg')
         model.to(device)
         model.eval()
 

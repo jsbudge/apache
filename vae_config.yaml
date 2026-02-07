@@ -62,9 +62,9 @@ target_exp_params:
     eta_min: .000000001  # Cosine annealing minimum - 1e-9
     betas: [ .9, .99 ]
     log_epoch: 1
-    save_model: False
+    save_model: True
     transform_data: False
-    warm_start: True
+    warm_start: False
     loss_landscape: False
     max_epochs: 20000
     patience: 10
@@ -77,7 +77,7 @@ target_exp_params:
     log_dir: ./logs
     weights_path: ./model
   dataset_params:
-    data_path: ./data/target_tensors
+    data_path: ./data/target_new
     train_batch_size: 10
     val_batch_size: 10
     num_workers: 0
@@ -91,9 +91,9 @@ target_exp_params:
   model_params:
     fft_len: 8192
     range_samples: 2
-    latent_dim: 1256
+    latent_dim: 1024
     channel_sz: 265
-    fourier_features: 12
+    fourier_features: 48
     fourier_std: 100.
     nonlinearity: psinlu
     temperature: 1.
@@ -114,29 +114,29 @@ wave_exp_params:
     log_epoch: 100
     accumulation_steps: 8
     is_tuning: False
-    save_model: True
+    save_model: False
     loss_landscape: False  # This should always be False; it is set to True inside of the relevant script
     gradient_flow: False  # This should always be False; it is set to True inside of the relevant script
     max_epochs: 1200
     patience: 500
     distributed: False
   model_params:
-    n_ants: 2
+    n_ants: 1
     fft_len: 8192
     fs: 2000000000.
     fc: 9600000000.
     encoder_start_channel_sz: 2
-    clutter_squash_features: 16
+    clutter_squash_features: 128
     embedding_concatenation_channels: 128
-    n_skip_layers: 10
+    n_skip_layers: 16
     clutter_target_channels: 128
-    flowthrough_channels: 64
+    flowthrough_channels: 128
     wave_decoder_channels: 128
     target_channels: 128
     waveform_channels: 128
-    target_latent_size: 1256
+    target_latent_size: 512
     bandwidth: 400000000.
-    nonlinearity: mish
+    nonlinearity: silu
     temperature: .003
   logging_params:
     log_dir: ./logs

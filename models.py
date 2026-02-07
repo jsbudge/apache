@@ -5,7 +5,9 @@ from torch import nn, Tensor
 import numpy as np
 from cbam import CBAM
 from config import Config
-from layers import Block2d, Block2dTranspose, Fourier2D
+from layers import Block2d, Block2dTranspose, Fourier2D, SwiGLU, PositionalEncoding, FourierFeature, \
+    MultiHeadLocationAwareAttention
+from schedulers import CosineWarmupScheduler
 from pytorch_lightning import LightningModule
 from utils import _xavier_init, nonlinearities
 from waveform_model import FlatModule
@@ -70,6 +72,7 @@ class TargetEmbedding(FlatModule):
         self.fc_z = nn.Sequential(
             nn.Linear(out_sz, self.latent_dim),
             nonlinearity,
+            SwiGLU(self.latent_dim, self.latent_dim * 2, self.latent_dim),
             nn.Linear(self.latent_dim, self.latent_dim),
             nn.Softsign(),
         )
@@ -163,7 +166,7 @@ class TargetEmbedding(FlatModule):
 
 
         # COMBINATION LOSS
-        cll = clip_loss + rec_loss * .01
+        cll = clip_loss + rec_loss
 
         # Logging ranking metrics
         self.log_dict({f'{kind}_total_loss': cll, f'{kind}_clip_loss': clip_loss, f'{kind}_rec_loss': rec_loss,
@@ -202,6 +205,7 @@ class DecoderHead(LightningModule):
             nlin,
             nn.Linear(self.latent_dim, latent_pow2_square),
             nlin,
+            SwiGLU(latent_pow2_square, latent_pow2_square, latent_pow2_square),
             nn.Linear(latent_pow2_square, latent_pow2_square),
         )
 
@@ -228,6 +232,117 @@ class DecoderHead(LightningModule):
         for l in self.dec_layers:
             x = l(x)
         return x
+
+
+class ClutterTransformer(LightningModule):
+
+    def __init__(self, input_dim, model_dim, num_layers, lr, warmup, max_iters, dropout=0.0,
+        input_dropout=0.0, nonlinearity='silu'):
+        super().__init__()
+        self.automatic_optimization = False
+        self.save_hyperparameters()
+        self._create_model()
+
+    def _create_model(self):
+        nlin = nonlinearities[self.hparams.nonlinearity]
+        nfourier = 24
+        fourier_layer_sz = nfourier * 4
+        # Input dim -> Model dim
+        self.input_real = nn.Sequential(
+            nn.Dropout(self.hparams.input_dropout),
+            SwiGLU(self.hparams.input_dim, 2 * self.hparams.model_dim, self.hparams.model_dim),
+            nn.Linear(self.hparams.model_dim, self.hparams.model_dim),
+            nlin,
+            nn.LayerNorm(self.hparams.model_dim),
+        )
+
+        self.input_imag = nn.Sequential(
+            nn.Dropout(self.hparams.input_dropout),
+            SwiGLU(self.hparams.input_dim, 2 * self.hparams.model_dim, self.hparams.model_dim),
+            nn.Linear(self.hparams.model_dim, self.hparams.model_dim),
+            nlin,
+            nn.LayerNorm(self.hparams.model_dim),
+        )
+
+        # Transformer
+        self.lstm = nn.LSTM(input_size=self.hparams.model_dim, hidden_size=self.hparams.model_dim,
+                                 num_layers=self.hparams.num_layers, batch_first=True)
+
+        self.mix = nn.Sequential(
+            FourierFeature(1., nfourier),
+            nn.Linear(fourier_layer_sz, fourier_layer_sz),
+            nlin,
+            nn.Linear(fourier_layer_sz, 1),
+            nlin,
+        )
+
+        self.output_real = nn.Sequential(
+            nn.Linear(self.hparams.model_dim, self.hparams.model_dim),
+            nlin,
+            SwiGLU(self.hparams.model_dim, 2 * self.hparams.model_dim, self.hparams.model_dim),
+            nn.Linear(self.hparams.model_dim, self.hparams.input_dim),
+        )
+
+        self.output_imag = nn.Sequential(
+            nn.Linear(self.hparams.model_dim, self.hparams.model_dim),
+            nlin,
+            SwiGLU(self.hparams.model_dim, 2 * self.hparams.model_dim, self.hparams.model_dim),
+            nn.Linear(self.hparams.model_dim, self.hparams.input_dim),
+        )
+
+    def forward(self, x):
+        y = self.input_imag(x[..., 1, :])
+        x = self.input_real(x[..., 0, :])
+        xy = self.mix(torch.cat([x.unsqueeze(-1), y.unsqueeze(-1)], dim=-1)).squeeze(-1)
+        xy, _ = self.lstm(xy)
+        return torch.cat([self.output_real(xy).unsqueeze(-2), self.output_imag(xy).unsqueeze(-2)], dim=-2)
+
+    def training_step(self, batch, batch_idx):
+        opt = self.optimizers()
+        train_loss = self.train_val_get(batch, batch_idx)
+        opt.zero_grad()
+        self.manual_backward(train_loss)
+        self.clip_gradients(opt, gradient_clip_val=0.5, gradient_clip_algorithm="norm")
+        opt.step()
+
+    def validation_step(self, batch, batch_idx):
+        self.train_val_get(batch, batch_idx, 'val')
+
+    def on_validation_epoch_end(self) -> None:
+        self.log('lr', self.lr_schedulers().get_last_lr()[0], prog_bar=True, rank_zero_only=True)
+
+    def on_train_epoch_end(self) -> None:
+        sch = self.lr_schedulers()
+        sch.step()
+
+    def configure_optimizers(self):
+        optimizer = torch.optim.AdamW(self.parameters(),
+                                      lr=self.hparams.lr,
+                                      weight_decay=0.0,
+                                      eps=1e-7)
+        scheduler = CosineWarmupScheduler(optimizer, warmup=self.hparams.warmup, max_iters=self.hparams.max_iters)
+        # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, 100, eta_min=self.config.eta_min)
+        '''scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, cooldown=self.params['step_size'],
+                                                         factor=self.params['scheduler_gamma'], threshold=1e-5)'''
+
+        return {'optimizer': optimizer, 'lr_scheduler': scheduler}
+
+    def train_val_get(self, batch, batch_idx, kind='train'):
+        clutter_sequence = batch
+
+        feats = self.forward(clutter_sequence)
+
+        # RECONSTRUCTION LOSS
+        rec_loss = torch.mean(torch.square(clutter_sequence[:, 1:] - feats[:, :-1]))
+
+        # Logging ranking metrics
+        self.log_dict({f'{kind}_total_loss': rec_loss,
+                       'lr': self.lr_schedulers().get_last_lr()[0]}, on_epoch=True,
+                      prog_bar=True, rank_zero_only=True)
+
+        return rec_loss
+
+
 
 def load(mdl, param_file):
     try:
