@@ -66,12 +66,12 @@ target_exp_params:
     transform_data: False
     warm_start: False
     loss_landscape: False
-    max_epochs: 20000
+    max_epochs: 2000
     patience: 10
     angle_samples: 128
   logging_params:
     output_images: False
-    model_name: target_encoder
+    model_name: target_embedding
     is_tuning: False
     is_training: True
     log_dir: ./logs
@@ -95,7 +95,7 @@ target_exp_params:
     channel_sz: 265
     fourier_features: 48
     fourier_std: 100.
-    nonlinearity: psinlu
+    nonlinearity: silu
     temperature: 1.
     levels: 1
     # These values are taken from a sampling of data, should be the same as the dataset params
@@ -105,7 +105,7 @@ target_exp_params:
 # For training of wavemodel
 wave_exp_params:
   training_params:
-    lr: 0.0001
+    lr: 0.001
     weight_decay: 0.0
     scheduler_gamma: 0.999
     swa_start: .6
@@ -124,7 +124,7 @@ wave_exp_params:
     n_ants: 1
     fft_len: 8192
     fs: 2000000000.
-    fc: 9600000000.
+    fc: 16000000000.
     encoder_start_channel_sz: 2
     clutter_squash_features: 128
     embedding_concatenation_channels: 128
@@ -134,16 +134,18 @@ wave_exp_params:
     wave_decoder_channels: 128
     target_channels: 128
     waveform_channels: 128
-    target_latent_size: 512
+    target_latent_size: 1322
     bandwidth: 400000000.
     nonlinearity: silu
     temperature: .003
+    transformer_weights_path: ./model
+    transformer_model_name: clutter_transformer
   logging_params:
     log_dir: ./logs
     weights_path: ./model
     model_name: wave_model
   dataset_params:
-    data_path: ./data
+    data_path: ./data/target_new
     train_batch_size: 1
     val_batch_size: 1
     num_workers: 0
@@ -155,6 +157,43 @@ wave_exp_params:
     var: 52500339516.69853
     noise_level: 0.
     collate: True
+
+# This is for setting up training of target embedding
+transformer_exp_params:
+  training_params:
+    lr: .01
+    weight_decay: 0.0000001
+    warmup: 100
+    log_epoch: 1
+    save_model: True
+    transform_data: False
+    warm_start: False
+    loss_landscape: False
+    max_epochs: 2000
+    max_iters: 40000
+  logging_params:
+    output_images: False
+    model_name: clutter_transformer
+    is_tuning: False
+    is_training: True
+    log_dir: ./logs
+    weights_path: ./model
+  dataset_params:
+    data_path: ./data/target_new
+    train_batch_size: 50
+    val_batch_size: 50
+    num_workers: 0
+    pin_memory: False
+    split: .8
+    single_example: False
+  model_params:
+    input_dim: 8192
+    model_dim: 1400
+    num_layers: 4
+    fourier_features: 50
+    fourier_std: 1.
+    nonlinearity: silu
+    temperature: 1.
 
 train_params:
   log_dir: ./logs

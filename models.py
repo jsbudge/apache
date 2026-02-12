@@ -5,16 +5,50 @@ from torch import nn, Tensor
 import numpy as np
 from cbam import CBAM
 from config import Config
-from layers import Block2d, Block2dTranspose, Fourier2D, SwiGLU, PositionalEncoding, FourierFeature, \
+from layers import Block2d, Block2dTranspose, Fourier2D, SwiGLU, PositionalEncoding, FourierFeatureTrain, \
     MultiHeadLocationAwareAttention
 from schedulers import CosineWarmupScheduler
 from pytorch_lightning import LightningModule
 from utils import _xavier_init, nonlinearities
-from waveform_model import FlatModule
+import matplotlib.pyplot as plt
 
 
 def calc_conv_size(inp_sz, kernel_sz, stride, padding):
     return np.floor((inp_sz - kernel_sz + 2 * padding) / stride) + 1
+
+
+class FlatModule(LightningModule):
+    """
+    Base Module for different encoder models and generators. This adds
+    parameters to flatten the model to use in a loss landscape, should it be desired.
+    """
+
+    def __init__(self, config: Config = None):
+        super(FlatModule, self).__init__()
+        self.config = config
+        self.optim_path = []
+
+    def get_flat_params(self):
+        """Get flattened and concatenated params of the model."""
+        return torch.cat([torch.flatten(p) for _, p in self._get_params().items()])
+
+    def _get_params(self):
+        return {name: param.data for name, param in self.named_parameters()}
+
+    def init_from_flat_params(self, flat_params):
+        """Set all model parameters from the flattened form."""
+        assert isinstance(flat_params, torch.Tensor), "Argument to init_from_flat_params() must be torch.Tensor"
+        state_dict = _unflatten_to_state_dict(flat_params, self._get_param_shapes())
+        for name, params in self.state_dict().items():
+            if name not in state_dict:
+                state_dict[name] = params
+        self.load_state_dict(state_dict, strict=True)
+
+    def _get_param_shapes(self):
+        return [
+            (name, param.shape, param.numel())
+            for name, param in self.named_parameters()
+        ]
 
 
 class TargetEmbedding(FlatModule):
@@ -237,7 +271,7 @@ class DecoderHead(LightningModule):
 class ClutterTransformer(LightningModule):
 
     def __init__(self, input_dim, model_dim, num_layers, lr, warmup, max_iters, dropout=0.0,
-        input_dropout=0.0, nonlinearity='silu'):
+        input_dropout=0.0, nonlinearity='silu', *args, **kwargs):
         super().__init__()
         self.automatic_optimization = False
         self.save_hyperparameters()
@@ -245,65 +279,78 @@ class ClutterTransformer(LightningModule):
 
     def _create_model(self):
         nlin = nonlinearities[self.hparams.nonlinearity]
-        nfourier = 24
-        fourier_layer_sz = nfourier * 4
+        nfourier = self.hparams.fourier_features
+        fourier_layer_sz = nfourier * 2
         # Input dim -> Model dim
         self.input_real = nn.Sequential(
             nn.Dropout(self.hparams.input_dropout),
-            SwiGLU(self.hparams.input_dim, 2 * self.hparams.model_dim, self.hparams.model_dim),
-            nn.Linear(self.hparams.model_dim, self.hparams.model_dim),
+            nn.Linear(self.hparams.input_dim, self.hparams.model_dim),
             nlin,
+            SwiGLU(self.hparams.model_dim, 2 * self.hparams.model_dim, self.hparams.model_dim),
             nn.LayerNorm(self.hparams.model_dim),
+            SwiGLU(self.hparams.model_dim, 2 * self.hparams.model_dim, self.hparams.model_dim),
+
         )
 
         self.input_imag = nn.Sequential(
             nn.Dropout(self.hparams.input_dropout),
-            SwiGLU(self.hparams.input_dim, 2 * self.hparams.model_dim, self.hparams.model_dim),
-            nn.Linear(self.hparams.model_dim, self.hparams.model_dim),
+            nn.Linear(self.hparams.input_dim, self.hparams.model_dim),
             nlin,
+            SwiGLU(self.hparams.model_dim, 2 * self.hparams.model_dim, self.hparams.model_dim),
             nn.LayerNorm(self.hparams.model_dim),
+            SwiGLU(self.hparams.model_dim, 2 * self.hparams.model_dim, self.hparams.model_dim),
         )
 
         # Transformer
         self.lstm = nn.LSTM(input_size=self.hparams.model_dim, hidden_size=self.hparams.model_dim,
                                  num_layers=self.hparams.num_layers, batch_first=True)
 
+        # self.fourier = FourierFeatureTrain(2, nfourier, self.hparams.fourier_std)
+
         self.mix = nn.Sequential(
-            FourierFeature(1., nfourier),
-            nn.Linear(fourier_layer_sz, fourier_layer_sz),
-            nlin,
+            FourierFeatureTrain(2, nfourier, self.hparams.fourier_std),
             nn.Linear(fourier_layer_sz, 1),
             nlin,
         )
 
         self.output_real = nn.Sequential(
-            nn.Linear(self.hparams.model_dim, self.hparams.model_dim),
-            nlin,
-            SwiGLU(self.hparams.model_dim, 2 * self.hparams.model_dim, self.hparams.model_dim),
             nn.Linear(self.hparams.model_dim, self.hparams.input_dim),
         )
 
         self.output_imag = nn.Sequential(
-            nn.Linear(self.hparams.model_dim, self.hparams.model_dim),
-            nlin,
-            SwiGLU(self.hparams.model_dim, 2 * self.hparams.model_dim, self.hparams.model_dim),
             nn.Linear(self.hparams.model_dim, self.hparams.input_dim),
         )
 
-    def forward(self, x):
+        _xavier_init(self)
+
+    def encode(self, x):
         y = self.input_imag(x[..., 1, :])
         x = self.input_real(x[..., 0, :])
         xy = self.mix(torch.cat([x.unsqueeze(-1), y.unsqueeze(-1)], dim=-1)).squeeze(-1)
         xy, _ = self.lstm(xy)
-        return torch.cat([self.output_real(xy).unsqueeze(-2), self.output_imag(xy).unsqueeze(-2)], dim=-2)
+        return xy
+
+    def get_next_n(self, x, n):
+        # batch x Sequence Length x model_dim
+        return self.lstm(x)[0]
+
+    def decode(self, x):
+        return torch.cat([self.output_real(x).unsqueeze(-2), self.output_imag(x).unsqueeze(-2)], dim=-2)
+
+    def forward(self, x):
+        # The forward function is used for training the autoencoder
+        return self.decode(self.encode(x))
 
     def training_step(self, batch, batch_idx):
         opt = self.optimizers()
         train_loss = self.train_val_get(batch, batch_idx)
         opt.zero_grad()
         self.manual_backward(train_loss)
+        # Avoid exploding gradients from high learning rates
         self.clip_gradients(opt, gradient_clip_val=0.5, gradient_clip_algorithm="norm")
         opt.step()
+        sch = self.lr_schedulers()
+        sch.step()
 
     def validation_step(self, batch, batch_idx):
         self.train_val_get(batch, batch_idx, 'val')
@@ -312,8 +359,9 @@ class ClutterTransformer(LightningModule):
         self.log('lr', self.lr_schedulers().get_last_lr()[0], prog_bar=True, rank_zero_only=True)
 
     def on_train_epoch_end(self) -> None:
-        sch = self.lr_schedulers()
-        sch.step()
+        pass
+        # sch = self.lr_schedulers()
+        # sch.step()
 
     def configure_optimizers(self):
         optimizer = torch.optim.AdamW(self.parameters(),
@@ -334,13 +382,42 @@ class ClutterTransformer(LightningModule):
 
         # RECONSTRUCTION LOSS
         rec_loss = torch.mean(torch.square(clutter_sequence[:, 1:] - feats[:, :-1]))
+        norm_loss = torch.mean(torch.linalg.norm(clutter_sequence[:, 1:] - feats[:, :-1], dim=-2))
+        baseline = torch.mean(torch.square(clutter_sequence[:, 1:]))
 
         # Logging ranking metrics
-        self.log_dict({f'{kind}_total_loss': rec_loss,
+        self.log_dict({f'{kind}_rec_loss': rec_loss, f'{kind}_norm_loss': norm_loss, f'{kind}_baseline': baseline,
                        'lr': self.lr_schedulers().get_last_lr()[0]}, on_epoch=True,
                       prog_bar=True, rank_zero_only=True)
 
-        return rec_loss
+        return norm_loss
+
+    def plot_grad_flow(self, named_parameters):
+        ave_grads = []
+        layers = []
+        for name, p in named_parameters:
+            if p.grad is None:
+                print(f'{name} - {p.requires_grad}')
+
+            elif p.requires_grad and ("bias" not in name):
+                layers.append(name)
+                ave_grads.append(p.grad.abs().mean().cpu().data.numpy())
+                self.logger.experiment.add_histogram(tag=name, values=p.grad,
+                                                     global_step=self.trainer.global_step)
+        plt.plot(ave_grads, alpha=0.3, color="b")
+        plt.hlines(0, 0, len(ave_grads), linewidth=1, color="k")
+        plt.xticks(list(range(len(ave_grads))), layers, rotation='vertical')
+        plt.xlim(left=0, right=len(ave_grads))
+        plt.xlabel("Layers")
+        plt.ylabel("average gradient")
+        plt.title("Gradient flow")
+        plt.grid(True)
+        plt.rcParams["figure.figsize"] = (20, 5)
+
+    def on_after_backward(self):
+        # example to inspect gradient information in tensorboard
+        if self.trainer.global_step % 100 == 0 and self.trainer.global_step != 0:
+           self.plot_grad_flow(self.named_parameters())
 
 
 

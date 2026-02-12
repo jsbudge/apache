@@ -81,27 +81,21 @@ if __name__ == '__main__':
             wave_stack = []
             wave_mdl.to(device)
             wave_mdl.eval()
-            ccs = []
-            tss = []
-            tcs = []
-            tbin = []
+            clutter_profile = []
+            target_profile = []
+            target_index = []
             data_iter = iter(data.train_dataloader())
-            tidx_list = []
+            scalings = data.train_dataloader().dataset.scaling
 
-            for _ in range(len(data.train_dataloader())):
-                cct, tct, tst, _, _, tidx, tb = next(data_iter)
-                if tidx not in tidx_list:
-                    ccs.append(cct)
-                    tss.append(tst)
-                    tcs.append(tct)
-                    tbin.append(tb)
-                    tidx_list.append(tidx)
-                if len(tidx_list) >= 25:
-                    break
+            for _ in range(min(len(data.train_dataloader()), 25)):
+                cct, tct, tidx, _, _ = next(data_iter)
+                clutter_profile.append(cct)
+                target_profile.append(tct)
+                target_index.append(tidx)
 
             tbandwidth = .3806
 
-            for ts, cc in zip(tss, ccs):
+            for ts, cc in zip(target_profile, clutter_profile):
                 # cc = cct.to(device) if cc is None else cc
                 ts = ts.to(device)
                 cc = cc.to(device)
@@ -120,10 +114,13 @@ if __name__ == '__main__':
             # waves = np.fft.fft(np.fft.ifft(waves, axis=2)[:, :, :nr], fft_len, axis=2)
             print('Loaded waveforms...')
 
-            clutter = cc.cpu().data.numpy()
-            clutter = normalize(clutter[:, -1, 0, :] + 1j * clutter[:, -1, 1, :])
-            targets = tcs[0].cpu().data.numpy()
-            targets = normalize(targets[:, 0, :] + 1j * targets[:, 1, :])
+            clutter = [cc.cpu().data.numpy() for cc in clutter_profile]
+            clutter = np.array(
+                [(t[0, -1, 0, :] + 1j * t[0, -1, 1, :]) / scalings for t in clutter])
+            targets = [ts.cpu().data.numpy() for ts in target_profile]
+            targets = np.array([(t[0, -1, 0, :] + 1j * t[0, -1, 1, :]) / scalings for t in targets])
+
+            ext_target = np.fft.fft(np.fft.ifft(targets, axis=1), 16384, axis=1)
 
             linear = np.fft.fft(genPulse(np.linspace(0, 1, 10),
                          np.linspace(0, 1, 10), nr, fs, config.fc,
@@ -135,15 +132,13 @@ if __name__ == '__main__':
             # Run some plots for an idea of what's going on
             freqs = np.fft.fftshift(np.fft.fftfreq(fft_len, 1 / fs))
             plt.figure('Waveform PSD')
-            plt.plot(freqs, db(np.fft.fftshift(waves[0, 0])))
+            plt.plot(freqs, db(np.fft.fftshift(waves[-1, 0])))
             if wave_mdl.n_ants > 1:
-                plt.plot(freqs, db(np.fft.fftshift(waves[0, 1])))
-            plt.plot(freqs, db(targets[0]), linestyle='--', linewidth=.7)
-            plt.plot(freqs, db(clutter[0]), linestyle=':', linewidth=.7)
+                plt.plot(freqs, db(np.fft.fftshift(waves[-1, 1])))
             if wave_mdl.n_ants > 1:
-                plt.legend(['Waveform 1', 'Waveform 2', 'Target', 'Clutter'])
+                plt.legend(['Waveform 1', 'Waveform 2'])
             else:
-                plt.legend(['Waveform', 'Target', 'Clutter'])
+                plt.legend(['Waveform'])
             plt.ylabel('Relative Power (dB)')
             plt.xlabel('Freq (Hz)')
 
@@ -152,31 +147,26 @@ if __name__ == '__main__':
             taytay[:taytay_len // 2] = taylor(taytay_len)[-taytay_len // 2:]
             taytay[-taytay_len // 2:] = taylor(taytay_len)[:taytay_len // 2]
 
-            mfiltered_linear = linear * linear.conj()
+            mfiltered_linear = linear * linear.conj()# * taytay
+            mfilt_linear_ext = np.fft.fft(np.fft.ifft(mfiltered_linear), 16384)
+            linear_corr = np.fft.ifft(ext_target * mfilt_linear_ext, axis=1)[:, fft_len:]
 
             plt.figure('Target-Clutter vs. Linear')
-            for tnum in range(len(tcs)):
+            for tnum in range(waves.shape[0]):
                 mfiltered_wave0 = waves[tnum, 0] * waves[tnum, 0].conj() * taytay
                 mfiltered_wave1 = waves[tnum, 1] * waves[tnum, 1].conj() * taytay if wave_mdl.n_ants > 1 else 0
-                targets = tcs[tnum].cpu().data.numpy()
-                targets = normalize(targets[:, 0, :] + 1j * targets[:, 1, :] + clutter)
-                linear_corr = np.fft.ifft(
-                    np.fft.fftshift(targets[0]) * mfiltered_linear)
+                ext_mfilt = np.fft.fft(np.fft.ifft(mfiltered_wave0), 16384)
                 if wave_mdl.n_ants > 1:
-                    clutter_corr = np.fft.ifft(
-                        np.fft.fftshift(targets[0]) * mfiltered_wave0 + np.fft.fftshift(targets[0]) * mfiltered_wave1)
-                    target0_corr = np.fft.ifft(
-                        np.fft.fftshift(targets[0]) * mfiltered_wave0)
-                    target1_corr = np.fft.ifft(
-                        np.fft.fftshift(targets[0]) * mfiltered_wave1)
+                    clutter_corr = np.fft.ifft(targets[0] * mfiltered_wave0 + targets[0] * mfiltered_wave1)
+                    target0_corr = np.fft.ifft(targets[0] * mfiltered_wave0)
+                    target1_corr = np.fft.ifft(targets[0] * mfiltered_wave1)
                 else:
-                    target0_corr = np.fft.ifft(
-                        np.fft.fftshift(targets[0]) * mfiltered_wave0)
+                    target0_corr = np.fft.ifft(ext_target[tnum] * ext_mfilt)[fft_len:]
 
                 plt.subplot(5, 5, tnum + 1)
-                zoom_area = np.arange(tbin[tnum] - 50, tbin[tnum] + 50)
+                zoom_area = np.arange(8192)  # np.arange(target_index[tnum][0] - 50, target_index[tnum][0] + 50)
                 zoom_sz = len(zoom_area)
-                target_time = np.fft.ifft(np.fft.fftshift(targets[0]))
+                target_time = np.fft.ifft(ext_target[tnum])[1:fft_len + 1]
                 plt.title(f'Target {tnum}')
                 plt.scatter(zoom_area, (db(target_time)[zoom_area] - db(target_time)[zoom_area].max()), color='black')
 
@@ -184,19 +174,48 @@ if __name__ == '__main__':
                 if wave_mdl.n_ants > 1:
                     plt.plot(zoom_area, (db(clutter_corr)[zoom_area] - db(clutter_corr)[zoom_area].max()))
                     plt.plot(zoom_area, (db(target1_corr)[zoom_area] - db(target1_corr)[zoom_area].max()))
-                plt.plot(zoom_area, (db(linear_corr)[zoom_area] - db(linear_corr)[zoom_area].max()))
-                plt.vlines(tbin[tnum], -50, 10, color='black')
+                plt.plot(zoom_area, (db(linear_corr[tnum])[zoom_area] - db(linear_corr[tnum])[zoom_area].max()))
+                plt.vlines(target_index[tnum][0], -50, 10, color='black')
+
+            plt.legend(['Range Profile', 'NN', 'Linear'])
+            plt.xlabel('Lag')
+            plt.ylabel('Power (dB)')
+
+            plt.figure('Target_Clutter vs. Linear')
+            tnum = 7
+            mfiltered_wave0 = waves[tnum, 0] * waves[tnum, 0].conj() * taytay
+            mfiltered_wave1 = waves[tnum, 1] * waves[tnum, 1].conj() * taytay if wave_mdl.n_ants > 1 else 0
+            ext_mfilt = np.fft.fft(np.fft.ifft(mfiltered_wave0), 16384)
+            if wave_mdl.n_ants > 1:
+                clutter_corr = np.fft.ifft(targets[0] * mfiltered_wave0 + targets[0] * mfiltered_wave1)
+                target0_corr = np.fft.ifft(targets[0] * mfiltered_wave0)
+                target1_corr = np.fft.ifft(targets[0] * mfiltered_wave1)
+            else:
+                target0_corr = np.fft.ifft(ext_target * ext_mfilt, axis=1)[tnum, fft_len:]
+
+            zoom_area = np.arange(8192)  # np.arange(target_index[tnum][0] - 50, target_index[tnum][0] + 50)
+            zoom_sz = len(zoom_area)
+            target_time = np.fft.ifft(ext_target, axis=1)[tnum, 1:fft_len + 1]
+            plt.title(f'Target {tnum}')
+            plt.scatter(zoom_area, (db(target_time)[zoom_area] - db(target_time)[zoom_area].max()), color='black')
+
+            plt.plot(zoom_area, (db(target0_corr)[zoom_area] - db(target0_corr)[zoom_area].max()))
+            if wave_mdl.n_ants > 1:
+                plt.plot(zoom_area, (db(clutter_corr)[zoom_area] - db(clutter_corr)[zoom_area].max()))
+                plt.plot(zoom_area, (db(target1_corr)[zoom_area] - db(target1_corr)[zoom_area].max()))
+            plt.plot(zoom_area, (db(linear_corr[tnum])[zoom_area] - db(linear_corr[tnum])[zoom_area].max()))
+            plt.vlines(target_index[tnum][0], -50, 10, color='black')
 
             plt.legend(['Range Profile', 'NN', 'Linear'])
             plt.xlabel('Lag')
             plt.ylabel('Power (dB)')
 
             plt.figure('Target-Clutter Correlations')
-            comb_corr = np.fft.fftshift(targets[0] + clutter[0])
-            truth_corr = np.fft.fftshift(clutter[0])
+            comb_corr = np.fft.ifft(targets[tnum])
+            truth_corr = np.fft.ifft(clutter[tnum])
             plt.plot(db(comb_corr))
             plt.plot(db(truth_corr))
-            plt.legend(['Comb', 'Truth'])
+            plt.legend(['Target+Clutter', 'Clutter'])
             plt.xlabel('Lag')
             plt.ylabel('Power (dB)')
 

@@ -54,6 +54,19 @@ class FourierFeature(nn.Module):
         return vp_cat.flatten(-2, -1)
 
 
+class FourierFeatureTrain(nn.Module):
+    def __init__(self, in_sz: int, n_fourier: int = 6, sigma: float = 10., *args: Any, **kwargs: Any):
+        super().__init__(*args, **kwargs)
+        self.scaling = 1 / np.sqrt(n_fourier * 2.)
+        self.sigma = sigma
+        self.n_fourier = n_fourier
+        self.W = nn.Parameter(torch.randn((in_sz, n_fourier)) * sigma, requires_grad=True)
+
+    def forward(self, x):
+        rx = torch.matmul(x, self.W)
+        return torch.cat((torch.cos(rx), torch.sin(rx)), dim=-1) * self.scaling
+
+
 class Fourier2D(nn.Module):
     def __init__(self, sigma: float = 10., n_fourier: int = 6, *args: Any, **kwargs: Any):
         super().__init__(*args, **kwargs)

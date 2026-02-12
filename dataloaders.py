@@ -135,93 +135,52 @@ class TargetDataset(Dataset):
 
 
 class WaveDataset(Dataset):
-    def __init__(self, root_dir: str, split: float = 1., single_example: bool = False, min_pulse_length: int = 1,
+    def __init__(self, data_path: str, split: float = 1., single_example: bool = False, min_pulse_length: int = 1,
                  max_pulse_length: int = 2, seq_len: int = 32, is_val=False, seed=43):
-        assert Path(root_dir).is_dir()
-        self.datapath = f'{root_dir}/target_tensors/clutter_tensors'
+        assert Path(data_path).is_dir()
+        self.datapath = f'{data_path}'
 
-        clutter_spec_files = glob(f'{self.datapath}/tc_*.pt')
-        patterns = torch.load(f'{root_dir}/target_tensors/target_embedding_means.pt')
+        clutter_spec_files = glob(f'{self.datapath}/*.pic')
+        total_seq = 2000
+        n_per_file = int(np.round(total_seq / len(clutter_spec_files)))
+        clutter_data = []
+        target_data = []
+        index_data = []
 
-        # Clutter data
-        file_idxes = np.arange(len(clutter_spec_files) - seq_len)
-        if split < 1:
-            Xs, Xt, _, _ = train_test_split(file_idxes,
-                                            file_idxes,
-                                            test_size=split, random_state=seed)
-        else:
-            Xt = file_idxes
-            Xs = file_idxes
-        self.idxes = Xs if is_val else Xt
-        self.single = single_example
-        self.patterns = torch.stack([torch.tensor(p, dtype=torch.float32).squeeze(0) for p in patterns])
-
-        self.seq_len = seq_len
-        self.min_pulse_length = min_pulse_length
-        self.max_pulse_length = max_pulse_length
-        self.seed = seed
-
-    def __getitem__(self, idx):
-        # File contains target range profile, compressed clutter data, target index, and the target range bin
-        data = torch.load(f'{self.datapath}/tc_{self.idxes[idx]}.pt', weights_only=True)
-        return (data[0], data[1][-1], self.patterns[data[3]].clone().detach(),
-                np.random.randint(self.min_pulse_length, self.max_pulse_length), np.random.rand() * .6 + .2, data[3],
-                data[2])
-
-    def __len__(self):
-        return self.idxes.shape[0]
-
-
-class WaveFileDataset(Dataset):
-    def __init__(self, files: dict, latent_dim: int = 50, fft_sz: int = 4096,
-                 split: float = 1., single_example: bool = False, min_pulse_length: int = 1,
-                 max_pulse_length: int = 2, seq_len: int = 32, is_val: bool = False,
-                 seed: int = 42):
+        for clut in np.random.choice(clutter_spec_files, 10):
+            with open(clut, 'rb') as f:
+                params = pickle.load(f)
+                clutter_data.append(params['clutter'])
+                target_data.append(params['target'])
+                index_data.append(params['t_idx'])
 
         # Clutter data
-        tmp_cs = np.fromfile(files['cs'], dtype=np.float32).reshape((-1, 2, fft_sz + 2))
-        # Scale appropriately
-        tmp_cs = tmp_cs[:, :, :fft_sz]
-        tmp_cc = np.fromfile(files['cc'], dtype=np.float32).reshape((-1, latent_dim))
-
-        # Target data
-        tmp_ts = np.fromfile(files['ts'], dtype=np.float32).reshape((-1, 2, fft_sz + 2))
-        # Scale appropriately
-        tmp_ts = tmp_ts[:, :, :fft_sz]
-        self.tcdata = torch.tensor(files['tc'], dtype=torch.float32)
+        clutter_data = np.concatenate(clutter_data, axis=0)
+        target_data = np.concatenate(target_data, axis=0)
+        index_data = np.concatenate(index_data).reshape((-1, 1))
+        idxes = np.arange(clutter_data.shape[0])
         if split < 1:
-            Xs, Xt, _, _ = train_test_split(np.arange(tmp_cs.shape[0]),
-                                            np.arange(tmp_cs.shape[0]),
-                                            test_size=split, random_state=seed)
+            Xsidx, Xtidx, _, _ = train_test_split(idxes, idxes, test_size=split, random_state=seed)
         else:
-            Xt = np.arange(tmp_cs.shape[0])
-            Xs = np.arange(tmp_cs.shape[0])
-        self.ccdata = tmp_cc[Xs] if is_val else tmp_cc[Xt]
-        self.csdata = torch.tensor(tmp_cs[Xs]) if is_val else torch.tensor(tmp_cs[Xt])
-        self.tsdata = torch.tensor(tmp_ts[:self.csdata.shape[0]])
-        if single_example:
-            self.ccdata[1:] = self.ccdata[0]
-            self.csdata[1:] = self.csdata[0]
-            self.tsdata[1:] = self.tsdata[0]
+            Xtidx = idxes
+            Xsidx = idxes
+        cd_std = clutter_data[Xsidx if is_val else Xtidx].std()
+        self.clutter = torch.tensor(clutter_data[Xsidx if is_val else Xtidx] / cd_std, dtype=torch.float32)
+        self.target = torch.tensor(target_data[Xsidx if is_val else Xtidx] / cd_std, dtype=torch.float32)
+        self.t_idx = torch.tensor(index_data[Xsidx if is_val else Xtidx], dtype=torch.int)
 
-        self.seq_len = seq_len
-        self.data_sz = self.tsdata.shape[0]
+        self.seed = seed
+        self.scaling = cd_std
         self.min_pulse_length = min_pulse_length
         self.max_pulse_length = max_pulse_length
-        self.seed = seed
 
     def __getitem__(self, idx):
-        ccd = torch.cat([torch.tensor(self.ccdata[idx + n, ...],
-                                      dtype=torch.float32).unsqueeze(0) for n in
-                         range(min(self.seq_len, self.tsdata.shape[0] - idx))], dim=0)
-        csd = self.csdata[idx, ...]
-        tsd = self.tsdata[idx, ...]
-
-        return (ccd, self.tcdata, csd, tsd, np.random.randint(self.min_pulse_length, self.max_pulse_length),
-                np.random.rand() * 1e9 + 400e6)
+        # Clutter profile, target+clutter range profile, target range index, pulse length, bandwidth
+        return (self.clutter[idx], self.target[idx], self.t_idx[idx],
+                np.random.randint(self.min_pulse_length, self.max_pulse_length), np.random.rand() * .6 + .2)
 
     def __len__(self):
-        return self.data_sz - self.seq_len
+        return self.clutter.shape[0]
 
 
 def collate_fun(batch):
@@ -403,8 +362,7 @@ class TargetEncoderModule(BaseModule):
 
 
 class ClutterDataset(Dataset):
-    def __init__(self, data_path: str, split: float = 1., is_val: bool = False, mu: np.ndarray = None,
-                 var: np.ndarray = None, seed: int = 7):
+    def __init__(self, data_path: str, split: float = 1., is_val: bool = False, seed: int = 7):
         assert Path(data_path).is_dir()
         self.datapath = f'{data_path}'
 
@@ -413,10 +371,10 @@ class ClutterDataset(Dataset):
         n_per_file = int(np.round(total_seq / len(clutter_spec_files)))
         clutter_data = []
 
-        for clut in clutter_spec_files:
+        for clut in np.random.choice(clutter_spec_files, 3):
             with open(clut, 'rb') as f:
                 params = pickle.load(f)
-                clutter_data.append(params['clutter'][np.random.choice(params['clutter'].shape[0], size=n_per_file)])
+                clutter_data.append(params['clutter'])
 
         # Clutter data
         clutter_data = np.concatenate(clutter_data, axis=0)
@@ -428,9 +386,9 @@ class ClutterDataset(Dataset):
             Xt = clutter_data
             Xs = clutter_data
         data = Xs if is_val else Xt
-        mu = data.mean(axis=(1, 3))
-        sigma = data.std(axis=(1, 3))
-        self.data = torch.tensor((data - mu[:, None, :, None]) / sigma[:, None, :, None], dtype=torch.float32)
+        # Minmaxscale
+        self.data = torch.tensor(data / data.std(), dtype=torch.float32)
+        # self.data = torch.tensor(data * 1e5, dtype=torch.float32)
         # self.data = torch.tensor(data, dtype=torch.float32)
 
         self.seed = seed
@@ -454,8 +412,6 @@ class ClutterEncoderModule(BaseModule):
             pin_memory: bool = False,
             single_example: bool = False,
             device: str = 'cpu',
-            mu: np.ndarray = None,
-            var: np.ndarray = None,
             **kwargs,
     ):
         super().__init__(train_batch_size, val_batch_size, pin_memory, single_example, device, **kwargs)
@@ -463,14 +419,11 @@ class ClutterEncoderModule(BaseModule):
         self.dataset_size = dataset_size
         self.data_path = data_path
         self.split = split
-        self.mu = mu
-        self.var = var
 
     def setup(self, stage: Optional[str] = None) -> None:
-        self.train_dataset = ClutterDataset(self.data_path, self.split, self.single_example, mu=self.mu,
-                                          var=self.var)
+        self.train_dataset = ClutterDataset(self.data_path, self.split, self.single_example)
         self.val_dataset = ClutterDataset(self.data_path, split=self.split if self.split < 1 else 1.,
-                                         is_val=True, mu=self.mu, var=self.var)
+                                         is_val=True)
         # self.train_sampler = BatchListSampler(self.train_dataset.file_list, batch_size=self.train_batch_size, drop_last=False)
         # self.val_sampler = BatchListSampler(self.val_dataset.file_list, batch_size=self.val_batch_size, drop_last=False)
 

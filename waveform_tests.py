@@ -12,10 +12,6 @@ from glob import glob
 
 def setupTrainer(a_gpu_num, tconf, do_logs=True, **trainer_args):
 
-    dset_params = tconf.dataset_params
-    dset_params['mu'] = np.array([6.9982171e-12, 2.6619594e-11])
-    dset_params['var'] = np.array([1.2646078e-05, 1.2646086e-05])
-
     enc_data_module = ClutterEncoderModule(**tconf.dataset_params)
     enc_data_module.setup()
 
@@ -24,7 +20,7 @@ def setupTrainer(a_gpu_num, tconf, do_logs=True, **trainer_args):
         mdl = ClutterTransformer.load_from_checkpoint(
             f'{tconf.weights_path}/{tconf.model_name}.ckpt', strict=False)
     else:
-        mdl = ClutterTransformer(input_dim=8192, model_dim=784, num_layers=32, lr=1e-2, warmup=1000, max_iters=20000)
+        mdl = ClutterTransformer(**tconf.model_params, **tconf.training_params)  # input_dim=8192, model_dim=1256, num_layers=20, lr=1e-0, warmup=100, max_iters=20000)
     if do_logs:
         log_mod = loggers.TensorBoardLogger(tconf.log_dir, name=tconf.model_name)
     else:
@@ -43,7 +39,7 @@ if __name__ == '__main__':
     seed_everything(np.random.randint(1, 2048), workers=True)
     # seed_everything(43, workers=True)
 
-    target_config = get_config('target_exp', './vae_config.yaml')
+    target_config = get_config('transformer_exp', './vae_config.yaml')
     trainer, model, data = setupTrainer(gpu_num, target_config)
 
     # Get the model, experiment, logger set up
@@ -59,6 +55,9 @@ if __name__ == '__main__':
                 exit(0)
 
     if trainer.is_global_zero:
+        if target_config.save_model:
+            trainer.save_checkpoint(f'{target_config.weights_path}/{target_config.model_name}.ckpt')
+            print('Checkpoint saved.')
         # import matplotlib as mplib
         # mplib.use('TkAgg')
         model.to(device)

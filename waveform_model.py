@@ -2,9 +2,11 @@ import torch
 from neuralop import TFNO1d
 from torch import nn, Tensor
 from pytorch_lightning import LightningModule
+from models import ClutterTransformer, FlatModule
 from torch.nn import functional as nn_func
 from config import Config
-from layers import FourierFeature, PulseLength, LKA1d, WindowGenerate, PositionalEncoding, Block1d, RBFLayer, SwiGLU
+from schedulers import CosineWarmupScheduler
+from layers import FourierFeature, PulseLength, LKA1d, WindowGenerate, PositionalEncoding, Block1d, RBFLayer, SwiGLU, FourierFeatureTrain
 import numpy as np
 from utils import normalize, _xavier_init, nonlinearities, plot_grad_flow, rbf_linear, l_norm
 
@@ -21,40 +23,6 @@ def _unflatten_to_state_dict(flat_w, shapes):
         counter += tnum
     assert counter == len(flat_w), "counter must reach the end of weight vector"
     return state_dict
-
-
-class FlatModule(LightningModule):
-    """
-    Base Module for different encoder models and generators. This adds
-    parameters to flatten the model to use in a loss landscape, should it be desired.
-    """
-
-    def __init__(self, config: Config = None):
-        super(FlatModule, self).__init__()
-        self.config = config
-        self.optim_path = []
-
-    def get_flat_params(self):
-        """Get flattened and concatenated params of the model."""
-        return torch.cat([torch.flatten(p) for _, p in self._get_params().items()])
-
-    def _get_params(self):
-        return {name: param.data for name, param in self.named_parameters()}
-
-    def init_from_flat_params(self, flat_params):
-        """Set all model parameters from the flattened form."""
-        assert isinstance(flat_params, torch.Tensor), "Argument to init_from_flat_params() must be torch.Tensor"
-        state_dict = _unflatten_to_state_dict(flat_params, self._get_param_shapes())
-        for name, params in self.state_dict().items():
-            if name not in state_dict:
-                state_dict[name] = params
-        self.load_state_dict(state_dict, strict=True)
-
-    def _get_param_shapes(self):
-        return [
-            (name, param.shape, param.numel())
-            for name, param in self.named_parameters()
-        ]
 
 
 class GeneratorModel(FlatModule):
@@ -79,26 +47,11 @@ class GeneratorModel(FlatModule):
         nlin = nonlinearities[self.nonlinearity]
 
         '''TRANSFORMER'''
-        self.predict_decoder = nn.Transformer(self.target_latent_size, num_decoder_layers=7, num_encoder_layers=7, nhead=8,
-                                              batch_first=True, norm_first=True,
-                                              dim_feedforward=self.target_latent_size * 4, activation=nlin)
-        self.pos_enc = PositionalEncoding(self.target_latent_size, .1, 16)
-
-        '''CLUTTER AND TARGET COMBINATION LAYERS'''
-        self.clutter_encoder = nn.Sequential(
-            nn.Linear(self.fft_len, self.target_latent_size),
-            nlin,
-            SwiGLU(self.target_latent_size, self.target_latent_size * 2, self.target_latent_size),
-            SwiGLU(self.target_latent_size, self.target_latent_size * 2, self.target_latent_size),
-            nn.Linear(self.target_latent_size, self.target_latent_size),
-            nlin,
-        )
-        self.clutter_squash = nn.Sequential(
-            nn.Linear(config.encoder_start_channel_sz, config.clutter_squash_features),
-            nlin,
-            nn.Linear(config.clutter_squash_features, 1),
-            nlin,
-        )
+        self.predict_encoder = ClutterTransformer.load_from_checkpoint(
+            f'{config.transformer_weights_path}/{config.transformer_model_name}.ckpt', strict=False)
+        # Freeze the weights so that we don't try anything funny
+        for param in self.predict_encoder.parameters():
+            param.requires_grad = False
 
         self.rbf_distance = nn.Sequential(
             RBFLayer(self.target_latent_size, 3, self.target_latent_size, radial_function=rbf_linear, norm_function=l_norm, normalization=True),
@@ -119,7 +72,7 @@ class GeneratorModel(FlatModule):
         self.target_layers = nn.ModuleList()
         for _ in range(config.n_skip_layers):
             self.waveform_layers.append(nn.Sequential(
-                nn.Conv1d(self.flowthrough_channels + 2, self.waveform_channels, 3, 1, 1),
+                nn.Conv1d(self.flowthrough_channels + 1, self.waveform_channels, 3, 1, 1),
                 nlin,
                 LKA1d(self.waveform_channels, kernel_sizes=(3, 257), dilation=4, activation=self.nonlinearity),
                 LKA1d(self.waveform_channels, kernel_sizes=(3, 33), dilation=30, activation=self.nonlinearity),
@@ -140,62 +93,44 @@ class GeneratorModel(FlatModule):
             ))
 
         self.wave_decoder = nn.Sequential(
-            nn.Conv1d(self.flowthrough_channels + 2, self.wave_decoder_channels, 3, 1, 1),
+            nn.Conv1d(self.flowthrough_channels + 1, self.wave_decoder_channels, 3, 1, 1),
             nlin,
             SwiGLU(self.target_latent_size, self.target_latent_size * 2, self.target_latent_size),
-            Block1d(self.wave_decoder_channels, 3, 1, 1, self.nonlinearity, 'group'),
-            Block1d(self.wave_decoder_channels, 3, 1, 1, self.nonlinearity, 'group'),
-            Block1d(self.wave_decoder_channels, 3, 1, 1, self.nonlinearity, 'group'),
             nn.Conv1d(self.wave_decoder_channels, self.n_ants * 2, 3, 1, 1),
             nn.Linear(self.target_latent_size, self.fft_len),
         )
 
-        ''' PULSE LENGTH INFORMATION '''
-        self.pinfo = nn.Sequential(
-            FourierFeature(1000., 50),
-            nn.Linear(100, self.target_latent_size),
-            nlin,
-        )
-
-        self.bandwidth_info = nn.Sequential(
-            FourierFeature(.5, 50),
-            nn.Linear(100, self.target_latent_size),
-            nlin,
+        self.wave_info = nn.Sequential(
+            FourierFeatureTrain(2, self.target_latent_size // 2, 1.),
         )
 
         self.plength = PulseLength()
         self.bw_generate = WindowGenerate(self.fft_len, self.n_ants)
 
         _xavier_init(self.wave_decoder)
-        _xavier_init(self.predict_decoder)
+        _xavier_init(self.predict_encoder)
         _xavier_init(self.clutter_target_init)
-        _xavier_init(self.pinfo)
-        _xavier_init(self.bandwidth_info)
+        _xavier_init(self.wave_info)
 
     def forward(self, clutter, target, pulse_length, bandwidth) -> torch.Tensor:
 
-        # Run clutter through the encoder
-        x = self.clutter_encoder(clutter)
-        x = self.clutter_squash(x.swapaxes(-2, -1))
-        x = self.pos_enc(x.squeeze(-1))
-
         # Predict the next clutter step using transformer
-        x = self.predict_decoder(x[:, :-1], x[:, 1:])[:, -1, ...]# .unsqueeze(1)
+        x_clutter = self.predict_encoder.encode(clutter)[:, -1].unsqueeze(1)
+        x_target = self.predict_encoder.encode(target)[:, -1].unsqueeze(1)
 
-        y = (self.rbf_distance(x) - self.rbf_distance(target)).unsqueeze(1)
+        y = (self.rbf_distance(x_clutter) - self.rbf_distance(x_target))
 
         # Combine clutter prediction with target information
-        x = self.clutter_target_init(torch.cat([x.unsqueeze(1), y, target.unsqueeze(1)], dim=1))
+        x = self.clutter_target_init(torch.cat([x_clutter, y.unsqueeze(1), x_target], dim=1))
         # x = self.clutter_target_init(torch.cat([x)
 
-        bw_info = self.bandwidth_info(bandwidth.float().view(-1, 1)).unsqueeze(1)
-        pl_info = self.pinfo(pulse_length.float().view(-1, 1)).unsqueeze(1)
+        wave_info = self.wave_info(torch.cat([bandwidth.float().view(-1, 1), pulse_length.float().view(-1, 1) / 5000.], dim=1)).unsqueeze(1)
 
         # Run through LKA layers to create a waveform according to spec
         for wl, tl in zip(self.waveform_layers, self.target_layers):
-            x = wl(torch.cat([x, bw_info, pl_info], dim=1))
-            x = tl(torch.cat([x, target.unsqueeze(1)], dim=1))
-        x = self.wave_decoder(torch.cat([x, bw_info, pl_info], dim=1))
+            x = wl(torch.cat([x, wave_info], dim=1))
+            x = tl(torch.cat([x, x_target], dim=1))
+        x = self.wave_decoder(torch.cat([x, wave_info], dim=1))
         x = self.plength(x, pulse_length) * self.bw_generate(bandwidth)
         x = x.view(-1, self.n_ants, 2, self.fft_len)
         return x
@@ -230,10 +165,10 @@ class GeneratorModel(FlatModule):
     def loss_function(self, *args) -> dict:
 
         # Get clutter spectrum into complex form and normalize to unit energy
-        clutter_spectrum = torch.fft.fftshift(torch.complex(args[1][:, -1, 0, :], args[1][:, -1, 1, :]), dim=1)
+        clutter_spectrum = torch.complex(args[1][:, -1, 0, :], args[1][:, -1, 1, :])
 
         # Get target spectrum into complex form and normalize to unit energy
-        target_spectrum = torch.fft.fftshift(torch.complex(args[2][:, 0, :], args[2][:, 1, :]), dim=1)
+        target_spectrum = torch.complex(args[2][:, -1, 0, :], args[2][:, -1, 1, :])
 
         # Get waveform into complex form and normalize it to unit energy
         gen_waveform = self.getWaveform(nn_output=args[0])
@@ -257,10 +192,14 @@ class GeneratorModel(FlatModule):
             kld_loss = torch.tensor(3., device=self.device)'''
 
         # Target and clutter power functions
-        targ_ac = torch.abs(torch.sum(torch.fft.ifft((clutter_spectrum + target_spectrum).unsqueeze(1) * mfiltered, dim=2), dim=1))
+        targ_ac = torch.abs(torch.sum(torch.fft.ifft(target_spectrum.unsqueeze(1) * mfiltered, dim=2), dim=1))
         clut_ac = torch.abs(torch.sum(torch.fft.ifft(clutter_spectrum.unsqueeze(1) * mfiltered, dim=2), dim=1))
-        target_softmax = ((torch.arange(targ_ac.shape[-1], device=self.device) - args[6] + EPS) / targ_ac.shape[-1])**2
-        target_softmax = torch.exp(-target_softmax / (2 * self.config.temperature)**2)
+        targ_abs = torch.abs(torch.sum(torch.fft.ifft(target_spectrum.unsqueeze(1), dim=2), dim=1))
+        clut_abs = torch.abs(torch.sum(torch.fft.ifft(clutter_spectrum.unsqueeze(1), dim=2), dim=1))
+        # target_softmax = ((torch.arange(targ_ac.shape[-1], device=self.device) - args[3] + EPS) / targ_ac.shape[-1])**2
+        # target_softmax = torch.exp(-target_softmax / (2 * self.config.temperature)**2)
+        tsoft = nn_func.conv1d(torch.abs(targ_abs - clut_abs).unsqueeze(1), torch.tensor([[[.1, .5, 1., .5, .1]]], dtype=torch.float32, device=self.device), padding=2).squeeze(1)
+        target_softmax = tsoft / (torch.sum(tsoft, dim=1, keepdim=True) + EPS)
         target_loss = torch.nanmean(clut_ac / (EPS + targ_ac) * target_softmax)# + 1. / kld_loss
         # target_loss = torch.nanmean(nn_func.logsigmoid(clut_ac - targ_ac))# + kld_loss
 
@@ -278,7 +217,7 @@ class GeneratorModel(FlatModule):
             sidelobe_func * sidelobe_window, dim=-1)
         # pslrs = torch.max(sidelobe_func, dim=-1)[0] - torch.mean(sidelobe_func[..., theoretical_mainlobe_width:-theoretical_mainlobe_width], dim=-1)
         # pslrs = get_pslr(sidelobe_func.squeeze(1))
-        sidelobe_loss = (1e3 / (EPS + torch.nanmean(pslrs)))**2
+        sidelobe_loss = (1e2 / (EPS + torch.nanmean(pslrs)))**2
         # sidelobe_loss = torch.tensor(0., device=self.device)
 
         # Orthogonality
@@ -292,7 +231,7 @@ class GeneratorModel(FlatModule):
         else:
             ortho_loss = torch.tensor(0., device=self.device)
 
-        total_loss = target_loss * (1 + sidelobe_loss + ortho_loss)
+        total_loss = torch.sqrt(target_loss * (1 + sidelobe_loss + ortho_loss))
 
         return {'target_loss': target_loss, 'loss': total_loss,
                 'sidelobe_loss': sidelobe_loss, 'ortho_loss': ortho_loss} #, 'kld_loss': kld_loss}
@@ -347,6 +286,7 @@ class GeneratorModel(FlatModule):
             opt = self.optimizers()
             opt.step()
             opt.zero_grad()
+            self.lr_schedulers().step()
         self.log_dict(train_loss, sync_dist=True,
                       prog_bar=True, rank_zero_only=True, on_epoch=True)
 
@@ -358,7 +298,7 @@ class GeneratorModel(FlatModule):
         self.log('lr', self.lr_schedulers().get_last_lr()[0], prog_bar=True, rank_zero_only=True)
 
     def on_train_epoch_end(self) -> None:
-        sch = self.lr_schedulers()
+        '''sch = self.lr_schedulers()
 
         # If the selected scheduler is a ReduceLROnPlateau scheduler.
         if isinstance(sch, torch.optim.lr_scheduler.ReduceLROnPlateau):
@@ -367,7 +307,8 @@ class GeneratorModel(FlatModule):
             sch.step()
         if self.trainer.is_global_zero and not self.config.is_tuning and self.config.loss_landscape:
             self.optim_path.append(self.get_flat_params().cpu().data.numpy())
-        self.log('lr', self.lr_schedulers().get_last_lr()[0], prog_bar=True, rank_zero_only=True)
+        self.log('lr', self.lr_schedulers().get_last_lr()[0], prog_bar=True, rank_zero_only=True)'''
+        pass
 
     def configure_optimizers(self):
         optimizer = torch.optim.AdamW(self.parameters(),
@@ -378,14 +319,15 @@ class GeneratorModel(FlatModule):
         if self.config.scheduler_gamma is None:
             return optimizer
         # scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=self.config.scheduler_gamma)
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, 100, eta_min=1e-9)
+        # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, 100, eta_min=1e-9)
+        scheduler = CosineWarmupScheduler(optimizer, warmup=400, max_iters=40000)
 
         return {'optimizer': optimizer, 'lr_scheduler': scheduler}
 
     def train_val_get(self, batch, batch_idx):
-        clutter_spec, target_spec, target_enc, pulse_length, bandwidth, _, target_rbin = batch
-        results = self.forward(clutter_spec, target_enc, pulse_length, bandwidth)
-        return self.loss_function(results, clutter_spec, target_spec, target_enc, pulse_length, bandwidth, target_rbin)
+        clutter_spec, target_spec, target_rbin, pulse_length, bandwidth = batch
+        results = self.forward(clutter_spec, target_spec, pulse_length, bandwidth)
+        return self.loss_function(results, clutter_spec, target_spec, pulse_length, bandwidth, target_rbin)
 
 if __name__ == '__main__':
     from config import get_config
