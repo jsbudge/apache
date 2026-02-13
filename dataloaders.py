@@ -136,7 +136,7 @@ class TargetDataset(Dataset):
 
 class WaveDataset(Dataset):
     def __init__(self, data_path: str, split: float = 1., single_example: bool = False, min_pulse_length: int = 1,
-                 max_pulse_length: int = 2, seq_len: int = 32, is_val=False, seed=43):
+                 max_pulse_length: int = 2, std: float = 1.0, is_val=False, seed=43):
         assert Path(data_path).is_dir()
         self.datapath = f'{data_path}'
 
@@ -146,6 +146,7 @@ class WaveDataset(Dataset):
         clutter_data = []
         target_data = []
         index_data = []
+        nsam = []
 
         for clut in np.random.choice(clutter_spec_files, 10):
             with open(clut, 'rb') as f:
@@ -153,6 +154,7 @@ class WaveDataset(Dataset):
                 clutter_data.append(params['clutter'])
                 target_data.append(params['target'])
                 index_data.append(params['t_idx'])
+                nsam.append(params['build']['nsam'])
 
         # Clutter data
         clutter_data = np.concatenate(clutter_data, axis=0)
@@ -164,13 +166,13 @@ class WaveDataset(Dataset):
         else:
             Xtidx = idxes
             Xsidx = idxes
-        cd_std = clutter_data[Xsidx if is_val else Xtidx].std()
-        self.clutter = torch.tensor(clutter_data[Xsidx if is_val else Xtidx] / cd_std, dtype=torch.float32)
-        self.target = torch.tensor(target_data[Xsidx if is_val else Xtidx] / cd_std, dtype=torch.float32)
+        self.clutter = torch.tensor(clutter_data[Xsidx if is_val else Xtidx] / std, dtype=torch.float32)
+        self.target = torch.tensor(target_data[Xsidx if is_val else Xtidx] / std, dtype=torch.float32)
         self.t_idx = torch.tensor(index_data[Xsidx if is_val else Xtidx], dtype=torch.int)
+        self.samples = np.array(nsam)
 
         self.seed = seed
-        self.scaling = cd_std
+        self.scaling = std
         self.min_pulse_length = min_pulse_length
         self.max_pulse_length = max_pulse_length
 
@@ -278,6 +280,7 @@ class WaveDataModule(BaseModule):
             device: str = 'cpu',
             min_pulse_length: int = 1,
             max_pulse_length: int = 2,
+            std: float = 1.0,
             **kwargs,
     ):
         super().__init__(train_batch_size, val_batch_size, pin_memory, single_example, device)
@@ -287,15 +290,16 @@ class WaveDataModule(BaseModule):
         self.min_pulse_length = min_pulse_length
         self.max_pulse_length = max_pulse_length
         self.device = device
+        self.std = std
 
     def setup(self, stage: Optional[str] = None) -> None:
         self.train_dataset = WaveDataset(self.data_dir, split=self.split,
                                          single_example=self.single_example, min_pulse_length=self.min_pulse_length,
-                                         max_pulse_length=self.max_pulse_length)
+                                         max_pulse_length=self.max_pulse_length, std=self.std)
 
         self.val_dataset = WaveDataset(self.data_dir, split=self.split,
                                        single_example=self.single_example, min_pulse_length=self.min_pulse_length,
-                                       max_pulse_length=self.max_pulse_length, is_val=True)
+                                       max_pulse_length=self.max_pulse_length, std=self.std, is_val=True)
 
 
 class EncoderModule(BaseModule):
@@ -362,7 +366,7 @@ class TargetEncoderModule(BaseModule):
 
 
 class ClutterDataset(Dataset):
-    def __init__(self, data_path: str, split: float = 1., is_val: bool = False, seed: int = 7):
+    def __init__(self, data_path: str, split: float = 1., is_val: bool = False, std: float = 1.0, seed: int = 7):
         assert Path(data_path).is_dir()
         self.datapath = f'{data_path}'
 
@@ -371,7 +375,7 @@ class ClutterDataset(Dataset):
         n_per_file = int(np.round(total_seq / len(clutter_spec_files)))
         clutter_data = []
 
-        for clut in np.random.choice(clutter_spec_files, 3):
+        for clut in np.random.choice(clutter_spec_files, 10):
             with open(clut, 'rb') as f:
                 params = pickle.load(f)
                 clutter_data.append(params['clutter'])
@@ -387,7 +391,7 @@ class ClutterDataset(Dataset):
             Xs = clutter_data
         data = Xs if is_val else Xt
         # Minmaxscale
-        self.data = torch.tensor(data / data.std(), dtype=torch.float32)
+        self.data = torch.tensor(data / std, dtype=torch.float32)
         # self.data = torch.tensor(data * 1e5, dtype=torch.float32)
         # self.data = torch.tensor(data, dtype=torch.float32)
 
@@ -412,6 +416,7 @@ class ClutterEncoderModule(BaseModule):
             pin_memory: bool = False,
             single_example: bool = False,
             device: str = 'cpu',
+            std: float = 1.0,
             **kwargs,
     ):
         super().__init__(train_batch_size, val_batch_size, pin_memory, single_example, device, **kwargs)
@@ -419,10 +424,11 @@ class ClutterEncoderModule(BaseModule):
         self.dataset_size = dataset_size
         self.data_path = data_path
         self.split = split
+        self.std = std
 
     def setup(self, stage: Optional[str] = None) -> None:
-        self.train_dataset = ClutterDataset(self.data_path, self.split, self.single_example)
-        self.val_dataset = ClutterDataset(self.data_path, split=self.split if self.split < 1 else 1.,
+        self.train_dataset = ClutterDataset(self.data_path, self.split, self.single_example, std=self.std)
+        self.val_dataset = ClutterDataset(self.data_path, split=self.split if self.split < 1 else 1., std=self.std,
                                          is_val=True)
         # self.train_sampler = BatchListSampler(self.train_dataset.file_list, batch_size=self.train_batch_size, drop_last=False)
         # self.val_sampler = BatchListSampler(self.val_dataset.file_list, batch_size=self.val_batch_size, drop_last=False)

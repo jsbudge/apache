@@ -75,4 +75,13 @@ if __name__ == '__main__':
         plt.plot(check[0, -2, 0])
         plt.show()
 
+        '''from glob import glob
+        import pickle
+        clutter_data = []
+        files = glob('/home/jeff/repo/apache/data/target_new/*.pic')
+        for clut in files:
+            with open(clut, 'rb') as f:
+                params = pickle.load(f)
+                clutter_data.append(params['clutter'])'''
+
 

@@ -50,6 +50,27 @@ class FlatModule(LightningModule):
             for name, param in self.named_parameters()
         ]
 
+    def plot_grad_flow(self, named_parameters):
+        ave_grads = []
+        layers = []
+        for name, p in named_parameters:
+            if p.grad is None:
+                continue
+            elif p.requires_grad and ("bias" not in name):
+                layers.append(name)
+                ave_grads.append(p.grad.abs().mean().cpu().data.numpy())
+                self.logger.experiment.add_histogram(tag=name, values=p.grad,
+                                                     global_step=self.trainer.global_step)
+        plt.plot(ave_grads, alpha=0.3, color="b")
+        plt.hlines(0, 0, len(ave_grads), linewidth=1, color="k")
+        plt.xticks(list(range(len(ave_grads))), layers, rotation='vertical')
+        plt.xlim(left=0, right=len(ave_grads))
+        plt.xlabel("Layers")
+        plt.ylabel("average gradient")
+        plt.title("Gradient flow")
+        plt.grid(True)
+        plt.rcParams["figure.figsize"] = (20, 5)
+
 
 class TargetEmbedding(FlatModule):
     def __init__(self,
@@ -288,8 +309,8 @@ class ClutterTransformer(LightningModule):
             nlin,
             SwiGLU(self.hparams.model_dim, 2 * self.hparams.model_dim, self.hparams.model_dim),
             nn.LayerNorm(self.hparams.model_dim),
-            SwiGLU(self.hparams.model_dim, 2 * self.hparams.model_dim, self.hparams.model_dim),
-
+            nn.Linear(self.hparams.model_dim, self.hparams.model_dim),
+            nlin,
         )
 
         self.input_imag = nn.Sequential(
@@ -298,7 +319,8 @@ class ClutterTransformer(LightningModule):
             nlin,
             SwiGLU(self.hparams.model_dim, 2 * self.hparams.model_dim, self.hparams.model_dim),
             nn.LayerNorm(self.hparams.model_dim),
-            SwiGLU(self.hparams.model_dim, 2 * self.hparams.model_dim, self.hparams.model_dim),
+            nn.Linear(self.hparams.model_dim, self.hparams.model_dim),
+            nlin,
         )
 
         # Transformer
@@ -392,32 +414,10 @@ class ClutterTransformer(LightningModule):
 
         return norm_loss
 
-    def plot_grad_flow(self, named_parameters):
-        ave_grads = []
-        layers = []
-        for name, p in named_parameters:
-            if p.grad is None:
-                print(f'{name} - {p.requires_grad}')
-
-            elif p.requires_grad and ("bias" not in name):
-                layers.append(name)
-                ave_grads.append(p.grad.abs().mean().cpu().data.numpy())
-                self.logger.experiment.add_histogram(tag=name, values=p.grad,
-                                                     global_step=self.trainer.global_step)
-        plt.plot(ave_grads, alpha=0.3, color="b")
-        plt.hlines(0, 0, len(ave_grads), linewidth=1, color="k")
-        plt.xticks(list(range(len(ave_grads))), layers, rotation='vertical')
-        plt.xlim(left=0, right=len(ave_grads))
-        plt.xlabel("Layers")
-        plt.ylabel("average gradient")
-        plt.title("Gradient flow")
-        plt.grid(True)
-        plt.rcParams["figure.figsize"] = (20, 5)
-
-    def on_after_backward(self):
+    '''def on_after_backward(self):
         # example to inspect gradient information in tensorboard
         if self.trainer.global_step % 100 == 0 and self.trainer.global_step != 0:
-           self.plot_grad_flow(self.named_parameters())
+           self.plot_grad_flow(self.named_parameters())'''
 
 
 

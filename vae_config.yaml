@@ -105,9 +105,11 @@ target_exp_params:
 # For training of wavemodel
 wave_exp_params:
   training_params:
-    lr: 0.001
+    lr: 0.01
     weight_decay: 0.0
     scheduler_gamma: 0.999
+    warmup: 100
+    max_iters: 40000
     swa_start: .6
     warm_start: False
     betas: [.9, .99]
@@ -123,18 +125,18 @@ wave_exp_params:
   model_params:
     n_ants: 1
     fft_len: 8192
-    fs: 2000000000.
+    fs: 1000000000.
     fc: 16000000000.
     encoder_start_channel_sz: 2
     clutter_squash_features: 128
     embedding_concatenation_channels: 128
-    n_skip_layers: 16
+    n_skip_layers: 5
     clutter_target_channels: 128
     flowthrough_channels: 128
     wave_decoder_channels: 128
     target_channels: 128
     waveform_channels: 128
-    target_latent_size: 1322
+    target_latent_size: 1400
     bandwidth: 400000000.
     nonlinearity: silu
     temperature: .003
@@ -153,15 +155,14 @@ wave_exp_params:
     split: .7
     single_example: False
     # These values are taken from a sampling of data
-    mu: 199926611.3141519
-    var: 52500339516.69853
+    std: .000009753259
     noise_level: 0.
     collate: True
 
 # This is for setting up training of target embedding
 transformer_exp_params:
   training_params:
-    lr: .01
+    lr: .001
     weight_decay: 0.0000001
     warmup: 100
     log_epoch: 1
@@ -169,8 +170,8 @@ transformer_exp_params:
     transform_data: False
     warm_start: False
     loss_landscape: False
-    max_epochs: 2000
-    max_iters: 40000
+    max_epochs: 5000
+    max_iters: 50000
   logging_params:
     output_images: False
     model_name: clutter_transformer
@@ -186,6 +187,7 @@ transformer_exp_params:
     pin_memory: False
     split: .8
     single_example: False
+    std: .000009753259
   model_params:
     input_dim: 8192
     model_dim: 1400
