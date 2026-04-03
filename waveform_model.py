@@ -10,7 +10,7 @@ from layers import FourierFeature, PulseLength, LKA1d, WindowGenerate, MultiHead
 import numpy as np
 from utils import normalize, _xavier_init, nonlinearities, plot_grad_flow, rbf_linear, l_norm
 
-EPS = 1e-6
+EPS = 1e-9
 
 
 def _unflatten_to_state_dict(flat_w, shapes):
@@ -184,11 +184,14 @@ class GeneratorModel(FlatModule):
 
         # Target and clutter power functions
         # Get compressed data for clutter and target
-        targ_sans = torch.abs(torch.sum(torch.fft.ifft(target_spectrum.unsqueeze(1) * lfiltered, dim=2), dim=1))
+        targ_check = torch.abs(torch.sum(torch.fft.ifft(target_spectrum.unsqueeze(1), dim=2), dim=1))
         # Determine location of noise cutoff
-        nsam = torch.where(targ_sans.unfold(dimension=-1, size=45, step=1).mean(dim=-1) < 1e-7)[1][0]
+        try:
+            nsam = torch.where(targ_check.unfold(dimension=-1, size=45, step=1).mean(dim=-1) < 1e-7)[1][0]
+        except Exception:
+            nsam = self.fft_len
         nsam = nsam if nsam > 0 else self.fft_len
-        targ_sans = targ_sans[:, :nsam]
+        targ_sans = torch.abs(torch.sum(torch.fft.ifft(target_spectrum.unsqueeze(1) * lfiltered, dim=2), dim=1))[:, :nsam]
         targ_ac = torch.abs(torch.sum(torch.fft.ifft(target_spectrum.unsqueeze(1) * mfiltered, dim=2), dim=1))[:, :nsam]
         clut_ac = torch.abs(torch.sum(torch.fft.ifft(clutter_spectrum.unsqueeze(1) * mfiltered, dim=2), dim=1))[:, :nsam]
         clut_sans = torch.abs(torch.sum(torch.fft.ifft(clutter_spectrum.unsqueeze(1) * lfiltered, dim=2), dim=1))[:, :nsam]
@@ -199,11 +202,11 @@ class GeneratorModel(FlatModule):
         '''clutter_softmax = nn_func.conv1d(torch.exp(-clut_sans / (targ_sans + EPS) / self.config.temperature**2),
                                         torch.tensor([[[.1, .5, 1., .5, .1]]], dtype=torch.float64, device=self.device),
                                         padding='same')'''
-        above_lfm = torch.nansum((targ_sans / (targ_ac + EPS)) * target_softmax / (torch.sum(target_softmax) + EPS))
-        target_snr = torch.nansum((clut_ac / (targ_ac + EPS)) * target_softmax / (torch.sum(target_softmax) + EPS))
-        clutter_mit = torch.nansum((targ_ac / (clut_ac + EPS)) * (1 - target_softmax / (torch.sum(target_softmax) + EPS)))
+        above_lfm = nn_func.softplus(targ_sans / (targ_ac + EPS)) * target_softmax / (torch.sum(target_softmax) + EPS)
+        target_snr = nn_func.softplus(clut_ac / (targ_ac + EPS)) * target_softmax / (torch.sum(target_softmax) + EPS)
+        clutter_mit = nn_func.softplus(targ_ac / (clut_ac + EPS)) * ((1 - target_softmax) / (torch.sum(1 - target_softmax) + EPS))
 
-        target_loss = above_lfm / 10. + target_snr * 10. + clutter_mit / 1000.
+        target_loss = torch.nansum(above_lfm + target_snr + clutter_mit) * .333
         # target_loss = torch.nansum((targ_ac / (targ_sans + EPS)) + (clut_ac / (targ_ac + EPS)))
 
         # Sidelobe loss functions
@@ -232,6 +235,15 @@ class GeneratorModel(FlatModule):
         plt.figure("LFM")
         plt.plot(np.log10(abs(lfm.data.cpu().numpy())))
         
+        plt.figure('Comparison')
+        plt.plot(above_lfm.data.cpu().numpy()[0])
+        plt.plot(target_snr.data.cpu().numpy()[0])
+        plt.plot(clutter_mit.data.cpu().numpy()[0])
+        plt.legend(['above_lfm', 'target_snr', 'clutter_mit'])
+        
+        plt.figure()
+        plt.plot((1 - target_softmax / (torch.sum(target_softmax) + EPS).data.cpu().numpy()[0])
+        
         
         '''
 
@@ -250,8 +262,8 @@ class GeneratorModel(FlatModule):
         total_loss = (target_loss * sidelobe_loss)**2
 
         return {'target_loss': target_loss, 'loss': total_loss,
-                'sidelobe_loss': sidelobe_loss, 'ortho_loss': ortho_loss, 'above_lfm': above_lfm,
-                'target_snr': target_snr, 'clutter_mit': clutter_mit} #, 'kld_loss': kld_loss}
+                'sidelobe_loss': sidelobe_loss, 'ortho_loss': ortho_loss, 'above_lfm': torch.nansum(above_lfm),
+                'target_snr': torch.nansum(target_snr), 'clutter_mit': torch.nansum(clutter_mit)} #, 'kld_loss': kld_loss}
 
     def getWaveform(self, cc: Tensor = None, tc: Tensor = None, pulse_length=None,
                     bandwidth: [Tensor | float] = 400e6, nn_output: tuple[Tensor] = None) -> Tensor:

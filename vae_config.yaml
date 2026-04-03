@@ -109,7 +109,7 @@ wave_exp_params:
     weight_decay: 0.0
     scheduler_gamma: 0.999
     warmup: 5000
-    max_iters: 80000
+    max_iters: 800000
     swa_start: .6
     warm_start: False
     betas: [.9, .99]
@@ -140,7 +140,7 @@ wave_exp_params:
     target_latent_size: 1400
     bandwidth: 400000000.
     nonlinearity: psinlu
-    temperature: 1.
+    temperature: 5.
     transformer_weights_path: ./model
     transformer_model_name: clutter_transformer
   logging_params:
