@@ -6,7 +6,7 @@ import numpy as np
 from cbam import CBAM
 from config import Config
 from layers import Block2d, Block2dTranspose, Fourier2D, SwiGLU, PositionalEncoding, FourierFeatureTrain, \
-    MultiHeadLocationAwareAttention
+    MultiHeadLocationAwareAttention, MultiHeadAttention
 from schedulers import CosineWarmupScheduler
 from pytorch_lightning import LightningModule
 from utils import _xavier_init, nonlinearities
@@ -323,17 +323,19 @@ class ClutterTransformer(LightningModule):
             nlin,
         )
 
+        self.cross_attention = MultiHeadAttention(self.hparams.model_dim, 14)
+
         # Transformer
         self.lstm = nn.LSTM(input_size=self.hparams.model_dim, hidden_size=self.hparams.model_dim,
                                  num_layers=self.hparams.num_layers, batch_first=True)
 
         # self.fourier = FourierFeatureTrain(2, nfourier, self.hparams.fourier_std)
 
-        self.mix = nn.Sequential(
+        '''self.mix = nn.Sequential(
             FourierFeatureTrain(2, nfourier, self.hparams.fourier_std),
             nn.Linear(fourier_layer_sz, 1),
             nlin,
-        )
+        )'''
 
         self.output_real = nn.Sequential(
             nn.Linear(self.hparams.model_dim, self.hparams.input_dim),
@@ -348,7 +350,8 @@ class ClutterTransformer(LightningModule):
     def encode(self, x):
         y = self.input_imag(x[..., 1, :])
         x = self.input_real(x[..., 0, :])
-        xy = self.mix(torch.cat([x.unsqueeze(-1), y.unsqueeze(-1)], dim=-1)).squeeze(-1)
+        xy, _ = self.cross_attention(x, y, y)
+        # xy = self.mix(torch.cat([x.unsqueeze(-1), y.unsqueeze(-1)], dim=-1)).squeeze(-1)
         xy, _ = self.lstm(xy)
         return xy
 

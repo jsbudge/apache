@@ -148,13 +148,24 @@ class WaveDataset(Dataset):
         index_data = []
         nsam = []
 
-        for clut in np.random.choice(clutter_spec_files, 10):
-            with open(clut, 'rb') as f:
-                params = pickle.load(f)
-                clutter_data.append(params['clutter'])
-                target_data.append(params['target'])
-                index_data.append(params['t_idx'])
-                nsam.append(params['build']['nsam'])
+        if single_example:
+            for clut in clutter_spec_files[:1]:
+                with open(clut, 'rb') as f:
+                    params = pickle.load(f)
+                    clutter_data.append(params['clutter'])
+                    target_data.append(params['target'])
+                    index_data.append(params['t_idx'])
+                    nsam.append(params['build']['nsam'])
+        else:
+            for clut in np.random.choice(clutter_spec_files, 10):
+                with open(clut, 'rb') as f:
+                    params = pickle.load(f)
+                    clutter_data.append(params['clutter'])
+                    target_data.append(params['target'])
+                    index_data.append(params['t_idx'])
+                    nsam.append(params['build']['nsam'])
+
+
 
         # Clutter data
         clutter_data = np.concatenate(clutter_data, axis=0)
@@ -175,11 +186,17 @@ class WaveDataset(Dataset):
         self.scaling = std
         self.min_pulse_length = min_pulse_length
         self.max_pulse_length = max_pulse_length
+        self.is_single = single_example
 
     def __getitem__(self, idx):
         # Clutter profile, target+clutter range profile, target range index, pulse length, bandwidth
-        return (self.clutter[idx], self.target[idx], self.t_idx[idx],
-                np.random.randint(self.min_pulse_length, self.max_pulse_length), np.random.rand() * .6 + .2)
+        if self.is_single:
+            return self.clutter[0], self.target[0], self.t_idx[0], 1000, .5
+        else:
+            return (self.clutter[idx], self.target[idx], self.t_idx[idx],
+                    np.random.randint(self.min_pulse_length, self.max_pulse_length), np.random.rand() * .6 + .2)
+
+
 
     def __len__(self):
         return self.clutter.shape[0]

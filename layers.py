@@ -299,11 +299,11 @@ class Block2dTranspose(nn.Module):
 
 class Block1d(nn.Module):
 
-    def __init__(self, channel_sz, kernel, stride, padding, nonlinearity='gelu', norm_strategy='batch', transpose=False):
+    def __init__(self, channel_sz, kernel, stride, padding, nonlinearity='gelu', norm_strategy='batch', norm_size: int = 7, transpose=False):
         super(Block1d, self).__init__()
         self.channel_sz = channel_sz
         nlin = nonlinearities[nonlinearity]
-        norm = nn.BatchNorm1d(channel_sz) if norm_strategy == 'batch' else nn.GroupNorm(1, channel_sz)
+        norm = nn.BatchNorm1d(channel_sz) if norm_strategy == 'batch' else nn.GroupNorm(1, channel_sz) if norm_strategy == 'group' else nn.LayerNorm(norm_size)
         if transpose:
             self.block = nn.Sequential(
                 nn.ConvTranspose1d(channel_sz, channel_sz, kernel, stride, padding),

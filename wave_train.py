@@ -47,7 +47,7 @@ if __name__ == '__main__':
     else:
         wave_mdl = GeneratorModel(config=config)
     logger = loggers.TensorBoardLogger(config.log_dir,
-                                       name=config.model_name, log_graph=True)
+                                       name=config.model_name, log_graph=False)
     expected_lr = max((config.lr * config.scheduler_gamma ** (config.max_epochs * config.swa_start)), 1e-9)
     if config.distributed:
         trainer = Trainer(logger=logger, max_epochs=config.max_epochs, num_sanity_val_steps=0, default_root_dir=config.weights_path,
