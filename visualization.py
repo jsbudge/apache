@@ -2,187 +2,119 @@ import torch
 import numpy as np
 import matplotlib.pyplot as plt
 from glob import glob
-from torchvision import transforms
-from simulib.simulation_functions import db
-import yaml
-from celluloid import Camera
-from data_converter.SDRParsing import load
-from tqdm import tqdm
-from sklearn.decomposition import KernelPCA
-import matplotlib.animation as animation
+import pickle
+from config import get_config
+from utils import upsample, fs, narrow_band, getMatchedFilter
+from simulib.simulation_functions import genPulse, db
+from scipy.signal import stft
+from scipy.signal.windows import taylor
+import torch
+from pytorch_lightning import seed_everything
+from waveform_model import GeneratorModel
 
-device = 'cuda' if torch.cuda.is_available() else 'cpu'
-with open('./vae_config.yaml') as y:
-    param_dict = yaml.safe_load(y.read())
 
-batch_sz = param_dict['settings']['batch_sz']
-model.load_state_dict(torch.load('./model/inference_model.state'))
-model.eval()  # Set to inference mode
-model.to(device)
 
-sdr_file_bgtype = [('SAR_06072023_154802', 'river'),
-                   ('SAR_06062023_125944', 'suburb'),
-                   ('SAR_08092023_143927', 'farmland'),
-                   ('SAR_08092023_112016', 'airport'),
-                   ('SAR_08092023_144437', 'highschool'),
-                   ('SAR_08232023_114640', 'farmcornmaze'),
-                   ('SAR_08232023_144235', 'sportsparksuburb'),
-                   ('SAR_08102023_110807', 'river'),
-                   ('SAR_06072023_111506', 'airportfield'),
-                   ('SAR_09122023_115704', 'ruralstreet'),
-                   ('SAR_09122023_151902', 'sportspark'),
-                   ('SAR_09122023_152050', 'orchard'),
-                   ('SAR_09122023_152903', 'lakeleft'),
-                   ('SAR_09122023_153015', 'lakeorchard')]
 
-clutter_files = glob('./data/clutter_*.cov')
-spec_files = glob('./data/clutter_*.spec')
-image_files = glob('/data6/SAR_DATA/2023/**/*.jpeg')
-latent_reps = []
-images = []
+def force_cudnn_initialization():
+    s = 32
+    dev = torch.device('cuda')
+    torch.nn.functional.conv2d(torch.zeros(s, s, s, s, device=dev), torch.zeros(s, s, s, s, device=dev))
 
-train_transforms = getTrainTransforms(param_dict['dataset_params']['var'])
 
-iters = 10
 
-fft_len = param_dict['generate_data_settings']['fft_sz']
-sdr_file = ['/data6/SAR_DATA/2023/06072023/SAR_06072023_154802.sar',
-            '/data6/SAR_DATA/2023/06062023/SAR_06062023_125944.sar',
-            '/data6/SAR_DATA/2023/08092023/SAR_08092023_143927.sar',
-            '/data6/SAR_DATA/2023/08092023/SAR_08092023_112016.sar',
-            '/data6/SAR_DATA/2023/08092023/SAR_08092023_144437.sar',
-            '/data6/SAR_DATA/2023/08232023/SAR_08232023_114640.sar',
-            '/data6/SAR_DATA/2023/08232023/SAR_08232023_144235.sar',
-            '/data6/SAR_DATA/2023/08232023/SAR_08232023_091003.sar',
-            '/data6/SAR_DATA/2023/08232023/SAR_08232023_090943.sar',
-            '/data6/SAR_DATA/2023/08102023/SAR_08102023_110807.sar',
-            '/data6/SAR_DATA/2023/06072023/SAR_06072023_111506.sar',
-            '/data6/SAR_DATA/2023/09122023/SAR_09122023_115704.sar',
-            '/data6/SAR_DATA/2023/09122023/SAR_09122023_151902.sar',
-            '/data6/SAR_DATA/2023/09122023/SAR_09122023_152050.sar',
-            '/data6/SAR_DATA/2023/09122023/SAR_09122023_152903.sar',
-            '/data6/SAR_DATA/2023/09122023/SAR_09122023_153015.sar']
-for s in sdr_file_bgtype:
-    try:
-        sdr_f = load([c for c in sdr_file if s[0] in c][0])
-    except IndexError:
-        print(f'{s[0]} not found.')
-        continue
-    except ModuleNotFoundError:
-        sdr_f = load([c for c in sdr_file if s[0] in c][0], import_pickle=False, progress_tracker=True)
-    mfilt = sdr_f.genMatchedFilter(0, fft_len=fft_len)
-    rollback = -int(np.round(sdr_f[0].baseband_fc / (sdr_f[0].fs / fft_len)))
-    ims = []
-    latent_z = []
-    samples = []
-    for i, batch_idx in tqdm(enumerate(range(0, len(sdr_f[0].frame_num) - param_dict['settings']['cpi_len'],
-                                             len(sdr_f[0].frame_num) // iters))):
-        pulse_data = sdr_f.getPulses(sdr_f[0].frame_num[batch_idx:batch_idx + param_dict['settings']['cpi_len']], 0)[1]
-        _, cov_dt = getVAECov(pulse_data, mfilt, rollback, sdr_f[0].nsam, fft_len)
-        dt = train_transforms(cov_dt.astype(np.float32)).unsqueeze(0)
-        latent_z.append(model.forward(dt.to(device))[2].cpu().data.numpy())
-        samples.append(dt.data.numpy())
-        pulse_fft = jaxfft.fft(pulse_data, fft_len, axis=0) * mfilt[:, None]
-        ims.append(db(np.fft.fftshift(jaxfft.fft(jaxfft.ifft(pulse_fft, axis=0)[:sdr_f[0].nsam, :], axis=1), axes=1)))
-    ims = np.stack(ims)
-    latent_z = np.concatenate(latent_z)
-    samples = np.concatenate(samples)
+if __name__ == '__main__':
 
-    latent_reps.append(latent_z)
-    images.append(ims)
+    files = glob('./data/target_new/*.pic')
 
-    dec = model.decode(torch.tensor(latent_z[0, :]).to(device)).cpu().data.numpy()
-    dec = (dec[0, 0, ...] + 1j * dec[0, 1, ...]) * param_dict['dataset_params']['var']
+    for fi in files:
+        plt.figure(f'{fi}')
+        with open(fi, 'rb') as f:
+            data = pickle.load(f)
+            cd = np.fft.ifft(data['clutter'][0, :, 0] + 1j * data['clutter'][0, :, 1]).T
+            td = np.fft.ifft(data['target'][0, :, 0] + 1j * data['target'][0, :, 1]).T
+            plt.subplot(2, 1, 1)
+            plt.title('sans')
+            plt.imshow(np.log10(abs(np.fft.fft(cd, axis=1))))
+            plt.axis('tight')
+            plt.subplot(2, 1, 2)
+            plt.title('with')
+            plt.imshow(np.log10(abs(np.fft.fft(td, axis=1))))
+            plt.hlines([data['t_idx'][0, 0]], -.5, cd.shape[1] - .5, linestyle=':')
+            plt.axis('tight')
+            '''clutter_data.append(params['clutter'])
+            target_data.append(params['target'])
+            index_data.append(params['t_idx'])
+            nsam.append(params['build']['nsam'])'''
 
-    plt.figure(f'{s[0]} Information')
-    plt.subplot(2, 3, 1)
-    plt.title('True Covariance')
-    plt.imshow(db(samples[0, 0, ...] + 1j * samples[0, 1, ...]))
-    plt.axis('off')
-    plt.subplot(2, 3, 4)
-    plt.title('Generated Covariance')
-    plt.imshow(db(dec))
-    plt.axis('off')
-    plt.subplot(2, 3, (2, 5))
-    plt.scatter(np.arange(latent_z.shape[1]), latent_z[0, ...], c='blue')
-    plt.subplot(2, 3, (3, 6))
-    clim_mu = np.mean(ims[0, ...])
-    clim_std = np.std(ims[0, ...])
-    plt.imshow(ims[0, ...], cmap='gray', clim=[clim_mu - clim_std * 3, clim_mu + clim_std + 3])
-    plt.axis('off')
-    plt.axis('tight')
 
-    # images.append(cv2.imread([c for c in image_files if s[0] in c][0]))
-    '''sfig, ax = plt.subplots(1, 3)
-    cam = Camera(sfig)
-    for d in tqdm(range(0, len(dataset), 64)):
-        ax[0].imshow(db(samples[d, 0, ...] + 1j * samples[d, 1, ...]))
-        ax[1].scatter(np.arange(latent_z.shape[1]), latent_z[d, ...], c='blue')
-        ax[1].set_title(f'Set {d}')
-        ax[2].imshow(np.fft.fftshift(db(ims[d // 64, ...]), axes=1))
-        plt.axis('tight')
-        cam.snap()
-    anim = cam.animate(interval=120)
-    plt.show()'''
+    torch.set_float32_matmul_precision('medium')
+    torch.autograd.set_detect_anomaly(True)
+    force_cudnn_initialization()
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    # torch.cuda.empty_cache()
 
-'''fig, axes = plt.subplots(3, 5)
-cam = Camera(fig)
-dist_lim = 0
-for didx, d in tqdm(enumerate(range(0, min([f.shape[0] for f in latent_reps])))):
-    lat_rep = np.array([f[d, ...] for f in latent_reps])
-    dist_mat = squareform(pdist(lat_rep))
-    if dist_lim == 0:
-        dist_lim = dist_mat.max()
-    axes[1, 2].imshow(dist_mat, clim=[0, dist_lim])
-    axes[1, 2].set_xticks(np.arange(dist_mat.shape[0]), [s[1] for s in sdr_file_bgtype], rotation=45)
-    axes[1, 2].set_yticks(np.arange(dist_mat.shape[0]), [s[1] for s in sdr_file_bgtype], rotation=45)
-    idxes = np.arange(len(images))
-    idxes[idxes > 6] += 1
-    for idx, im in enumerate(images):
-        axes[idxes[idx] // 5, idxes[idx] % 5].imshow(im[didx, ...])
-        axes[idxes[idx] // 5, idxes[idx] % 5].axis('tight')
-        axes[idxes[idx] // 5, idxes[idx] % 5].set_title(f'{sdr_file_bgtype[idx][1]}')
-    cam.snap()
+    seed_everything(np.random.randint(1, 2048), workers=True)
+    # seed_everything(107, workers=True)
 
-print('Saving visualization...')
-anim = cam.animate(interval=1000)
-# anim.save('./visualization.mp4', fps=10)
-plt.show()'''
+    config = get_config('wave_exp', './vae_config.yaml')
 
-'''ax = plt.figure().add_subplot(projection='3d')
-for l in latent_reps:
-    ax.scatter(l[:, 0], l[:, 1], l[:, 2])
-plt.show()'''
+    fft_len = config.fft_len
+    nr = 5000  # int((config['perf_params']['vehicle_slant_range_min'] * 2 / c0 - 1 / TAC) * fs)
+    # Since these are dependent on apache params, we set them up here instead of in the yaml file
+    print('Setting up data generator...')
+    config.dataset_params['max_pulse_length'] = nr
+    config.dataset_params['min_pulse_length'] = 1000
+    tbandwidth = .3806
 
-lr = np.vstack(latent_reps)
-kpca = KernelPCA(3)
+    print('Initializing wavemodel...')
+    wave_mdl = GeneratorModel.load_from_checkpoint(f'{config.weights_path}/{config.model_name}.ckpt', config=config, strict=False)
 
-lr_kpca = kpca.fit(lr)
+    for fi in files:
+        plt.figure(f'{fi}')
+        with open(fi, 'rb') as f:
+            data = pickle.load(f)
+            cd = data['clutter'][0, :, 0] + 1j * data['clutter'][0, :, 1]
+            cdp = np.fft.ifft(cd).T
+            td = data['target'][0, :, 0] + 1j * data['target'][0, :, 1]
+            tdp = np.fft.ifft(td).T
+            plt.subplot(2, 1, 1)
+            plt.title('sans')
+            plt.imshow(np.log10(abs(np.fft.fft(cdp, axis=1))))
+            plt.axis('tight')
+            plt.subplot(2, 1, 2)
+            plt.title('with')
+            plt.imshow(np.log10(abs(np.fft.fft(tdp, axis=1))))
+            plt.hlines([data['t_idx'][0, 0]], -.5, cdp.shape[1] - .5, linestyle=':')
+            plt.axis('tight')
+            '''clutter_data.append(params['clutter'])
+            target_data.append(params['target'])
+            index_data.append(params['t_idx'])
+            nsam.append(params['build']['nsam'])'''
 
-lr_river = kpca.transform(latent_reps[7])
-lr_sppark = kpca.transform(latent_reps[10])
-fig = plt.figure()
-ax0 = fig.add_subplot(1, 3, 1)
-ax1 = fig.add_subplot(1, 3, 2, projection='3d')
-axtitle = ax0.text(x=0.5, y=0.85, s="", bbox={'facecolor': 'w', 'alpha': 0.5, 'pad': 5},
-                   transform=ax0.transAxes, ha="center")
-ax2 = fig.add_subplot(1, 3, 3)
-cam = Camera(fig)
-for idx in range(iters):
-    ax0.imshow(images[7][idx, ...], cmap='gray',
-               clim=[images[7].mean() - images[7].std() * 3, images[7].mean() + images[7].std() * 3])
-    ax0.axis('tight')
-    ax0.axis('off')
-    ax1.scatter(lr_river[idx, 0], lr_river[idx, 1], lr_river[idx, 2], c='blue')
-    ax1.scatter(lr_sppark[idx, 0], lr_sppark[idx, 1], lr_sppark[idx, 2], c='red')
-    ax0.title = ax0.text(x=0.5, y=0.85, s=f'CPI {idx}',
-                         transform=ax0.transAxes, ha="center")
-    ax2.imshow(images[10][idx, ...], cmap='gray',
-               clim=[images[10].mean() - images[10].std() * 3, images[10].mean() + images[10].std() * 3])
-    ax2.axis('tight')
-    ax2.axis('off')
-    cam.snap()
-anim = cam.animate(interval=100)
-pilwriter = animation.PillowWriter(fps=10)
-anim.save('./visualization.gif', writer=pilwriter)
-plt.show()
+            c_inp = torch.tensor(data['clutter'] / config.dataset_params.std, device=wave_mdl.device).unsqueeze(0)
+            td_inp = torch.tensor(data['target'] / config.dataset_params.std, device=wave_mdl.device).unsqueeze(0)
+            plength = torch.tensor([3178], device=wave_mdl.device).unsqueeze(0)
+            bwidth = torch.tensor([tbandwidth], device=wave_mdl.device).unsqueeze(0)
+
+            nn_output = wave_mdl(c_inp, td_inp, plength, bandwidth)
+            # nn_numpy = nn_output[0, 0, ...].cpu().data.numpy()
+
+            wave = wave_mdl.getWaveform(nn_output=nn_output).cpu().data.numpy()
+
+            linear = np.fft.fft(genPulse(np.linspace(0, 1, 10),
+                                         np.linspace(0, 1, 10), nr, fs, config.fc,
+                                         bandwidth[0].cpu().data.numpy() * fs), fft_len)
+            linear = linear / np.sqrt(sum(linear * linear.conj()))  # Unit energy
+
+            taytay = np.zeros(fft_len, dtype=np.complex128)
+            taytay_len = int(tbandwidth * fft_len) if int(tbandwidth * fft_len) % 2 == 0 else int(
+                tbandwidth * fft_len) + 1
+            taytay[:taytay_len // 2] = taylor(taytay_len)[-taytay_len // 2:]
+            taytay[-taytay_len // 2:] = taylor(taytay_len)[:taytay_len // 2]
+
+            mfiltered_linear = linear * linear.conj() * taytay
+            mfiltered_wave0 = wave[tnum, 0] * wave[tnum, 0].conj() * taytay
+            linear_corr = np.fft.ifft(td * mfiltered_linear, axis=1)[:nsam]
+            wave_corr = np.fft.ifft(td * mfiltered_wave0, axis=1)[:nsam]
+
+

@@ -6,7 +6,7 @@ import numpy as np
 from cbam import CBAM
 from config import Config
 from layers import Block2d, Block2dTranspose, Fourier2D, SwiGLU, PositionalEncoding, FourierFeatureTrain, \
-    MultiHeadLocationAwareAttention, MultiHeadAttention
+    MultiHeadLocationAwareAttention, RelativeMultiHeadAttention
 from schedulers import CosineWarmupScheduler
 from pytorch_lightning import LightningModule
 from utils import _xavier_init, nonlinearities
@@ -292,7 +292,7 @@ class DecoderHead(LightningModule):
 class ClutterTransformer(LightningModule):
 
     def __init__(self, input_dim, model_dim, num_layers, lr, warmup, max_iters, dropout=0.0,
-        input_dropout=0.0, nonlinearity='silu', *args, **kwargs):
+        input_dropout=0.1, nonlinearity='silu', *args, **kwargs):
         super().__init__()
         self.automatic_optimization = False
         self.save_hyperparameters()
@@ -314,7 +314,7 @@ class ClutterTransformer(LightningModule):
         )
 
         self.input_imag = nn.Sequential(
-            nn.Dropout(self.hparams.input_dropout),
+            # nn.Dropout(self.hparams.input_dropout),
             nn.Linear(self.hparams.input_dim, self.hparams.model_dim),
             nlin,
             SwiGLU(self.hparams.model_dim, 2 * self.hparams.model_dim, self.hparams.model_dim),
@@ -323,11 +323,18 @@ class ClutterTransformer(LightningModule):
             nlin,
         )
 
-        self.cross_attention = MultiHeadAttention(self.hparams.model_dim, 14)
+        self.cross_attention = RelativeMultiHeadAttention(self.hparams.model_dim, 5)
+        self.pos_enc = PositionalEncoding(self.hparams.model_dim, max_len=256)
 
         # Transformer
         self.lstm = nn.LSTM(input_size=self.hparams.model_dim, hidden_size=self.hparams.model_dim,
                                  num_layers=self.hparams.num_layers, batch_first=True)
+
+        self.encoder_output = nn.Sequential(
+            nn.Linear(self.hparams.model_dim, self.hparams.model_dim),
+            nlin,
+            nn.Linear(self.hparams.model_dim, self.hparams.model_dim)
+        )
 
         # self.fourier = FourierFeatureTrain(2, nfourier, self.hparams.fourier_std)
 
@@ -338,10 +345,12 @@ class ClutterTransformer(LightningModule):
         )'''
 
         self.output_real = nn.Sequential(
+            nn.Linear(self.hparams.model_dim, self.hparams.model_dim),
             nn.Linear(self.hparams.model_dim, self.hparams.input_dim),
         )
 
         self.output_imag = nn.Sequential(
+            nn.Linear(self.hparams.model_dim, self.hparams.model_dim),
             nn.Linear(self.hparams.model_dim, self.hparams.input_dim),
         )
 
@@ -350,10 +359,12 @@ class ClutterTransformer(LightningModule):
     def encode(self, x):
         y = self.input_imag(x[..., 1, :])
         x = self.input_real(x[..., 0, :])
-        xy, _ = self.cross_attention(x, y, y)
+        pe = self.pos_enc(x)
+        xy = self.cross_attention(x, y, y, pe)
+        # xx, _ = self.lstm(x)
         # xy = self.mix(torch.cat([x.unsqueeze(-1), y.unsqueeze(-1)], dim=-1)).squeeze(-1)
-        xy, _ = self.lstm(xy)
-        return xy
+        # xy, _ = self.lstm(xy)
+        return self.encoder_output(xy)
 
     def get_next_n(self, x, n):
         # batch x Sequence Length x model_dim
@@ -401,21 +412,30 @@ class ClutterTransformer(LightningModule):
         return {'optimizer': optimizer, 'lr_scheduler': scheduler}
 
     def train_val_get(self, batch, batch_idx, kind='train'):
-        clutter_sequence = batch
+        clutter_sequence, target_sequence, _, _, _ = batch
 
-        feats = self.forward(clutter_sequence)
+
+        target_feats = self.encode(target_sequence[:, :-1, ...])
+        clutter_feats = self.encode(clutter_sequence[:, :-1, ...])
+        clutter_rec = self.decode(clutter_feats)
+        target_rec = self.decode(target_feats)
 
         # RECONSTRUCTION LOSS
-        rec_loss = torch.mean(torch.square(clutter_sequence[:, 1:] - feats[:, :-1]))
-        norm_loss = torch.mean(torch.linalg.norm(clutter_sequence[:, 1:] - feats[:, :-1], dim=-2))
-        baseline = torch.mean(torch.square(clutter_sequence[:, 1:]))
+        rec_loss = torch.mean(torch.square(clutter_sequence[:, -1:] - clutter_rec[:, -1:]))
+        norm_loss = (torch.mean(torch.linalg.norm(clutter_sequence[:, -1:] - clutter_rec[:, -1:], dim=-2)) +
+                     torch.mean(torch.linalg.norm(target_sequence[:, -1:] - target_rec[:, -1:], dim=-2)))
+        similarity = torch.abs(target_feats - clutter_feats).mean()
+        baseline = torch.mean(torch.square(clutter_sequence[:, -1:]))
+
+        loss = norm_loss + rec_loss * self.current_epoch / 1e3
 
         # Logging ranking metrics
         self.log_dict({f'{kind}_rec_loss': rec_loss, f'{kind}_norm_loss': norm_loss, f'{kind}_baseline': baseline,
+                       f'{kind}_similarity': similarity, f'{kind}_loss': loss,
                        'lr': self.lr_schedulers().get_last_lr()[0]}, on_epoch=True,
                       prog_bar=True, rank_zero_only=True)
 
-        return norm_loss
+        return loss
 
     '''def on_after_backward(self):
         # example to inspect gradient information in tensorboard

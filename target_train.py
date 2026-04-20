@@ -1,138 +1,139 @@
+from config import get_config
+from utils import upsample, fs, narrow_band, getMatchedFilter
+import numpy as np
+from simulib.simulation_functions import genPulse, db
+import matplotlib.pyplot as plt
+from scipy.signal import stft
+from scipy.signal.windows import taylor
 import torch
 from pytorch_lightning import Trainer, loggers, seed_everything
-from simulib.simulation_functions import db
-from sklearn.decomposition import KernelPCA
-from config import get_config
-from dataloaders import TargetEncoderModule
-from models import TargetEmbedding
-import matplotlib.pyplot as plt
-import numpy as np
-from glob import glob
+from pytorch_lightning.callbacks import EarlyStopping, StochasticWeightAveraging, ModelCheckpoint
+from dataloaders import WaveDataModule
+from models import ClutterTransformer
 
 
-def setupTrainer(a_gpu_num, tconf, do_logs=True, **trainer_args):
-
-
-    enc_data_module = TargetEncoderModule(**tconf.dataset_params)
-    enc_data_module.setup()
-
-    # Get the model, experiment, logger set up
-    if tconf.warm_start:
-        mdl = TargetEmbedding.load_from_checkpoint(
-            f'{tconf.weights_path}/{tconf.model_name}.ckpt', strict=False)
-    else:
-        mdl = TargetEmbedding(tconf)
-    if do_logs:
-        log_mod = loggers.TensorBoardLogger(tconf.log_dir, name=tconf.model_name)
-    else:
-        log_mod = None
-    ret_train = Trainer(logger=log_mod, max_epochs=tconf.max_epochs,
-                        default_root_dir=tconf.weights_path,
-                        log_every_n_steps=tconf.log_epoch, detect_anomaly=False, devices=[a_gpu_num], **trainer_args)
-    return ret_train, mdl, enc_data_module
+def force_cudnn_initialization():
+    s = 32
+    dev = torch.device('cuda')
+    torch.nn.functional.conv2d(torch.zeros(s, s, s, s, device=dev), torch.zeros(s, s, s, s, device=dev))
 
 
 
 if __name__ == '__main__':
     torch.set_float32_matmul_precision('medium')
-    gpu_num = 0
-    device = f'cuda:{gpu_num}' if torch.cuda.is_available() else 'cpu'
+    torch.autograd.set_detect_anomaly(True)
+    force_cudnn_initialization()
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    # torch.cuda.empty_cache()
+
     seed_everything(np.random.randint(1, 2048), workers=True)
-    # seed_everything(43, workers=True)
+    # seed_everything(107, workers=True)
 
-    target_config = get_config('target_exp', './vae_config.yaml')
-    trainer, model, data = setupTrainer(gpu_num, target_config)
+    config = get_config('transformer_exp', './vae_config.yaml')
 
-    # Get the model, experiment, logger set up
-    if target_config.is_training:
-        print("======= Training =======")
-        try:
-            trainer.fit(model, datamodule=data)
-        except KeyboardInterrupt:
-            if trainer.is_global_zero:
-                print('Training interrupted.')
-            else:
-                print('adios!')
-                exit(0)
-        if target_config.save_model:
-            trainer.save_checkpoint(f'{target_config.weights_path}/{target_config.model_name}.ckpt')
+    nr = 5000  # int((config['perf_params']['vehicle_slant_range_min'] * 2 / c0 - 1 / TAC) * fs)
+    # Since these are dependent on apache params, we set them up here instead of in the yaml file
+    print('Setting up data generator...')
+    config.dataset_params['max_pulse_length'] = nr
+    config.dataset_params['min_pulse_length'] = 1000
 
-    if trainer.is_global_zero:
-        # import matplotlib as mplib
-        # mplib.use('TkAgg')
-        model.to(device)
-        model.eval()
+    data = WaveDataModule(device=device, **config.dataset_params)
+    data.setup()
 
-        # Get one example from each target
-        examples = []
-        example_files = glob('/home/jeff/repo/apache/data/target_tensors/target_*')
-        pcas = []
-        for ex in example_files:
-            pc0 = []
-            if fls := glob(f'{ex}/target_*_*.pt'):
-                pc0.extend(torch.load(f, weights_only=True) for f in fls)
-                examples.append(torch.load(fls[0], weights_only=True))
-            pcas.append(pc0)
+    print('Initializing wavemodel...')
+    if config.warm_start:
+        transformer = ClutterTransformer.load_from_checkpoint(f'{config.weights_path}/{config.model_name}.ckpt', config=config, strict=False)
+    else:
+        transformer = ClutterTransformer(**config.model_params, **config.training_params)
+    logger = loggers.TensorBoardLogger(config.log_dir,
+                                       name=config.model_name, log_graph=False)
+    expected_lr = 1e-6
+    if config.distributed:
+        trainer = Trainer(logger=logger, max_epochs=config.max_epochs, num_sanity_val_steps=0, default_root_dir=config.weights_path,
+                          log_every_n_steps=config.log_epoch, check_val_every_n_epoch=1000, devices=[0, 1], strategy='ddp', callbacks=
+                          [EarlyStopping(monitor='train_rec_loss', patience=config.patience, check_finite=True),
+                           ModelCheckpoint(monitor='train_rec_loss_epoch')])
+    else:
+        trainer = Trainer(logger=logger, max_epochs=config.max_epochs, num_sanity_val_steps=0,
+                          default_root_dir=config.weights_path, check_val_every_n_epoch=1000,
+                          log_every_n_steps=config.log_epoch, devices=[0], callbacks=
+                          [EarlyStopping(monitor='train_rec_loss', patience=config.patience, check_finite=True),
+                           ModelCheckpoint(monitor='train_rec_loss_epoch')])
+    print("======= Training =======")
+    try:
+        trainer.fit(transformer, datamodule=data)
+    except KeyboardInterrupt:
+        if trainer.is_global_zero:
+            print('Training interrupted.')
+        else:
+            print('adios!')
+            exit(0)
 
-        model.to('cuda:0')
+    if trainer.global_rank == 0:
+        if config.save_model:
+            trainer.save_checkpoint(f'{config.weights_path}/{config.model_name}.ckpt')
+            print('Checkpoint saved.')
 
-        # A look at how the different targets are located in latent space
-        enc_vecs = []
-        for ptarg in pcas:
-            enc0 = []
-            enc0.extend(
-                model.encode(p[0].unsqueeze(0).to(model.device))
-                .squeeze(0)
-                .cpu()
-                .data.numpy()
-                for p in ptarg
-            )
-            enc_vecs.append(enc0)
-        # Stack everything together
-        pca_stack = np.concatenate([e for e in enc_vecs if len(e) > 0])
-        pca = KernelPCA(n_components=3, kernel='rbf')
-        pca = pca.fit(pca_stack)
+        with torch.no_grad():
+            transformer.to(device)
+            transformer.eval()
+            data_iter = iter(data.train_dataloader())
 
-        ax = plt.subplot(111, projection='3d')
-        for enc in enc_vecs:
-            if len(enc) > 0:
-                pca_vecs = pca.transform(enc)
-                ax.scatter(pca_vecs[:, 0], pca_vecs[:, 1], pca_vecs[:, 2])
+            seq, tseq, _, _, _ = next(data_iter)
 
-        # Reconstruction, less important but contains salient information
-        for idx, example in enumerate(examples):
-            reconstruction = model(example[0].unsqueeze(0).to(model.device)).squeeze(0).cpu().data.numpy()
-            rec = (reconstruction[0] * target_config.var[0] + target_config.mu[0] + 1j * reconstruction[1] * target_config.var[1] + target_config.mu[1])
-            example_data = example[0].cpu().data.numpy()
-            ex = example_data[0] + 1j * example_data[1]
-            plt.figure(f'Target {idx}')
-            plt.subplot(221)
+            encoded_seq = transformer.encode(seq.to(transformer.device))
+            rec_seq = transformer.decode(encoded_seq)
+
+            encoded_tseq = transformer.encode(tseq.to(transformer.device))
+            rec_tseq = transformer.decode(encoded_tseq)
+
+            plt.figure('Clutter Sequence')
+            plt.subplot(2, 2, 1)
+            plt.title('Clutter Sequence')
+            plt.plot(seq.data.cpu().numpy()[0, -1, 0], label='Clutter Sequence')
+            plt.plot(rec_seq.data.cpu().numpy()[0, -1, 0], label='Target Sequence')
+            plt.subplot(2, 2, 2)
+            plt.title('Error')
+            plt.imshow(abs(seq.data.cpu().numpy()[0, 2:, 0] - rec_seq.data.cpu().numpy()[0, :-2, 0]))
+            plt.axis('tight')
+            plt.subplot(2, 2, 3)
             plt.title('Original')
-            plt.imshow(db(ex))
+            plt.imshow(seq.data.cpu().numpy()[0, :, 0], label='Clutter Sequence')
             plt.axis('tight')
-            # plt.clim(-10, 10)
-            plt.xticks([])
-            plt.yticks([])
-            plt.subplot(222)
+            plt.subplot(2, 2, 4)
             plt.title('Reconstruction')
-            plt.imshow(db(rec))
+            plt.imshow(rec_seq.data.cpu().numpy()[0, :, 0], label='Target Sequence')
             plt.axis('tight')
-            # plt.clim(-10, 10)
-            plt.xticks([])
-            plt.yticks([])
-            plt.subplot(223)
-            plt.title('Phase Error')
-            plt.imshow(np.angle(ex - rec))
-            plt.axis('tight')
-            # plt.clim(-10, 10)
-            plt.xticks([])
-            plt.yticks([])
-            plt.subplot(224)
-            plt.title('Mag Error')
-            plt.imshow(abs(ex - rec))
-            plt.axis('tight')
-            # plt.clim(-10, 10)
-            plt.xticks([])
-            plt.yticks([])
 
-            plt.show()
+            plt.figure('Target Sequence')
+            plt.subplot(2, 2, 1)
+            plt.title('Clutter Sequence')
+            plt.plot(tseq.data.cpu().numpy()[0, 2, 0], label='Clutter Sequence')
+            plt.plot(rec_tseq.data.cpu().numpy()[0, 0, 0], label='Target Sequence')
+            plt.subplot(2, 2, 2)
+            plt.title('Error')
+            plt.imshow(abs(tseq.data.cpu().numpy()[0, 2:, 0] - rec_tseq.data.cpu().numpy()[0, :-2, 0]))
+            plt.axis('tight')
+            plt.subplot(2, 2, 3)
+            plt.title('Original')
+            plt.imshow(tseq.data.cpu().numpy()[0, :, 0], label='Clutter Sequence')
+            plt.axis('tight')
+            plt.subplot(2, 2, 4)
+            plt.title('Reconstruction')
+            plt.imshow(rec_tseq.data.cpu().numpy()[0, :, 0], label='Target Sequence')
+            plt.axis('tight')
+
+            plt.figure('Encoded Sequences')
+            plt.subplot(2, 2, 1)
+            plt.title('Clutter Sequence')
+            plt.plot(encoded_seq.data.cpu().numpy()[0, 1], label='Clutter Sequence')
+            plt.subplot(2, 2, 2)
+            plt.title('Target Sequence')
+            plt.plot(encoded_tseq.data.cpu().numpy()[0, 1], label='Clutter Sequence')
+            plt.subplot(2, 2, 3)
+            plt.title('Overlay')
+            plt.plot(encoded_seq.data.cpu().numpy()[0, 1], label='Clutter Sequence')
+            plt.plot(encoded_tseq.data.cpu().numpy()[0, 1], label='Clutter Sequence')
+            plt.subplot(2, 2, 4)
+            plt.title('Differences')
+            plt.plot(encoded_seq.data.cpu().numpy()[0, 1] - encoded_tseq.data.cpu().numpy()[0, 1], label='Clutter Sequence')

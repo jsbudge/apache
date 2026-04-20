@@ -200,11 +200,14 @@ class PulseLength(nn.Module):
         x = torch.complex(x[:, ::2, :], x[:, 1::2, :])
         x = torch.fft.ifft(torch.fft.fftshift(x, dim=2), dim=2)
         for n in range(x.shape[0]):
-            x[n, :, :pl[n]] *= torch.hann_window(int(pl[n]), device=x.device)
-            x[n, :, pl[n]:] = 0
+            x[n, :, :pl[n]] = x[n, :, :pl[n]] * torch.hann_window(int(pl[n]), device=x.device)
+            x[n, :, pl[n]:] = x[n, :, pl[n]:] * 0.
         x = torch.view_as_real(torch.fft.fftshift(torch.fft.fft(x, dim=2), dim=2))
         x = torch.cat([x[:, n, ...].swapaxes(1, 2) for n in range(x.shape[1])], dim=1)
         return x
+
+
+
 
 
 class AttentionConv(nn.Module):
@@ -384,13 +387,16 @@ class PositionalEncoding(nn.Module):
         pe[:, 0, 1::2] = torch.cos(position * div_term)
         self.register_buffer('pe', pe)
 
-    def forward(self, x: Tensor) -> Tensor:
+    def forward(self, x: Tensor, apply_to: bool = False) -> Tensor:
         """
         Arguments:
             x: Tensor, shape ``[seq_len, batch_size, embedding_dim]``
+            apply_to: bool, whether to apply the positional encoding to x
         """
-        x = x + self.pe[:x.size(0)]
-        return self.dropout(x)
+        if apply_to:
+            return self.dropout(x + self.pe[:x.size(0)])
+        else:
+            return self.pe[:x.size(0)]
 
 
 class LKA1d(nn.Module):

@@ -1,7 +1,7 @@
 from config import get_config
-from utils import upsample, normalize, fs, narrow_band, getMatchedFilter
+from utils import upsample, fs, narrow_band, getMatchedFilter
 import numpy as np
-from simulib.simulation_functions import genPulse, db, findPowerOf2
+from simulib.simulation_functions import genPulse, db
 import matplotlib.pyplot as plt
 from scipy.signal import stft
 from scipy.signal.windows import taylor
@@ -174,15 +174,16 @@ if __name__ == '__main__':
                 plt.plot(zoom_area, (db(linear_corr[tnum])[zoom_area] - db(linear_corr[tnum])[zoom_area].max()))
                 plt.vlines(target_index[tnum][0], -50, 10, color='black')
 
-            plt.legend(['Range Profile', 'NN', 'Linear'])
+            plt.legend(['Range Profile'] + [f'NN_{n}' for n in range(wave_mdl.n_ants)] + ['Linear'])
             plt.xlabel('Lag')
             plt.ylabel('Power (dB)')
 
             plt.figure('Target_Clutter vs. Linear')
             tnum = 7
             mfiltered_wave0 = waves[tnum, 0] * waves[tnum, 0].conj() * taytay
-            mfiltered_wave1 = waves[tnum, 1] * waves[tnum, 1].conj() * taytay if wave_mdl.n_ants > 1 else 0
+
             if wave_mdl.n_ants > 1:
+                mfiltered_wave1 = waves[tnum, 0] * waves[tnum, 1].conj() * taytay if wave_mdl.n_ants > 1 else 0
                 clutter_corr = np.fft.ifft(targets[0] * mfiltered_wave0 + targets[0] * mfiltered_wave1)[:nsam]
                 target0_corr = np.fft.ifft(targets[0] * mfiltered_wave0)[:nsam]
                 target1_corr = np.fft.ifft(targets[0] * mfiltered_wave1)[:nsam]
@@ -202,7 +203,7 @@ if __name__ == '__main__':
             plt.plot(zoom_area, (db(linear_corr[tnum])[zoom_area] - db(linear_corr[tnum])[zoom_area].max()))
             plt.vlines(target_index[tnum][0], -50, 10, color='black')
 
-            plt.legend(['Range Profile', 'NN', 'Linear'])
+            plt.legend(['Range Profile'] + [f'NN_{n}' for n in range(wave_mdl.n_ants)] + ['Linear'])
             plt.xlabel('Lag')
             plt.ylabel('Power (dB)')
 
@@ -224,7 +225,7 @@ if __name__ == '__main__':
             if wave_mdl.n_ants > 1:
                 inp_wave = mfiltered_wave1
                 autocorr2 = np.fft.fftshift(db(np.fft.ifft(upsample(inp_wave))))
-                inp_wave = waves[0, 0] * getMatchedFilter(np.fft.ifft(waves[0, 1]), tbandwidth * fs, fs, config.fc, fft_len)
+                inp_wave = waves[0, 0] * waves[0, 1].conj() * taytay
                 autocorrcr = np.fft.fftshift(db(np.fft.ifft(upsample(inp_wave))))
             perf_autocorr = np.fft.fftshift(db(np.fft.ifft(upsample(mfiltered_linear))))
             lags = np.arange(len(autocorr1)) - len(autocorr1) // 2
@@ -277,7 +278,8 @@ if __name__ == '__main__':
                 # nn_numpy = nn_output[0, 0, ...].cpu().data.numpy()
                 wave_stack.append(wave_mdl.getWaveform(nn_output=nn_output).cpu().data.numpy())
             waves = np.concatenate(wave_stack)
-            wave_mfilt = (waves * waves.conj() * taytay)[:, 0]
+            # wave_mfilt = (waves * waves.conj() * taytay)[:, 0]
+            wave_mfilt = (waves * waves.conj())[:, 0]
             wave_block = np.fft.fft(np.fft.ifft(wave_mfilt * tprof[1:], axis=-1)[:, :nsam], linear_block.shape[0], axis=0)
 
             plt.figure('Doppler Profiles')

@@ -177,9 +177,12 @@ class WaveDataset(Dataset):
         else:
             Xtidx = idxes
             Xsidx = idxes
-        self.clutter = torch.tensor(clutter_data[Xsidx if is_val else Xtidx] / std, dtype=torch.float32)
-        self.target = torch.tensor(target_data[Xsidx if is_val else Xtidx] / std, dtype=torch.float32)
-        self.t_idx = torch.tensor(index_data[Xsidx if is_val else Xtidx], dtype=torch.int)
+        ci = clutter_data[Xsidx if is_val else Xtidx] / std
+        ti = target_data[Xsidx if is_val else Xtidx] / std
+        ii = index_data[Xsidx if is_val else Xtidx]
+        self.clutter = torch.tensor(np.concatenate([ci for _ in range(10)]), dtype=torch.float32)
+        self.target = torch.tensor(np.concatenate([ti for _ in range(10)]), dtype=torch.float32)
+        self.t_idx = torch.tensor(np.concatenate([ii for _ in range(10)]), dtype=torch.int)
         self.samples = np.array(nsam)
 
         self.seed = seed
