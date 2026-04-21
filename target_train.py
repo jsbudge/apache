@@ -79,7 +79,7 @@ if __name__ == '__main__':
             transformer.eval()
             data_iter = iter(data.train_dataloader())
 
-            seq, tseq, _, _, _ = next(data_iter)
+            seq, tseq, _, _, _, _ = next(data_iter)
 
             encoded_seq = transformer.encode(seq.to(transformer.device))
             rec_seq = transformer.decode(encoded_seq)

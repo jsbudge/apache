@@ -89,7 +89,7 @@ if __name__ == '__main__':
             nsam = data.train_dataloader().dataset.samples[0]
 
             for _ in range(min(len(data.train_dataloader()), 25)):
-                cct, tct, tidx, _, _ = next(data_iter)
+                cct, tct, tidx, _, _, _, _ = next(data_iter)
                 clutter_profile.append(cct)
                 target_profile.append(tct)
                 target_index.append(tidx)

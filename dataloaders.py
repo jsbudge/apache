@@ -184,6 +184,10 @@ class WaveDataset(Dataset):
         self.target = torch.tensor(np.concatenate([ti for _ in range(10)]), dtype=torch.float32)
         self.t_idx = torch.tensor(np.concatenate([ii for _ in range(10)]), dtype=torch.int)
         self.samples = np.array(nsam)
+        truth = np.zeros((self.clutter.shape[1] // 2, self.samples[0]))
+        truth[:4, 6350:6800] = 1.
+        truth[-2:, 6700:6800] = 1.
+        self.truth = torch.tensor(truth, dtype=torch.float32)
 
         self.seed = seed
         self.scaling = std
@@ -194,10 +198,10 @@ class WaveDataset(Dataset):
     def __getitem__(self, idx):
         # Clutter profile, target+clutter range profile, target range index, pulse length, bandwidth
         if self.is_single:
-            return self.clutter[0], self.target[0], self.t_idx[0], 1000, .5
+            return self.clutter[0], self.target[0], self.t_idx[0], 1000, .5, self.samples[0], self.truth
         else:
             return (self.clutter[idx], self.target[idx], self.t_idx[idx],
-                    np.random.randint(self.min_pulse_length, self.max_pulse_length), np.random.rand() * .6 + .2)
+                    np.random.randint(self.min_pulse_length, self.max_pulse_length), np.random.rand() * .6 + .2, self.samples[idx])
 
 
 

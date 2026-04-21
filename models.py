@@ -412,7 +412,7 @@ class ClutterTransformer(LightningModule):
         return {'optimizer': optimizer, 'lr_scheduler': scheduler}
 
     def train_val_get(self, batch, batch_idx, kind='train'):
-        clutter_sequence, target_sequence, _, _, _ = batch
+        clutter_sequence, target_sequence, _, _, _, _ = batch
 
 
         target_feats = self.encode(target_sequence[:, :-1, ...])

@@ -57,10 +57,10 @@ wave_exp_params:
     lr: .001
     weight_decay: 0.0
     scheduler_gamma: 0.999
-    warmup: 399
-    max_iters: 800000
+    warmup: 1800
+    max_iters: 738000
     swa_start: .6
-    warm_start: False
+    warm_start: True
     betas: [.9, .99]
     log_epoch: 100
     accumulation_steps: 1
@@ -68,7 +68,7 @@ wave_exp_params:
     save_model: False
     loss_landscape: False  # This should always be False; it is set to True inside of the relevant script
     gradient_flow: False  # This should always be False; it is set to True inside of the relevant script
-    max_epochs: 12000
+    max_epochs: 2050
     patience: 500
     distributed: False
   model_params:
@@ -79,6 +79,8 @@ wave_exp_params:
     encoder_start_channel_sz: 2
     n_skip_layers: 5
     conv_kernel_size: 227
+    mid_kernel_size: 105
+    small_kernel_size: 5
     flowthrough_channels: 64
     wave_decoder_channels: 64
     target_channels: 64
