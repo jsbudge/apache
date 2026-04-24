@@ -32,10 +32,10 @@ if __name__ == '__main__':
     config = get_config('wave_exp', './vae_config.yaml')
 
     fft_len = config.fft_len
-    nr = 5000  # int((config['perf_params']['vehicle_slant_range_min'] * 2 / c0 - 1 / TAC) * fs)
+    nr = 3000  # int((config['perf_params']['vehicle_slant_range_min'] * 2 / c0 - 1 / TAC) * fs)
     # Since these are dependent on apache params, we set them up here instead of in the yaml file
     print('Setting up data generator...')
-    config.dataset_params['max_pulse_length'] = nr
+    config.dataset_params['max_pulse_length'] = 5000
     config.dataset_params['min_pulse_length'] = 1000
 
     data = WaveDataModule(device=device, **config.dataset_params)
@@ -48,19 +48,16 @@ if __name__ == '__main__':
         wave_mdl = GeneratorModel(config=config)
     logger = loggers.TensorBoardLogger(config.log_dir,
                                        name=config.model_name, log_graph=False)
-    expected_lr = max((config.lr * config.scheduler_gamma ** (config.max_epochs * config.swa_start)), 1e-9)
     if config.distributed:
         trainer = Trainer(logger=logger, max_epochs=config.max_epochs, num_sanity_val_steps=0, default_root_dir=config.weights_path,
                           log_every_n_steps=config.log_epoch, check_val_every_n_epoch=1000, devices=[0, 1], strategy='ddp', callbacks=
                           [EarlyStopping(monitor='target_loss', patience=config.patience, check_finite=True),
-                           StochasticWeightAveraging(swa_lrs=expected_lr, swa_epoch_start=config.swa_start),
                            ModelCheckpoint(monitor='loss_epoch')])
     else:
         trainer = Trainer(logger=logger, max_epochs=config.max_epochs, num_sanity_val_steps=0,
                           default_root_dir=config.weights_path, check_val_every_n_epoch=1000,
                           log_every_n_steps=config.log_epoch, devices=[0], callbacks=
                           [EarlyStopping(monitor='target_loss', patience=config.patience, check_finite=True),
-                           StochasticWeightAveraging(swa_lrs=expected_lr, swa_epoch_start=config.swa_start),
                            ModelCheckpoint(monitor='loss_epoch')])
     print("======= Training =======")
     try:
@@ -79,29 +76,38 @@ if __name__ == '__main__':
 
         with torch.no_grad():
             wave_stack = []
+            filt_stack = []
             wave_mdl.to(device)
             wave_mdl.eval()
             clutter_profile = []
             target_profile = []
+            just_targets = []
             target_index = []
             data_iter = iter(data.train_dataloader())
             scalings = data.train_dataloader().dataset.scaling
             nsam = data.train_dataloader().dataset.samples[0]
 
             for _ in range(min(len(data.train_dataloader()), 25)):
-                cct, tct, tidx, _, _, _, _ = next(data_iter)
+                cct, sot, tct, tidx, _, _, _, _ = next(data_iter)
                 clutter_profile.append(cct)
                 target_profile.append(tct)
+                just_targets.append(sot)
                 target_index.append(tidx)
 
             tbandwidth = .3806
 
-            for ts, cc in zip(target_profile, clutter_profile):
+            taytay = np.zeros(fft_len, dtype=np.complex128)
+            taytay_len = int(tbandwidth * fft_len) if int(tbandwidth * fft_len) % 2 == 0 else int(
+                tbandwidth * fft_len) + 1
+            taytay[:taytay_len // 2] = taylor(taytay_len)[-taytay_len // 2:]
+            taytay[-taytay_len // 2:] = taylor(taytay_len)[:taytay_len // 2]
+
+            for ts, cc in zip(just_targets, clutter_profile):
                 # cc = cct.to(device) if cc is None else cc
                 ts = ts.to(device)
                 cc = cc.to(device)
                 # ts = tst.to(device)
-                plength = torch.tensor([3178]).to(device)
+                plength = torch.tensor([nr]).to(device)
                 bandwidth = torch.tensor([tbandwidth]).to(device)
                 # plength = plength.to(device)
                 # bandwidth = bandwidth.to(device)
@@ -111,15 +117,15 @@ if __name__ == '__main__':
 
                 wave_stack.append(wave_mdl.getWaveform(nn_output=nn_output).cpu().data.numpy())
             waves = np.concatenate(wave_stack) # / np.sum(waves * waves.conj(), axis=2)[..., None]
+            filts = np.concatenate(wave_stack) * taytay
             # waves = save_waves
             # waves = np.fft.fft(np.fft.ifft(waves, axis=2)[:, :, :nr], fft_len, axis=2)
             print('Loaded waveforms...')
 
-            clutter = [cc.cpu().data.numpy() for cc in clutter_profile]
-            clutter = np.array(
-                [(t[0, -1, 0, :] + 1j * t[0, -1, 1, :]) * scalings for t in clutter])
+            clutter = np.concatenate([cc.cpu().data.numpy() for cc in clutter_profile])
             targets = [ts.cpu().data.numpy() for ts in target_profile]
-            targets = np.array([(t[0, -1, 0, :] + 1j * t[0, -1, 1, :]) * scalings for t in targets])
+            targets = np.array([(t[0, -1, 0, :] + 1j * t[0, -1, 1, :]) * scalings[0] for t in targets])
+            just_t = just_targets[0][0, 0, 0].data.cpu().numpy() + 1j * just_targets[0][0, 0, 1].data.cpu().numpy()
 
             linear = np.fft.fft(genPulse(np.linspace(0, 1, 10),
                          np.linspace(0, 1, 10), nr, fs, config.fc,
@@ -130,29 +136,30 @@ if __name__ == '__main__':
 
             # Run some plots for an idea of what's going on
             freqs = np.fft.fftshift(np.fft.fftfreq(fft_len, 1 / fs))
+            clutter_spectra = np.fft.fftshift(targets[0] * linear)
+            target_spectra = np.fft.fftshift(just_t * linear)
             plt.figure('Waveform PSD')
+            plt.plot(freqs, db(clutter_spectra))
+            plt.plot(freqs, db(target_spectra))
             plt.plot(freqs, db(np.fft.fftshift(waves[-1, 0])))
             if wave_mdl.n_ants > 1:
                 plt.plot(freqs, db(np.fft.fftshift(waves[-1, 1])))
             if wave_mdl.n_ants > 1:
                 plt.legend(['Waveform 1', 'Waveform 2'])
             else:
-                plt.legend(['Waveform'])
+                plt.legend(['Clutter', 'Target', 'Waveform'])
             plt.ylabel('Relative Power (dB)')
             plt.xlabel('Freq (Hz)')
 
-            taytay = np.zeros(fft_len, dtype=np.complex128)
-            taytay_len = int(tbandwidth * fft_len) if int(tbandwidth * fft_len) % 2 == 0 else int(tbandwidth * fft_len) + 1
-            taytay[:taytay_len // 2] = taylor(taytay_len)[-taytay_len // 2:]
-            taytay[-taytay_len // 2:] = taylor(taytay_len)[:taytay_len // 2]
 
-            mfiltered_linear = linear * linear.conj()# * taytay
+
+            mfiltered_linear = linear * linear.conj() * taytay
             linear_corr = np.fft.ifft(targets * mfiltered_linear, axis=1)[:nsam]
 
             plt.figure('Target-Clutter vs. Linear')
             for tnum in range(waves.shape[0]):
-                mfiltered_wave0 = waves[tnum, 0] * waves[tnum, 0].conj() * taytay
-                mfiltered_wave1 = waves[tnum, 1] * waves[tnum, 1].conj() * taytay if wave_mdl.n_ants > 1 else 0
+                mfiltered_wave0 = waves[tnum, 0] / (filts[tnum, 0] + 1e-12)
+                mfiltered_wave1 = waves[tnum, 1] / (filts[tnum, 1] + 1e-12) if wave_mdl.n_ants > 1 else 0
                 if wave_mdl.n_ants > 1:
                     clutter_corr = np.fft.ifft(targets[0] * mfiltered_wave0 + targets[0] * mfiltered_wave1)[:nsam]
                     target0_corr = np.fft.ifft(targets[0] * mfiltered_wave0)[:nsam]
@@ -180,10 +187,10 @@ if __name__ == '__main__':
 
             plt.figure('Target_Clutter vs. Linear')
             tnum = 7
-            mfiltered_wave0 = waves[tnum, 0] * waves[tnum, 0].conj() * taytay
+            mfiltered_wave0 = waves[tnum, 0] / (filts[tnum, 0] + 1e-12)
 
             if wave_mdl.n_ants > 1:
-                mfiltered_wave1 = waves[tnum, 0] * waves[tnum, 1].conj() * taytay if wave_mdl.n_ants > 1 else 0
+                mfiltered_wave1 = waves[tnum, 0] * waves[tnum, 1].conj() if wave_mdl.n_ants > 1 else 0
                 clutter_corr = np.fft.ifft(targets[0] * mfiltered_wave0 + targets[0] * mfiltered_wave1)[:nsam]
                 target0_corr = np.fft.ifft(targets[0] * mfiltered_wave0)[:nsam]
                 target1_corr = np.fft.ifft(targets[0] * mfiltered_wave1)[:nsam]
@@ -207,14 +214,14 @@ if __name__ == '__main__':
             plt.xlabel('Lag')
             plt.ylabel('Power (dB)')
 
-            plt.figure('Target-Clutter Correlations')
+            '''plt.figure('Target-Clutter Correlations')
             comb_corr = np.fft.ifft(targets[tnum])[:nsam]
             truth_corr = np.fft.ifft(clutter[tnum])[:nsam]
             plt.plot(db(comb_corr))
             plt.plot(db(truth_corr))
             plt.legend(['Target+Clutter', 'Clutter'])
             plt.xlabel('Lag')
-            plt.ylabel('Power (dB)')
+            plt.ylabel('Power (dB)')'''
 
             # Save the model structure out to a PNG
             # plot_model(mdl, to_file='./mdl_plot.png', show_shapes=True)
@@ -235,7 +242,7 @@ if __name__ == '__main__':
                 plt.plot(lags[len(lags) // 2 - 200:len(lags) // 2 + 200],
                          autocorr2[len(lags) // 2 - 200:len(lags) // 2 + 200] - autocorr2.max())
                 plt.plot(lags[len(lags) // 2 - 200:len(lags) // 2 + 200],
-                         autocorrcr[len(lags) // 2 - 200:len(lags) // 2 + 200] - autocorr1.max())
+                         autocorrcr[len(lags) // 2 - 200:len(lags) // 2 + 200] - autocorrcr.max())
             plt.plot(lags[len(lags) // 2 - 200:len(lags) // 2 + 200],
                      perf_autocorr[len(lags) // 2 - 200:len(lags) // 2 + 200] - perf_autocorr.max(),
                      linestyle='--')
@@ -268,19 +275,11 @@ if __name__ == '__main__':
             plt.colorbar()
 
             tprof = target_profile[tnum][0].cpu().data.numpy()
-            tprof = (tprof[:, 0] + 1j * tprof[:, 1]) * scalings
-            linear_block = np.fft.fft(np.fft.ifft(mfiltered_linear * tprof, axis=-1)[:, :nsam], axis=0)
+            tprof = (tprof[:, 0] + 1j * tprof[:, 1]) * scalings[0]
+            linear_block = np.fft.fft(np.fft.ifft(mfiltered_linear * tprof, axis=-1)[64:, :nsam], axis=0)
 
             # Rerun wavemodel with each successive pulse
-            wave_stack = []
-            for n in range(1, linear_block.shape[0]):
-                nn_output = wave_mdl(clutter_profile[tnum][:n].to(device), target_profile[tnum][:n].to(device), plength, bandwidth)
-                # nn_numpy = nn_output[0, 0, ...].cpu().data.numpy()
-                wave_stack.append(wave_mdl.getWaveform(nn_output=nn_output).cpu().data.numpy())
-            waves = np.concatenate(wave_stack)
-            # wave_mfilt = (waves * waves.conj() * taytay)[:, 0]
-            wave_mfilt = (waves * waves.conj())[:, 0]
-            wave_block = np.fft.fft(np.fft.ifft(wave_mfilt * tprof[1:], axis=-1)[:, :nsam], linear_block.shape[0], axis=0)
+            wave_block = np.fft.fft(np.fft.ifft(mfiltered_wave0 * tprof + mfiltered_wave1 * tprof, axis=-1)[64:, :nsam], axis=0)
 
             plt.figure('Doppler Profiles')
             plt.subplot(1, 2, 1)

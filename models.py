@@ -308,6 +308,7 @@ class ClutterTransformer(LightningModule):
             nn.Linear(self.hparams.input_dim, self.hparams.model_dim),
             nlin,
             SwiGLU(self.hparams.model_dim, 2 * self.hparams.model_dim, self.hparams.model_dim),
+            SwiGLU(self.hparams.model_dim, 2 * self.hparams.model_dim, self.hparams.model_dim),
             nn.LayerNorm(self.hparams.model_dim),
             nn.Linear(self.hparams.model_dim, self.hparams.model_dim),
             nlin,
@@ -318,12 +319,13 @@ class ClutterTransformer(LightningModule):
             nn.Linear(self.hparams.input_dim, self.hparams.model_dim),
             nlin,
             SwiGLU(self.hparams.model_dim, 2 * self.hparams.model_dim, self.hparams.model_dim),
+            SwiGLU(self.hparams.model_dim, 2 * self.hparams.model_dim, self.hparams.model_dim),
             nn.LayerNorm(self.hparams.model_dim),
             nn.Linear(self.hparams.model_dim, self.hparams.model_dim),
             nlin,
         )
 
-        self.cross_attention = RelativeMultiHeadAttention(self.hparams.model_dim, 5)
+        self.cross_attention = RelativeMultiHeadAttention(self.hparams.model_dim, 18)
         self.pos_enc = PositionalEncoding(self.hparams.model_dim, max_len=256)
 
         # Transformer
@@ -333,7 +335,8 @@ class ClutterTransformer(LightningModule):
         self.encoder_output = nn.Sequential(
             nn.Linear(self.hparams.model_dim, self.hparams.model_dim),
             nlin,
-            nn.Linear(self.hparams.model_dim, self.hparams.model_dim)
+            nn.Linear(self.hparams.model_dim, self.hparams.model_dim),
+            nn.Tanh(),
         )
 
         # self.fourier = FourierFeatureTrain(2, nfourier, self.hparams.fourier_std)
@@ -345,12 +348,10 @@ class ClutterTransformer(LightningModule):
         )'''
 
         self.output_real = nn.Sequential(
-            nn.Linear(self.hparams.model_dim, self.hparams.model_dim),
             nn.Linear(self.hparams.model_dim, self.hparams.input_dim),
         )
 
         self.output_imag = nn.Sequential(
-            nn.Linear(self.hparams.model_dim, self.hparams.model_dim),
             nn.Linear(self.hparams.model_dim, self.hparams.input_dim),
         )
 
@@ -412,7 +413,7 @@ class ClutterTransformer(LightningModule):
         return {'optimizer': optimizer, 'lr_scheduler': scheduler}
 
     def train_val_get(self, batch, batch_idx, kind='train'):
-        clutter_sequence, target_sequence, _, _, _, _ = batch
+        clutter_sequence, target_sequence, _, _, _, _, _, _ = batch
 
 
         target_feats = self.encode(target_sequence[:, :-1, ...])

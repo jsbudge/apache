@@ -136,7 +136,7 @@ class TargetDataset(Dataset):
 
 class WaveDataset(Dataset):
     def __init__(self, data_path: str, split: float = 1., single_example: bool = False, min_pulse_length: int = 1,
-                 max_pulse_length: int = 2, std: float = 1.0, is_val=False, seed=43):
+                 max_pulse_length: int = 2, std: tuple[float, float] = (1.0, 1.0), is_val=False, seed=43):
         assert Path(data_path).is_dir()
         self.datapath = f'{data_path}'
 
@@ -145,6 +145,7 @@ class WaveDataset(Dataset):
         n_per_file = int(np.round(total_seq / len(clutter_spec_files)))
         clutter_data = []
         target_data = []
+        both_data = []
         index_data = []
         nsam = []
 
@@ -154,6 +155,7 @@ class WaveDataset(Dataset):
                     params = pickle.load(f)
                     clutter_data.append(params['clutter'])
                     target_data.append(params['target'])
+                    both_data.append(params['both'])
                     index_data.append(params['t_idx'])
                     nsam.append(params['build']['nsam'])
         else:
@@ -162,14 +164,14 @@ class WaveDataset(Dataset):
                     params = pickle.load(f)
                     clutter_data.append(params['clutter'])
                     target_data.append(params['target'])
+                    both_data.append(params['both'])
                     index_data.append(params['t_idx'])
                     nsam.append(params['build']['nsam'])
-
-
 
         # Clutter data
         clutter_data = np.concatenate(clutter_data, axis=0)
         target_data = np.concatenate(target_data, axis=0)
+        both_data = np.concatenate(both_data, axis=0)
         index_data = np.concatenate(index_data).reshape((-1, 1))
         idxes = np.arange(clutter_data.shape[0])
         if split < 1:
@@ -177,11 +179,13 @@ class WaveDataset(Dataset):
         else:
             Xtidx = idxes
             Xsidx = idxes
-        ci = clutter_data[Xsidx if is_val else Xtidx] / std
-        ti = target_data[Xsidx if is_val else Xtidx] / std
+        ci = clutter_data[Xsidx if is_val else Xtidx] / std[0]
+        ti = target_data[Xsidx if is_val else Xtidx] / std[1]
+        bi = both_data[Xsidx if is_val else Xtidx] / std[0]
         ii = index_data[Xsidx if is_val else Xtidx]
         self.clutter = torch.tensor(np.concatenate([ci for _ in range(10)]), dtype=torch.float32)
         self.target = torch.tensor(np.concatenate([ti for _ in range(10)]), dtype=torch.float32)
+        self.both = torch.tensor(np.concatenate([bi for _ in range(10)]), dtype=torch.float32)
         self.t_idx = torch.tensor(np.concatenate([ii for _ in range(10)]), dtype=torch.int)
         self.samples = np.array(nsam)
         truth = np.zeros((self.clutter.shape[1] // 2, self.samples[0]))
@@ -196,11 +200,11 @@ class WaveDataset(Dataset):
         self.is_single = single_example
 
     def __getitem__(self, idx):
-        # Clutter profile, target+clutter range profile, target range index, pulse length, bandwidth
+        # Clutter profile, target profile, target+clutter range profile, target range index, pulse length, bandwidth
         if self.is_single:
-            return self.clutter[0], self.target[0], self.t_idx[0], 1000, .5, self.samples[0], self.truth
+            return self.clutter[0], self.target[0], self.both[0], self.t_idx[0], 1000, .5, self.samples[0], self.truth
         else:
-            return (self.clutter[idx], self.target[idx], self.t_idx[idx],
+            return (self.clutter[idx], self.target[idx], self.both[idx], self.t_idx[idx],
                     np.random.randint(self.min_pulse_length, self.max_pulse_length), np.random.rand() * .6 + .2, self.samples[idx])
 
 

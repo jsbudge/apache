@@ -40,7 +40,7 @@ if __name__ == '__main__':
     data = WaveDataModule(device=device, **config.dataset_params)
     data.setup()
 
-    print('Initializing wavemodel...')
+    print('Initializing encoder...')
     if config.warm_start:
         transformer = ClutterTransformer.load_from_checkpoint(f'{config.weights_path}/{config.model_name}.ckpt', config=config, strict=False)
     else:
@@ -79,48 +79,55 @@ if __name__ == '__main__':
             transformer.eval()
             data_iter = iter(data.train_dataloader())
 
-            seq, tseq, _, _, _, _ = next(data_iter)
+            seq, tseq, _, _, _, _, _, _ = next(data_iter)
 
             encoded_seq = transformer.encode(seq.to(transformer.device))
-            rec_seq = transformer.decode(encoded_seq)
+            rec_seq = transformer.decode(encoded_seq).data.cpu().numpy()[0]
+            rec_seq = np.log10(abs(np.fft.ifft(rec_seq[:, 0] + 1j * rec_seq[:, 1])))
 
             encoded_tseq = transformer.encode(tseq.to(transformer.device))
-            rec_tseq = transformer.decode(encoded_tseq)
+            rec_tseq = transformer.decode(encoded_tseq).data.cpu().numpy()[0]
+            rec_tseq = np.log10(abs(np.fft.ifft(rec_tseq[:, 0] + 1j * rec_tseq[:, 1])))
+
+            plot_seq = seq.data.cpu().numpy()[0]
+            plot_seq = np.log10(abs(np.fft.ifft(plot_seq[:, 0] + 1j * plot_seq[:, 1])))
+            plot_tseq = tseq.data.cpu().numpy()[0]
+            plot_tseq = np.log10(abs(np.fft.ifft(plot_tseq[:, 0] + 1j * plot_tseq[:, 1])))
 
             plt.figure('Clutter Sequence')
             plt.subplot(2, 2, 1)
             plt.title('Clutter Sequence')
-            plt.plot(seq.data.cpu().numpy()[0, -1, 0], label='Clutter Sequence')
-            plt.plot(rec_seq.data.cpu().numpy()[0, -1, 0], label='Target Sequence')
+            plt.plot(plot_seq[-1], label='Clutter Sequence')
+            plt.plot(rec_seq[-1], label='Target Sequence')
             plt.subplot(2, 2, 2)
             plt.title('Error')
-            plt.imshow(abs(seq.data.cpu().numpy()[0, 2:, 0] - rec_seq.data.cpu().numpy()[0, :-2, 0]))
+            plt.imshow(abs(plot_seq[:1] - rec_seq[:-1]))
             plt.axis('tight')
             plt.subplot(2, 2, 3)
             plt.title('Original')
-            plt.imshow(seq.data.cpu().numpy()[0, :, 0], label='Clutter Sequence')
+            plt.imshow(plot_seq, label='Clutter Sequence')
             plt.axis('tight')
             plt.subplot(2, 2, 4)
             plt.title('Reconstruction')
-            plt.imshow(rec_seq.data.cpu().numpy()[0, :, 0], label='Target Sequence')
+            plt.imshow(rec_seq, label='Target Sequence')
             plt.axis('tight')
 
             plt.figure('Target Sequence')
             plt.subplot(2, 2, 1)
             plt.title('Clutter Sequence')
-            plt.plot(tseq.data.cpu().numpy()[0, 2, 0], label='Clutter Sequence')
-            plt.plot(rec_tseq.data.cpu().numpy()[0, 0, 0], label='Target Sequence')
+            plt.plot(plot_tseq[-1], label='Clutter Sequence')
+            plt.plot(rec_tseq[-1], label='Target Sequence')
             plt.subplot(2, 2, 2)
             plt.title('Error')
-            plt.imshow(abs(tseq.data.cpu().numpy()[0, 2:, 0] - rec_tseq.data.cpu().numpy()[0, :-2, 0]))
+            plt.imshow(abs(plot_tseq[1:] - rec_tseq[:-1]))
             plt.axis('tight')
             plt.subplot(2, 2, 3)
             plt.title('Original')
-            plt.imshow(tseq.data.cpu().numpy()[0, :, 0], label='Clutter Sequence')
+            plt.imshow(plot_tseq, label='Clutter Sequence')
             plt.axis('tight')
             plt.subplot(2, 2, 4)
             plt.title('Reconstruction')
-            plt.imshow(rec_tseq.data.cpu().numpy()[0, :, 0], label='Target Sequence')
+            plt.imshow(rec_tseq, label='Target Sequence')
             plt.axis('tight')
 
             plt.figure('Encoded Sequences')

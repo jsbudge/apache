@@ -3,9 +3,12 @@ import numpy as np
 import matplotlib.pyplot as plt
 from glob import glob
 import pickle
+
+from torch import nn
+from functools import reduce
 from config import get_config
 from utils import upsample, fs, narrow_band, getMatchedFilter
-from simulib.simulation_functions import genPulse, db
+from simulib.simulation_functions import genPulse, db, genChirp
 from scipy.signal import stft
 from scipy.signal.windows import taylor
 import torch
@@ -20,101 +23,70 @@ def force_cudnn_initialization():
     dev = torch.device('cuda')
     torch.nn.functional.conv2d(torch.zeros(s, s, s, s, device=dev), torch.zeros(s, s, s, s, device=dev))
 
+def factors(n):
+    return list(set(reduce(list.__add__,
+                    ([i, n // i] for i in range(1, int(pow(n, 0.5) + 1)) if n % i == 0))))
+
 
 
 if __name__ == '__main__':
 
     files = glob('./data/target_new/*.pic')
 
+    chirp = np.fft.fft(genChirp(1364, 2e9, 16e9, 600e6), 16384)
+
     for fi in files:
         plt.figure(f'{fi}')
         with open(fi, 'rb') as f:
             data = pickle.load(f)
             cd = np.fft.ifft(data['clutter'][0, :, 0] + 1j * data['clutter'][0, :, 1]).T
-            td = np.fft.ifft(data['target'][0, :, 0] + 1j * data['target'][0, :, 1]).T
-            plt.subplot(2, 1, 1)
+            td_prof = data['target'][0, :, 0] + 1j * data['target'][0, :, 1]
+            td = np.fft.ifft(td_prof).T
+            bt = np.fft.ifft(data['both'][0, :, 0] + 1j * data['both'][0, :, 1]).T
+            plt.subplot(3, 1, 1)
             plt.title('sans')
             plt.imshow(np.log10(abs(np.fft.fft(cd, axis=1))))
             plt.axis('tight')
-            plt.subplot(2, 1, 2)
+            plt.subplot(3, 1, 2)
             plt.title('with')
-            plt.imshow(np.log10(abs(np.fft.fft(td, axis=1))))
+            plt.imshow(np.log10(abs(np.fft.fft(bt, axis=1))))
             plt.hlines([data['t_idx'][0, 0]], -.5, cd.shape[1] - .5, linestyle=':')
             plt.axis('tight')
-            '''clutter_data.append(params['clutter'])
-            target_data.append(params['target'])
-            index_data.append(params['t_idx'])
-            nsam.append(params['build']['nsam'])'''
-
-
-    torch.set_float32_matmul_precision('medium')
-    torch.autograd.set_detect_anomaly(True)
-    force_cudnn_initialization()
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    # torch.cuda.empty_cache()
-
-    seed_everything(np.random.randint(1, 2048), workers=True)
-    # seed_everything(107, workers=True)
-
-    config = get_config('wave_exp', './vae_config.yaml')
-
-    fft_len = config.fft_len
-    nr = 5000  # int((config['perf_params']['vehicle_slant_range_min'] * 2 / c0 - 1 / TAC) * fs)
-    # Since these are dependent on apache params, we set them up here instead of in the yaml file
-    print('Setting up data generator...')
-    config.dataset_params['max_pulse_length'] = nr
-    config.dataset_params['min_pulse_length'] = 1000
-    tbandwidth = .3806
-
-    print('Initializing wavemodel...')
-    wave_mdl = GeneratorModel.load_from_checkpoint(f'{config.weights_path}/{config.model_name}.ckpt', config=config, strict=False)
-
-    for fi in files:
-        plt.figure(f'{fi}')
-        with open(fi, 'rb') as f:
-            data = pickle.load(f)
-            cd = data['clutter'][0, :, 0] + 1j * data['clutter'][0, :, 1]
-            cdp = np.fft.ifft(cd).T
-            td = data['target'][0, :, 0] + 1j * data['target'][0, :, 1]
-            tdp = np.fft.ifft(td).T
-            plt.subplot(2, 1, 1)
-            plt.title('sans')
-            plt.imshow(np.log10(abs(np.fft.fft(cdp, axis=1))))
-            plt.axis('tight')
-            plt.subplot(2, 1, 2)
-            plt.title('with')
-            plt.imshow(np.log10(abs(np.fft.fft(tdp, axis=1))))
-            plt.hlines([data['t_idx'][0, 0]], -.5, cdp.shape[1] - .5, linestyle=':')
+            plt.subplot(3, 1, 3)
+            plt.title('just')
+            plt.imshow(np.log10(abs(np.fft.fft(td, axis=1))))
             plt.axis('tight')
             '''clutter_data.append(params['clutter'])
             target_data.append(params['target'])
             index_data.append(params['t_idx'])
             nsam.append(params['build']['nsam'])'''
 
-            c_inp = torch.tensor(data['clutter'] / config.dataset_params.std, device=wave_mdl.device).unsqueeze(0)
-            td_inp = torch.tensor(data['target'] / config.dataset_params.std, device=wave_mdl.device).unsqueeze(0)
-            plength = torch.tensor([3178], device=wave_mdl.device).unsqueeze(0)
-            bwidth = torch.tensor([tbandwidth], device=wave_mdl.device).unsqueeze(0)
+        target_time = np.fft.ifft(td_prof * chirp)
+        target_chirp = np.fft.fft(target_time[:, 6274-1378:6274], 16384)
 
-            nn_output = wave_mdl(c_inp, td_inp, plength, bandwidth)
-            # nn_numpy = nn_output[0, 0, ...].cpu().data.numpy()
+        target_lfm = np.fft.fft(np.fft.ifft(td_prof * chirp * chirp.conj()).T, axis=1)
+        target_mod = np.fft.fft(np.fft.ifft(td_prof * target_chirp * target_chirp.conj()).T, axis=1)
 
-            wave = wave_mdl.getWaveform(nn_output=nn_output).cpu().data.numpy()
+        plt.figure('matched')
+        plt.subplot(2, 1, 1)
+        plt.title('lfm')
+        plt.imshow(np.log10(abs(target_lfm)))
+        plt.axis('tight')
+        plt.subplot(2, 1, 2)
+        plt.title('mod')
+        plt.imshow(np.log10(abs(target_mod)))
+        plt.axis('tight')
 
-            linear = np.fft.fft(genPulse(np.linspace(0, 1, 10),
-                                         np.linspace(0, 1, 10), nr, fs, config.fc,
-                                         bandwidth[0].cpu().data.numpy() * fs), fft_len)
-            linear = linear / np.sqrt(sum(linear * linear.conj()))  # Unit energy
-
-            taytay = np.zeros(fft_len, dtype=np.complex128)
-            taytay_len = int(tbandwidth * fft_len) if int(tbandwidth * fft_len) % 2 == 0 else int(
-                tbandwidth * fft_len) + 1
-            taytay[:taytay_len // 2] = taylor(taytay_len)[-taytay_len // 2:]
-            taytay[-taytay_len // 2:] = taylor(taytay_len)[:taytay_len // 2]
-
-            mfiltered_linear = linear * linear.conj() * taytay
-            mfiltered_wave0 = wave[tnum, 0] * wave[tnum, 0].conj() * taytay
-            linear_corr = np.fft.ifft(td * mfiltered_linear, axis=1)[:nsam]
-            wave_corr = np.fft.ifft(td * mfiltered_wave0, axis=1)[:nsam]
+    '''for nm, m in wave_mdl.named_modules():
+        if isinstance(m, nn.Conv1d):
+            wghts = m.weight.data.cpu().numpy()
+            if wghts.shape[2] > 1:
+                fcs = factors(wghts.shape[1])
+                grid_x = fcs[len(fcs) // 2]
+                grid_y = wghts.shape[1] // grid_x
+                plt.figure(nm)
+                for idx in range(wghts.shape[2]):
+                    plt.subplot(grid_x, grid_y, idx + 1)
+                    plt.plot(wghts[0, idx])'''
 
 
