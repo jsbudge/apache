@@ -40,7 +40,7 @@ if __name__ == '__main__':
     data = WaveDataModule(device=device, **config.dataset_params)
     data.setup()
 
-    print('Initializing encoder...')
+    print('Initializing transformer...')
     if config.warm_start:
         transformer = ClutterTransformer.load_from_checkpoint(f'{config.weights_path}/{config.model_name}.ckpt', config=config, strict=False)
     else:
@@ -85,14 +85,8 @@ if __name__ == '__main__':
             rec_seq = transformer.decode(encoded_seq).data.cpu().numpy()[0]
             rec_seq = np.log10(abs(np.fft.ifft(rec_seq[:, 0] + 1j * rec_seq[:, 1])))
 
-            encoded_tseq = transformer.encode(tseq.to(transformer.device))
-            rec_tseq = transformer.decode(encoded_tseq).data.cpu().numpy()[0]
-            rec_tseq = np.log10(abs(np.fft.ifft(rec_tseq[:, 0] + 1j * rec_tseq[:, 1])))
-
             plot_seq = seq.data.cpu().numpy()[0]
             plot_seq = np.log10(abs(np.fft.ifft(plot_seq[:, 0] + 1j * plot_seq[:, 1])))
-            plot_tseq = tseq.data.cpu().numpy()[0]
-            plot_tseq = np.log10(abs(np.fft.ifft(plot_tseq[:, 0] + 1j * plot_tseq[:, 1])))
 
             plt.figure('Clutter Sequence')
             plt.subplot(2, 2, 1)
@@ -112,35 +106,10 @@ if __name__ == '__main__':
             plt.imshow(rec_seq, label='Target Sequence')
             plt.axis('tight')
 
-            plt.figure('Target Sequence')
-            plt.subplot(2, 2, 1)
-            plt.title('Clutter Sequence')
-            plt.plot(plot_tseq[-1], label='Clutter Sequence')
-            plt.plot(rec_tseq[-1], label='Target Sequence')
-            plt.subplot(2, 2, 2)
-            plt.title('Error')
-            plt.imshow(abs(plot_tseq[1:] - rec_tseq[:-1]))
-            plt.axis('tight')
-            plt.subplot(2, 2, 3)
-            plt.title('Original')
-            plt.imshow(plot_tseq, label='Clutter Sequence')
-            plt.axis('tight')
-            plt.subplot(2, 2, 4)
-            plt.title('Reconstruction')
-            plt.imshow(rec_tseq, label='Target Sequence')
-            plt.axis('tight')
-
             plt.figure('Encoded Sequences')
-            plt.subplot(2, 2, 1)
+            plt.subplot(2, 1, 1)
             plt.title('Clutter Sequence')
             plt.plot(encoded_seq.data.cpu().numpy()[0, 1], label='Clutter Sequence')
-            plt.subplot(2, 2, 2)
-            plt.title('Target Sequence')
-            plt.plot(encoded_tseq.data.cpu().numpy()[0, 1], label='Clutter Sequence')
-            plt.subplot(2, 2, 3)
+            plt.subplot(2, 1, 2)
             plt.title('Overlay')
             plt.plot(encoded_seq.data.cpu().numpy()[0, 1], label='Clutter Sequence')
-            plt.plot(encoded_tseq.data.cpu().numpy()[0, 1], label='Clutter Sequence')
-            plt.subplot(2, 2, 4)
-            plt.title('Differences')
-            plt.plot(encoded_seq.data.cpu().numpy()[0, 1] - encoded_tseq.data.cpu().numpy()[0, 1], label='Clutter Sequence')

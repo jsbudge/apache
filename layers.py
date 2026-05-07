@@ -207,6 +207,19 @@ class PulseLength(nn.Module):
         return x
 
 
+class PulseWindow(nn.Module):
+    def __init__(self, fft_len, n_ants, *args: Any, **kwargs: Any):
+        super().__init__(*args, **kwargs)
+        self.fft_len = fft_len
+        self.n_ants = n_ants
+
+    def forward(self, pl):
+        ret = torch.zeros((pl.shape[0], self.n_ants * 2, self.fft_len), device=pl.device)
+        for n, w in enumerate(pl):
+            ret[n, :, :w] += torch.hann_window(w, device=bandwidth.device)
+        return ret
+
+
 
 
 
@@ -852,7 +865,7 @@ class RelativeMultiHeadAttention(nn.Module):
             value: Tensor,
             pos_embedding: Tensor,
             mask: Optional[Tensor] = None,
-    ) -> Tensor:
+    ) -> tuple[Tensor, Tensor]:
         batch_size = value.size(0)
 
         query = self.query_proj(query).view(batch_size, -1, self.num_heads, self.d_head)
@@ -876,7 +889,7 @@ class RelativeMultiHeadAttention(nn.Module):
         context = torch.matmul(attn, value).transpose(1, 2)
         context = context.contiguous().view(batch_size, -1, self.d_model)
 
-        return self.out_proj(context)
+        return self.out_proj(context), attn
 
     def _compute_relative_positional_encoding(self, pos_score: Tensor) -> Tensor:
         batch_size, num_heads, seq_length1, seq_length2 = pos_score.size()
@@ -961,6 +974,71 @@ class CustomizingAttention(nn.Module):
         loc_energy = loc_energy.permute(0, 2, 1, 3).reshape(batch_size, v_len, self.num_heads * self.dim)
 
         return loc_energy
+
+
+class xLSTMCell(nn.Module):
+    def __init__(self, input_size, hidden_size):
+        super(xLSTMCell, self).__init__()
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+
+        # Define xLSTM gates
+        self.gates = nn.Linear(input_size + hidden_size, 4 * hidden_size)
+        self.output_gate = nn.Linear(input_size + hidden_size, hidden_size)
+
+    def forward(self, x, hidden):
+        hx, cx = hidden
+        gates = self.gates(torch.cat((x, hx), 1))
+
+        # Split gates into individual components
+        ingate, forgetgate, cellgate, outgate = gates.chunk(4, 1)
+
+        # Apply activation functions
+        ingate = torch.sigmoid(ingate)
+        forgetgate = torch.sigmoid(forgetgate)
+        cellgate = torch.tanh(cellgate)
+        outgate = torch.sigmoid(outgate)
+
+        # Update cell state
+        cy = (forgetgate * cx) + (ingate * cellgate)
+
+        # Compute output
+        hy = outgate * torch.tanh(cy)
+
+        return hy, cy
+
+
+class xLSTM(nn.Module):
+    def __init__(self, input_size, hidden_size, num_layers):
+        super(xLSTM, self).__init__()
+        self.num_layers = num_layers
+        self.hidden_size = hidden_size
+
+        self.cells = nn.ModuleList([xLSTMCell(input_size, hidden_size)])
+        self.cells.extend([xLSTMCell(hidden_size, hidden_size) for _ in range(num_layers - 1)])
+
+    def forward(self, i, hidden=None):
+        batch_size, seq_len, _ = i.size()
+
+        if hidden is None:
+            hidden = self.init_hidden(batch_size)
+
+        outputs = []
+        for t in range(seq_len):
+            x = i[:, t, :]
+            for layer in range(self.num_layers):
+                hx, cx = hidden[layer]
+                x, cx = self.cells[layer](x, (hx, cx))
+                hidden[layer] = (x, cx)
+            outputs.append(x)
+
+        return torch.stack(outputs, dim=1), hidden
+
+    def init_hidden(self, batch_size):
+        weight = next(self.parameters()).data
+        return [(weight.new(batch_size, self.hidden_size).zero_(),
+                 weight.new(batch_size, self.hidden_size).zero_())
+                for _ in range(self.num_layers)]
     
     
 class RBFLayer(nn.Module):

@@ -6,7 +6,7 @@ from models import ClutterTransformer, FlatModule
 from torch.nn import functional as nn_func
 from config import Config
 from schedulers import CosineWarmupScheduler
-from layers import PulseLength, WindowGenerate, RelativeMultiHeadAttention, Block1d, SwiGLU, FourierFeatureTrain, LKA1d
+from layers import PulseLength, PulseWindow, WindowGenerate, RelativeMultiHeadAttention, Block1d, SwiGLU, FourierFeatureTrain, LKA1d
 import numpy as np
 from utils import normalize, _xavier_init, nonlinearities, plot_grad_flow, rbf_linear, l_norm
 
@@ -34,10 +34,10 @@ class GeneratorModel(FlatModule):
         self.n_ants = config.n_ants
         self.fft_len = config.fft_len
         self.target_latent_size = config.target_latent_size
+        self.target_library_size = config.target_library_size
         self.fs = config.fs
         self.fc = config.fc
         self.flowthrough_channels = config.flowthrough_channels
-        self.wave_decoder_channels = config.wave_decoder_channels
         self.waveform_channels = [config.waveform_conv_channels, config.waveform_mid_channels, config.waveform_small_channels]
         self.target_channels = [config.target_conv_channels, config.target_mid_channels, config.target_small_channels]
         self.automatic_optimization = False
@@ -56,21 +56,23 @@ class GeneratorModel(FlatModule):
         '''self.predict_encoder = ClutterTransformer(self.fft_len, self.target_latent_size, 4, .01, 4, 100,
                                                   fourier_features=50, fourier_std=1., nonlinearity='psinlu')'''
 
-        # self.attention = RelativeMultiHeadAttention(self.target_latent_size, 5)
-        # self.pos_enc = PositionalEncoding(self.target_latent_size, max_len=256)
+        dec_fac = 4
 
         # Step up to flowthrough channels
         self.clutter_init = nn.Sequential(
             nn.Conv1d(1, self.flowthrough_channels, 1, padding='same'),
             nlin,
-            nn.Conv1d(self.flowthrough_channels, self.flowthrough_channels, 3, padding='same'),
-            nlin,
+            nn.AvgPool1d(dec_fac),
         )
 
         self.target_init = nn.Sequential(
+            nn.Linear(self.target_library_size, self.target_latent_size // dec_fac),
+            nlin,
+            nn.Linear(self.target_latent_size // dec_fac, self.target_latent_size // dec_fac),
+            nlin,
             nn.Conv1d(1, self.flowthrough_channels, 1, padding='same'),
             nlin,
-            nn.Conv1d(self.flowthrough_channels, self.flowthrough_channels, 3, padding='same'),
+            nn.Conv1d(self.flowthrough_channels, self.flowthrough_channels, 15, padding='same'),
             nlin,
         )
 
@@ -82,45 +84,66 @@ class GeneratorModel(FlatModule):
                 nn.Conv1d(self.flowthrough_channels, self.waveform_channels[0], self.conv_kernel_size, padding='same'),
                 nlin,
                 LKA1d(self.waveform_channels[0], (self.conv_kernel_size, self.mid_kernel_size),
-                      dilation=15, activation=self.nonlinearity),
-                nn.Conv1d(self.waveform_channels[0], self.flowthrough_channels, self.small_kernel_size, padding='same'),
+                      dilation=6, activation=self.nonlinearity),
+                nn.Conv1d(self.waveform_channels[0], self.waveform_channels[1], self.mid_kernel_size, padding='same'),
                 nlin,
-                nn.LayerNorm(self.target_latent_size),
+                nn.LayerNorm(self.target_latent_size // dec_fac),
+                nn.Conv1d(self.waveform_channels[1], self.waveform_channels[2], self.mid_kernel_size, padding='same'),
+                nlin,
+                LKA1d(self.waveform_channels[2], (self.small_kernel_size, self.small_kernel_size),
+                      dilation=15, activation=self.nonlinearity),
+                nn.Conv1d(self.waveform_channels[2], self.flowthrough_channels, self.small_kernel_size, padding='same'),
+                nlin,
+                nn.LayerNorm(self.target_latent_size // dec_fac),
             ))
             self.target_layers.append(nn.Sequential(
-                nn.Linear(self.target_latent_size * 2, self.target_latent_size),
+                nn.Conv1d(self.flowthrough_channels, self.flowthrough_channels, 2, padding=0, dilation=self.target_latent_size // dec_fac),
                 nlin,
-                nn.Conv1d(self.flowthrough_channels, self.target_channels[0], 1, padding='same'),
+                nn.Conv1d(self.flowthrough_channels, self.target_channels[0], self.conv_kernel_size, padding='same'),
                 nlin,
                 LKA1d(self.target_channels[0], (self.conv_kernel_size, self.mid_kernel_size),
-                      dilation=30, activation=self.nonlinearity),
-                nn.LayerNorm(self.target_latent_size),
-                nn.Conv1d(self.target_channels[0], self.target_channels[2], self.small_kernel_size, padding='same'),
+                      dilation=6, activation=self.nonlinearity),
+                nn.Conv1d(self.target_channels[0], self.target_channels[1], self.mid_kernel_size, padding='same'),
                 nlin,
+                nn.LayerNorm(self.target_latent_size // dec_fac),
+                nn.Conv1d(self.target_channels[1], self.target_channels[2], self.mid_kernel_size, padding='same'),
+                nlin,
+                LKA1d(self.target_channels[2], (self.small_kernel_size, self.small_kernel_size),
+                      dilation=15, activation=self.nonlinearity),
                 nn.Conv1d(self.target_channels[2], self.flowthrough_channels, self.small_kernel_size, padding='same'),
                 nlin,
+                nn.LayerNorm(self.target_latent_size // dec_fac),
             ))
 
-        self.real_decoder = nn.Sequential(
-            nn.Conv1d(self.flowthrough_channels, self.n_ants, 1, padding='same'),
+        self.compress = nn.Sequential(
+            nn.ConvTranspose1d(self.flowthrough_channels, self.flowthrough_channels, 91, padding=0, dilation=15),
             nlin,
-            nn.Linear(self.target_latent_size, self.fft_len),
-            nn.Tanhshrink(),
-        )
-
-        self.imag_decoder = nn.Sequential(
             nn.Conv1d(self.flowthrough_channels, self.n_ants, 1, padding='same'),
-            nlin,
-            nn.Linear(self.target_latent_size, self.fft_len),
-            nn.Tanhshrink(),
+            nn.Tanh(),
         )
 
         self.wave_info = nn.Sequential(
-            FourierFeatureTrain(2, self.target_latent_size // 2, .33),
+            FourierFeatureTrain(2, self.target_latent_size // (dec_fac * 2), .33),
+            nn.Linear(self.target_latent_size // (dec_fac * 2) * 2, self.target_latent_size // dec_fac),
+            nn.Sigmoid(),
         )
 
-        self.plength = PulseLength()
-        self.bw_generate = WindowGenerate(self.fft_len, self.n_ants)
+        # self.plength = PulseLength()
+        self.plength = nn.Sequential(
+            nn.ConvTranspose1d(1, self.n_ants, 91, padding=0, dilation=15),
+            nlin,
+            nn.Linear(self.target_latent_size, self.fft_len),
+            nn.Sigmoid(),
+        )
+
+        self.bw_generate = nn.Sequential(
+            nn.ConvTranspose1d(1, self.n_ants, 91, padding=0, dilation=15),
+            nlin,
+            nn.Linear(self.target_latent_size, self.fft_len),
+            nn.Sigmoid(),
+        )
+        self.pl_window = PulseWindow(self.fft_len, self.n_ants)
+        self.bw_window = WindowGenerate(self.fft_len, self.n_ants)
 
         _xavier_init(self)
 
@@ -128,21 +151,24 @@ class GeneratorModel(FlatModule):
 
         # Predict the next clutter step using transformer
         x_clutter = self.predict_encoder.encode(clutter)
-        x_target = self.predict_encoder.encode(target)
+        # x_target = self.predict_encoder.encode(target)
 
         wave_info = self.wave_info(torch.cat([bandwidth.float().view(-1, 1),
                                               pulse_length.float().view(-1, 1) / 5000.], dim=1)).unsqueeze(1)
 
-        x_skip = self.target_init(x_target[:, -1:] + wave_info)
-        x = self.clutter_init(x_clutter[:, -1:] + wave_info)
+        x_skip = self.target_init(target)
+        x = self.clutter_init(x_clutter[:, -1:])
 
         # Run through LKA layers to create a waveform according to spec
         for wl, tl in zip(self.waveform_layers, self.target_layers):
-            x = wl(x)
+            x = wl(x + wave_info)
             x = tl(torch.cat([x, x_skip], dim=-1))
-        z = torch.cat([self.real_decoder(x), self.imag_decoder(x)], dim=1)
-        z = self.plength(z, pulse_length) * self.bw_generate(bandwidth)
-        z = z.view(-1, self.n_ants, 2, self.fft_len)
+        z = torch.flatten(self.predict_encoder.decode(self.compress(x)), start_dim=1, end_dim=2)
+        z = torch.repeat_interleave(self.bw_generate(wave_info), 2, dim=-2) * z
+        z = self.plength(wave_info) * torch.fft.ifft(torch.fft.fftshift(torch.complex(z[..., 0, :], z[..., 1, :]), dim=-1), dim=-1)
+        z = torch.view_as_real(torch.fft.fftshift(torch.fft.fft(z, dim=-1), dim=-1)).swapaxes(-1, -2)
+        # z = self.plength(z, pulse_length) * self.bw_generate(bandwidth)
+        # z = z.view(-1, self.n_ants, 2, self.fft_len)
         return z
 
     def full_forward(self, clutter_array, target_array: torch.Tensor | np.ndarray, pulse_length: int, bandwidth: float) -> np.ndarray:
@@ -183,24 +209,22 @@ class GeneratorModel(FlatModule):
         # clutter_spectrum = torch.complex(args[1][:, :, 0, :], args[1][:, :, 1, :])
 
         # Get target spectrum into complex form and normalize to unit energy
-        target_spectrum = torch.complex(args[2][:, :, 0, :], args[2][:, :, 1, :])
+        target_spectrum = torch.complex(args[2][:, :1, 0, :], args[2][:, :1, 1, :])
 
         # Get waveform into complex form and normalize it to unit energy
         # First, get taylor window for sidelobe suppression
-        taytay = torch.fft.fftshift(self.bw_generate(args[4])[0, 0])
+        taytay = torch.fft.fftshift(self.bw_window(args[4])[0, 0])
         gen_waveform = self.getWaveform(nn_output=args[0])
         lfm = self.genLFM(self.fc, args[4] * self.fs, self.fs, args[3])
         lfm = (lfm / torch.sqrt(torch.sum(lfm * lfm.conj())))  # Unit energy calculation
-        mfiltered = gen_waveform.conj() * gen_waveform * taytay
-        lfiltered = lfm * lfm.conj() * taytay
+        mfiltered = gen_waveform.conj()# * taytay
+        lfiltered = lfm.conj() * taytay
 
         # Target and clutter power functions
         # Get compressed data for clutter and target
         nsam = args[6]
-        targ_sans = torch.abs(torch.fft.fft(torch.fft.ifft(target_spectrum * lfiltered, dim=-1)[..., :nsam], dim=1))
-        targ_ac = torch.abs(torch.fft.fft(torch.sum(torch.fft.ifft(target_spectrum.unsqueeze(1) * mfiltered.unsqueeze(2), dim=-1)[..., :nsam], dim=-3), dim=1))
-        # clut_ac = torch.abs(torch.fft.fft(torch.sum(torch.fft.ifft(clutter_spectrum.unsqueeze(1) * mfiltered, dim=-1)[..., :nsam], dim=-3), dim=1))
-        # Set the softplus back so that a zero value corresponds to zero in the softplus
+        targ_sans = torch.abs(torch.fft.ifft(target_spectrum * lfiltered, dim=-1)[..., :nsam])
+        targ_ac = torch.abs(torch.sum(torch.fft.ifft(target_spectrum.unsqueeze(1) * mfiltered.unsqueeze(2), dim=-1)[..., :nsam], dim=-3))
         # This is how much higher a target is with NN than LFM plus how much higher the clutter is with an LFM vs. a NN
         # SNR of a target
         target_snr = torch.nansum(targ_ac * args[7] / (torch.sum(args[7]))) / (torch.nansum(targ_ac * ((1 - args[7]) / (torch.sum(1 - args[7])))) + EPS)
@@ -209,60 +233,28 @@ class GeneratorModel(FlatModule):
                      targ_ac / (targ_sans + EPS) * ((1 - args[7]) / (torch.sum(1 - args[7])))))
         # target_loss = torch.nansum((targ_ac / (targ_sans + EPS)) + (clut_ac / (targ_ac + EPS)))
 
+        bandwidth_loss = torch.sum(nn_func.relu(torch.abs(gen_waveform) - taytay))
+
+        pulse_length_loss = torch.sum(torch.abs(torch.fft.ifft(gen_waveform, dim=-1)[..., args[3]:])) * 100.
+
         # Sidelobe loss functions
         mainlobe_softmax = ((torch.arange(int(self.fft_len), device=self.device) + EPS) / self.fft_len) ** 2
         mainlobe_softmax = torch.exp(-mainlobe_softmax / (2 * .02) ** 2)
-        linear_sidelobe = torch.log(torch.abs(torch.fft.ifft(lfiltered)) + EPS)
-        slf = nn_func.relu((torch.log(torch.abs(torch.fft.ifft(mfiltered)) + EPS) - linear_sidelobe))
+        linear_sidelobe = torch.log(torch.abs(torch.fft.ifft(lfm * lfiltered)) + EPS)
+        slf = nn_func.relu((torch.log(torch.abs(torch.fft.ifft(gen_waveform * mfiltered)) + EPS) - linear_sidelobe))
         sidelobe_loss = torch.nansum(slf * mainlobe_softmax) / torch.sum(mainlobe_softmax)
         # sidelobe_loss = torch.tensor(0., device=self.device)
         '''
         import matplotlib.pyplot as plt
-        plt.figure("Spectrum")
-        plt.subplot(1, 2, 1)
-        plt.imshow(np.log10(abs(np.fft.ifft(target_spectrum.data.cpu().numpy()[0]))))
-        plt.axis('tight')
-        plt.subplot(1, 2, 2)
-        plt.imshow(np.log10(abs(np.fft.ifft(clutter_spectrum.data.cpu().numpy()[0]))))
-        plt.axis('tight')
         
-        plt.figure("AC")
-        plt.subplot(1, 2, 1)
-        plt.imshow(np.log10(targ_ac.data.cpu().numpy()[0]))
-        plt.axis('tight')
-        plt.subplot(1, 2, 2)
-        plt.imshow(np.log10(clut_ac.data.cpu().numpy()[0]))
-        plt.axis('tight')
+        plt.figure('sidelobes')
+        plt.plot(linear_sidelobe.data.cpu().numpy(), label='sidelobes')
+        plt.plot(torch.log(torch.abs(torch.fft.ifft(gen_waveform * mfiltered)) + EPS)[0, 0].data.cpu().numpy(), label='sidelobes')
         
-        plt.figure("Sans")
-        plt.imshow(np.log10(targ_sans.data.cpu().numpy()[0]))
-        plt.axis('tight')
-        
-        plt.figure("Softmax")
-        plt.plot(target_softmax.data.cpu().numpy()[0])
-        
-        plt.figure("LFM")
-        plt.plot(np.log10(abs(lfm.data.cpu().numpy())))
-        
-        plt.figure("mfiltered")
-        plt.plot(np.log10(abs(np.fft.ifft(mfiltered[0, 0].data.cpu().numpy()))))
-        
-        plt.figure('Comparison')
-        plt.subplot(1, 3, 1)
-        plt.title('above_lfm')
-        plt.imshow(above_lfm.data.cpu().numpy()[0].T)
-        plt.axis('tight')
-        plt.subplot(1, 3, 2)
-        plt.title('target_snr')
-        plt.imshow(target_snr.data.cpu().numpy()[0].T)
-        plt.axis('tight')
-        plt.subplot(1, 3, 3)
-        plt.title('clutter_mit')
-        plt.imshow(clutter_mit.data.cpu().numpy()[0].T)
-        plt.axis('tight')
-        
-        plt.figure()
-        plt.plot((1 - target_softmax / (torch.sum(target_softmax) + EPS).data.cpu().numpy()[0])
+        plt.figure('targs')
+        plt.plot(targ_sans.data.cpu().numpy()[0, 0])
+        plt.plot(targ_ac.data.cpu().numpy()[0, 0])
+        plt.show()
         
         
         '''
@@ -277,11 +269,11 @@ class GeneratorModel(FlatModule):
             ortho_loss = torch.tensor(0., device=self.device)
 
         # total_loss = target_loss * (1 + min(.001 * self.current_epoch, 1.) * sidelobe_loss + ortho_loss)
-        total_loss = target_loss**2  # torch.sqrt(sidelobe_loss * .25 + target_loss * .75 + ortho_loss)
+        total_loss = target_loss + sidelobe_loss + bandwidth_loss + pulse_length_loss  # torch.sqrt(sidelobe_loss * .25 + target_loss * .75 + ortho_loss)
 
         return {'target_loss': target_loss, 'loss': total_loss,
                 'sidelobe_loss': sidelobe_loss, 'ortho_loss': ortho_loss,
-                'target_snr': target_snr}
+                'target_snr': target_snr, 'bandwidth_loss': bandwidth_loss, 'pulse_length_loss': pulse_length_loss}
 
     def getWaveform(self, cc: Tensor = None, tc: Tensor = None, pulse_length=None,
                     bandwidth: Tensor | float = 400e6, nn_output: tuple[Tensor] = None) -> Tensor:
@@ -341,6 +333,7 @@ class GeneratorModel(FlatModule):
             sch.step()
         if self.trainer.is_global_zero and not self.config.is_tuning and self.config.loss_landscape:
             self.optim_path.append(self.get_flat_params().cpu().data.numpy())'''
+        # self.lr_schedulers().step()
         self.log('lr', self.lr_schedulers().get_last_lr()[0], prog_bar=True, rank_zero_only=True)
 
     def configure_optimizers(self):
@@ -352,7 +345,7 @@ class GeneratorModel(FlatModule):
         if self.config.scheduler_gamma is None:
             return optimizer
         # scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=self.config.scheduler_gamma)
-        # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, 100, eta_min=1e-9)
+        # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, 25, eta_min=1e-9)
         scheduler = CosineWarmupScheduler(optimizer, warmup=self.config.warmup // self.config.accumulation_steps,
                                           max_iters=self.config.max_iters // self.config.accumulation_steps)
 
@@ -360,8 +353,10 @@ class GeneratorModel(FlatModule):
 
     def train_val_get(self, batch, batch_idx):
         clutter_spec, target_spec, both_spec, target_rbin, pulse_length, bandwidth, nsam, truth = batch
-        seq_len = clutter_spec.shape[1] // 2
-        results = self.forward(clutter_spec[:, :seq_len], target_spec[:, :seq_len], pulse_length, bandwidth)
+        seq_len = both_spec.shape[1] // 2
+        clut_noise = both_spec[:, :seq_len] + torch.randn_like(both_spec[:, :seq_len])
+        # spec_noise = both_spec[:, :seq_len] + torch.randn_like(both_spec[:, :seq_len])
+        results = self.forward(clut_noise, target_spec[:, :seq_len], pulse_length, bandwidth)
         return self.loss_function(results, clutter_spec[:, seq_len:], both_spec[:, seq_len:], pulse_length, bandwidth, target_rbin, nsam, truth)
 
     def on_after_backward(self):

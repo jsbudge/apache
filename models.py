@@ -6,7 +6,7 @@ import numpy as np
 from cbam import CBAM
 from config import Config
 from layers import Block2d, Block2dTranspose, Fourier2D, SwiGLU, PositionalEncoding, FourierFeatureTrain, \
-    MultiHeadLocationAwareAttention, RelativeMultiHeadAttention
+    MultiHeadLocationAwareAttention, RelativeMultiHeadAttention, xLSTM
 from schedulers import CosineWarmupScheduler
 from pytorch_lightning import LightningModule
 from utils import _xavier_init, nonlinearities
@@ -72,72 +72,7 @@ class FlatModule(LightningModule):
         plt.rcParams["figure.figsize"] = (20, 5)
 
 
-class TargetEmbedding(FlatModule):
-    def __init__(self,
-                 config: Config,
-                 training_mode: int = 0,
-                 **kwargs) -> None:
-        super(TargetEmbedding, self).__init__(config)
-        self.save_hyperparameters()
-        self.latent_dim = config.latent_dim
-        self.channel_sz = config.channel_sz
-        self.in_channels = config.range_samples * 2
-        self.automatic_optimization = False
-        self.temperature = config.temperature
-        self.mode = training_mode
 
-        # Parameters for normalizing data correctly
-        latent_pow2_square = np.ceil(np.log2(self.latent_dim))
-        latent_pow2_square = int(
-            2 ** latent_pow2_square if latent_pow2_square % 2 == 0 else 2 ** (latent_pow2_square + 1))
-        levels = int(config.angle_samples / np.sqrt(latent_pow2_square)) - 2
-        out_sz = config.angle_samples // (2 ** levels)
-
-        nonlinearity = nonlinearities[config.nonlinearity]
-
-        # Encoder
-        # self.encoder_inflate = nn.Conv2d(self.in_channels, self.channel_sz, 1, 1, 0)
-        self.encoder_inflate = nn.Sequential(
-            Fourier2D(config.fourier_std, config.fourier_features),
-            nn.Conv2d(self.in_channels * config.fourier_features * 2, self.channel_sz, 1, 1, 0),
-            nonlinearity,
-            # CBAM(self.channel_sz, reduction_factor=1, kernel_size=9),
-        )
-        prev_lev_enc = self.channel_sz
-        self.encoder_reduce = nn.ModuleList()
-        self.encoder_conv = nn.ModuleList()
-        for l in range(levels):
-            ch_lev_enc = prev_lev_enc * 2
-            self.encoder_reduce.append(nn.Sequential(
-                nn.Conv2d(prev_lev_enc, ch_lev_enc, 4, 2, 1),
-                nonlinearity,
-            ))
-            self.encoder_conv.append(nn.Sequential(
-                CBAM(ch_lev_enc, reduction_factor=4, kernel_size=7 - l * 2),
-                Block2d(ch_lev_enc, 7 - l * 2, 1, 3 - l, nonlinearity=config.nonlinearity),
-                # LKA(ch_lev_enc, (5, 3), dilation=3, activation=config.nonlinearity),
-            ))
-            prev_lev_enc = ch_lev_enc + 0
-
-        prev_lev_dec = prev_lev_enc
-        self.encoder_flatten = nn.Sequential(
-            nn.Conv2d(prev_lev_enc, 1, (out_sz, 1), 1, 0),
-            nonlinearity,
-        )
-        self.fc_z = nn.Sequential(
-            nn.Linear(out_sz, self.latent_dim),
-            nonlinearity,
-            SwiGLU(self.latent_dim, self.latent_dim * 2, self.latent_dim),
-            nn.Linear(self.latent_dim, self.latent_dim),
-            nn.Softsign(),
-        )
-
-        self.decoder = DecoderHead(config.latent_dim, config.channel_sz, self.in_channels, config.fourier_features,
-                                   config.angle_samples, nonlinearity=config.nonlinearity, levels=levels)
-
-        _xavier_init(self)
-
-        self.out_sz = out_sz
 
     def encode(self, inp: Tensor, **kwargs) -> Tensor:
         """
@@ -151,9 +86,8 @@ class TargetEmbedding(FlatModule):
             inp = conv(red(inp))
         return self.fc_z(self.encoder_flatten(inp).view(-1, self.out_sz))
 
-    def forward(self, inp: Tensor, **kwargs) -> Tensor:
-        enc = self.encode(inp, **kwargs)
-        return self.decoder(enc)
+    def forward(self, *args, **kwargs) -> Tensor:
+        pass
 
     def on_fit_start(self) -> None:
         if self.trainer.is_global_zero and self.logger:
@@ -200,93 +134,124 @@ class TargetEmbedding(FlatModule):
         return {'optimizer': optimizer, 'lr_scheduler': scheduler}
 
     def train_val_get(self, batch, batch_idx, kind='train'):
-        img, idx = batch
-        # Normalize the image
-        img = (img - torch.tensor(self.config.mu, device=self.device)[None, :, None, None]) / torch.tensor(self.config.var, device=self.device)[None, :, None, None]
-
-        feats = self.encode(img)
-        reconstructions = self.decoder(feats)
-
-        # RECONSTRUCTION LOSS
-        rec_loss = torch.mean(torch.square(img - reconstructions))
-        '''rec_loss = sum(
-            torch.mean(torch.abs(i - r)) for i, r in zip(img, reconstructions)
-        )'''
-
-        # CLIP LOSS
-        idx = idx + 1
-        clip_loss = torch.cosine_similarity(feats[None, :, :], feats[:, None, :], dim=-1)**2
-        clip_loss = clip_loss * torch.nn.Hardsigmoid()(abs(1e-9 + torch.outer(idx, idx) - idx ** 2) ** 2 - 3)
-        clip_loss = clip_loss.sum(1).mean() / img.shape[0]
+        pass
 
 
-        # COMBINATION LOSS
-        cll = clip_loss + rec_loss
+class TargetEmbedding(LightningModule):
+    def __init__(self, input_dim, model_dim, embedding_size, num_layers, lr, warmup, max_iters, dropout=0.0,
+                 input_dropout=0.1, nonlinearity='silu', *args, **kwargs):
+        super().__init__()
+        self.automatic_optimization = False
+        self.save_hyperparameters()
+        self._create_model()
+
+    def _create_model(self):
+        nlin = nonlinearities[self.hparams.nonlinearity]
+        # Input size is 256x4000
+        # Input dim -> Model dim
+        self.compress = nn.Sequential(
+            nn.Linear(4000, 256),
+            nlin,
+            nn.Conv2d(2, 16, 5, padding='same'),
+            nlin,
+            nn.MaxPool2d((2, 2)),
+            nn.LayerNorm(256 // 2),
+            nn.Conv2d(16, 16, 5, padding='same'),
+            nlin,
+            nn.MaxPool2d((2, 2)),
+            nn.LayerNorm(256 // 4),
+            nn.Conv2d(16, 16, 5, padding='same'),
+            nlin,
+            nn.MaxPool2d((2, 2)),
+            nn.LayerNorm(256 // 8),
+            nn.Conv2d(16, 16, 5, padding='same'),
+            nlin,
+            nn.MaxPool2d((2, 2)),
+            nn.LayerNorm(256 // 16),
+        )
+
+        self.flatten = nn.Sequential(
+            nn.Linear(4096, 25),
+            nn.Tanh(),
+        )
+
+        self.classifier = nn.Sequential(
+            nn.Linear(25, 25),
+            nlin,
+            nn.Linear(25, 9),
+            nn.Softmax(dim=1),
+        )
+
+        self.triplet = nn.TripletMarginLoss()
+        self.cosine_loss = nn.CosineEmbeddingLoss()
+
+        _xavier_init(self)
+
+    def forward(self, x):
+        return self.classify(self.embed(x))
+
+    def embed(self, x):
+        x = self.compress(x)
+        x = x.view(-1, 4096)
+        return self.flatten(x)
+
+    def classify(self, x):
+        return self.classifier(x)
+
+    def training_step(self, batch, batch_idx):
+        opt = self.optimizers()
+        train_loss = self.train_val_get(batch, batch_idx)
+        opt.zero_grad()
+        self.manual_backward(train_loss)
+        # Avoid exploding gradients from high learning rates
+        self.clip_gradients(opt, gradient_clip_val=0.5, gradient_clip_algorithm="norm")
+        opt.step()
+        sch = self.lr_schedulers()
+        sch.step()
+
+    def validation_step(self, batch, batch_idx):
+        self.train_val_get(batch, batch_idx, 'val')
+
+    def on_validation_epoch_end(self) -> None:
+        self.log('lr', self.lr_schedulers().get_last_lr()[0], prog_bar=True, rank_zero_only=True)
+
+    def on_train_epoch_end(self) -> None:
+        pass
+        # sch = self.lr_schedulers()
+        # sch.step()
+
+    def configure_optimizers(self):
+        optimizer = torch.optim.AdamW(self.parameters(),
+                                      lr=self.hparams.lr,
+                                      weight_decay=0.0,
+                                      eps=1e-7)
+        scheduler = CosineWarmupScheduler(optimizer, warmup=self.hparams.warmup, max_iters=self.hparams.max_iters)
+        # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, 100, eta_min=self.config.eta_min)
+        '''scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, cooldown=self.params['step_size'],
+                                                         factor=self.params['scheduler_gamma'], threshold=1e-5)'''
+
+        return {'optimizer': optimizer, 'lr_scheduler': scheduler}
+
+    def train_val_get(self, batch, batch_idx, kind='train'):
+        anchor, pos, neg, tidx = batch
+
+        anchor_pass = self.embed(anchor)
+        pos_pass = self.embed(pos)
+        neg_pass = self.embed(neg)
+
+        trip_loss = self.triplet(anchor_pass, pos_pass, neg_pass)
+        cosine_loss = self.cosine_loss(anchor_pass, pos_pass, torch.ones(pos_pass.shape[0], device=pos_pass.device))
+        classifier_loss = torch.nn.functional.binary_cross_entropy(self.classify(anchor_pass), tidx)
+
+        loss = trip_loss + cosine_loss + classifier_loss
 
         # Logging ranking metrics
-        self.log_dict({f'{kind}_total_loss': cll, f'{kind}_clip_loss': clip_loss, f'{kind}_rec_loss': rec_loss,
+        self.log_dict({f'{kind}_loss': loss, f'{kind}_trip_loss': trip_loss, f'{kind}_cos_loss': cosine_loss,
+                       f'{kind}_classifier_loss': classifier_loss,
                        'lr': self.lr_schedulers().get_last_lr()[0]}, on_epoch=True,
                       prog_bar=True, rank_zero_only=True)
 
-        return cll
-
-
-class DecoderHead(LightningModule):
-
-    def __init__(self, latent_dim: int, channel_sz: int, in_channels: int, fourier_features: int, in_sz: int,
-                 nonlinearity: str, levels: int, *args: Any, **kwargs: Any):
-        super().__init__(*args, **kwargs)
-        self.latent_dim = latent_dim
-        self.channel_sz = channel_sz
-        self.in_channels = in_channels
-        inter_channels = channel_sz // (2**levels)
-
-        latent_pow2_square = np.ceil(np.log2(self.latent_dim))
-        latent_pow2_square = int(2**latent_pow2_square if latent_pow2_square % 2 == 0 else 2**(latent_pow2_square + 1))
-        self.latent_sqrt = int(np.sqrt(latent_pow2_square))
-
-        n_dec_layers = int(in_sz / np.sqrt(latent_pow2_square)) - 2
-        nlin = nonlinearities[nonlinearity]
-
-        self.decoder_inflate = nn.Sequential(
-            Fourier2D(.33, fourier_features),
-            nn.ConvTranspose2d(fourier_features * 2, inter_channels, 3, 1, 1),
-            nlin,
-            Block2dTranspose(inter_channels, 3, 1, 1, nonlinearity=nonlinearity)
-        )
-
-
-        self.z_fc = nn.Sequential(
-            nlin,
-            nn.Linear(self.latent_dim, latent_pow2_square),
-            nlin,
-            SwiGLU(latent_pow2_square, latent_pow2_square, latent_pow2_square),
-            nn.Linear(latent_pow2_square, latent_pow2_square),
-        )
-
-        self.dec_layers = nn.ModuleList()
-        for l in range(n_dec_layers - 1):
-            inc = inter_channels * 2
-            self.dec_layers.append(nn.Sequential(
-                nlin,
-                nn.ConvTranspose2d(inter_channels, inc, 4, 2, 1),
-                # LKATranspose(inc, (5, 3), dilation=3, activation='silu'),
-                Block2dTranspose(inc, 3 + l * 2, 1, 1 + l, nonlinearity=nonlinearity),
-                CBAM(inc, reduction_factor=4, kernel_size=3 + l * 2),
-            ))
-            inter_channels = inc
-        self.dec_layers.append(nn.Sequential(
-            Block2dTranspose(inter_channels, 3, 1, 1, nonlinearity=nonlinearity),
-            Block2dTranspose(inter_channels, 3, 1, 1, nonlinearity=nonlinearity),
-            nn.ConvTranspose2d(inter_channels, in_channels, 4, 2, 1),
-        ))
-
-    def forward(self, x):
-        x = self.z_fc(x)
-        x = self.decoder_inflate(x.view(-1, 1, self.latent_sqrt, self.latent_sqrt))
-        for l in self.dec_layers:
-            x = l(x)
-        return x
+        return loss
 
 
 class ClutterTransformer(LightningModule):
@@ -300,52 +265,30 @@ class ClutterTransformer(LightningModule):
 
     def _create_model(self):
         nlin = nonlinearities[self.hparams.nonlinearity]
-        nfourier = self.hparams.fourier_features
-        fourier_layer_sz = nfourier * 2
         # Input dim -> Model dim
         self.input_real = nn.Sequential(
             nn.Dropout(self.hparams.input_dropout),
             nn.Linear(self.hparams.input_dim, self.hparams.model_dim),
             nlin,
-            SwiGLU(self.hparams.model_dim, 2 * self.hparams.model_dim, self.hparams.model_dim),
-            SwiGLU(self.hparams.model_dim, 2 * self.hparams.model_dim, self.hparams.model_dim),
             nn.LayerNorm(self.hparams.model_dim),
-            nn.Linear(self.hparams.model_dim, self.hparams.model_dim),
-            nlin,
         )
 
         self.input_imag = nn.Sequential(
-            # nn.Dropout(self.hparams.input_dropout),
+            nn.Dropout(self.hparams.input_dropout),
             nn.Linear(self.hparams.input_dim, self.hparams.model_dim),
             nlin,
-            SwiGLU(self.hparams.model_dim, 2 * self.hparams.model_dim, self.hparams.model_dim),
-            SwiGLU(self.hparams.model_dim, 2 * self.hparams.model_dim, self.hparams.model_dim),
             nn.LayerNorm(self.hparams.model_dim),
-            nn.Linear(self.hparams.model_dim, self.hparams.model_dim),
-            nlin,
         )
 
         self.cross_attention = RelativeMultiHeadAttention(self.hparams.model_dim, 18)
         self.pos_enc = PositionalEncoding(self.hparams.model_dim, max_len=256)
 
         # Transformer
-        self.lstm = nn.LSTM(input_size=self.hparams.model_dim, hidden_size=self.hparams.model_dim,
-                                 num_layers=self.hparams.num_layers, batch_first=True)
 
         self.encoder_output = nn.Sequential(
             nn.Linear(self.hparams.model_dim, self.hparams.model_dim),
-            nlin,
-            nn.Linear(self.hparams.model_dim, self.hparams.model_dim),
             nn.Tanh(),
         )
-
-        # self.fourier = FourierFeatureTrain(2, nfourier, self.hparams.fourier_std)
-
-        '''self.mix = nn.Sequential(
-            FourierFeatureTrain(2, nfourier, self.hparams.fourier_std),
-            nn.Linear(fourier_layer_sz, 1),
-            nlin,
-        )'''
 
         self.output_real = nn.Sequential(
             nn.Linear(self.hparams.model_dim, self.hparams.input_dim),
@@ -361,15 +304,15 @@ class ClutterTransformer(LightningModule):
         y = self.input_imag(x[..., 1, :])
         x = self.input_real(x[..., 0, :])
         pe = self.pos_enc(x)
-        xy = self.cross_attention(x, y, y, pe)
-        # xx, _ = self.lstm(x)
-        # xy = self.mix(torch.cat([x.unsqueeze(-1), y.unsqueeze(-1)], dim=-1)).squeeze(-1)
-        # xy, _ = self.lstm(xy)
+        xy, _ = self.cross_attention(x, y, y, pe)
         return self.encoder_output(xy)
 
     def get_next_n(self, x, n):
         # batch x Sequence Length x model_dim
-        return self.lstm(x)[0]
+        x = torch.cat([x[..., 1:, :, :], self.forward(x)[..., -1:, :, :]], dim=-3)
+        for _ in range(n):
+            x = torch.cat([x[..., 1:, :, :], self.forward(x)[..., -1:, :, :]], dim=-3)
+        return x
 
     def decode(self, x):
         return torch.cat([self.output_real(x).unsqueeze(-2), self.output_imag(x).unsqueeze(-2)], dim=-2)
@@ -414,25 +357,21 @@ class ClutterTransformer(LightningModule):
 
     def train_val_get(self, batch, batch_idx, kind='train'):
         clutter_sequence, target_sequence, _, _, _, _, _, _ = batch
+        clut_noise = clutter_sequence + torch.randn_like(clutter_sequence) * .001
+        n = 5
 
-
-        target_feats = self.encode(target_sequence[:, :-1, ...])
-        clutter_feats = self.encode(clutter_sequence[:, :-1, ...])
-        clutter_rec = self.decode(clutter_feats)
-        target_rec = self.decode(target_feats)
+        clutter_rec = self.get_next_n(clut_noise[:, :-n], n)
 
         # RECONSTRUCTION LOSS
-        rec_loss = torch.mean(torch.square(clutter_sequence[:, -1:] - clutter_rec[:, -1:]))
-        norm_loss = (torch.mean(torch.linalg.norm(clutter_sequence[:, -1:] - clutter_rec[:, -1:], dim=-2)) +
-                     torch.mean(torch.linalg.norm(target_sequence[:, -1:] - target_rec[:, -1:], dim=-2)))
-        similarity = torch.abs(target_feats - clutter_feats).mean()
-        baseline = torch.mean(torch.square(clutter_sequence[:, -1:]))
+        rec_loss = torch.mean(torch.square(clutter_sequence[:, -n:] - clutter_rec[:, -n:]))
+        norm_loss = torch.mean(torch.linalg.norm(clutter_sequence[:, -n:] - clutter_rec[:, -n:], dim=-2))
+        baseline = torch.mean(torch.square(clutter_sequence[:, -n:]))
 
         loss = norm_loss + rec_loss * self.current_epoch / 1e3
 
         # Logging ranking metrics
         self.log_dict({f'{kind}_rec_loss': rec_loss, f'{kind}_norm_loss': norm_loss, f'{kind}_baseline': baseline,
-                       f'{kind}_similarity': similarity, f'{kind}_loss': loss,
+                       f'{kind}_loss': loss,
                        'lr': self.lr_schedulers().get_last_lr()[0]}, on_epoch=True,
                       prog_bar=True, rank_zero_only=True)
 

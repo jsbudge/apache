@@ -300,3 +300,19 @@ def rbf_inverse_quadratic(x):
 
 def rbf_inverse_multiquadric(x):
     return 1 / (1 + x.pow(2)).sqrt()
+
+
+def cfar(x, alpha: float = 1.0, win: np.ndarray = None, return_threshold: bool = False) -> Union[np.ndarray, None]:
+    if win is None:
+        win = np.ones(115)
+        win[len(win) // 2 - 7:len(win) // 2 + 7] = 0.0
+        win = win / sum(win)
+    mu = np.convolve(x, win, 'same')
+
+    # Some stride tricks to get standard deviation of stack of windows
+    shape = x.shape[:-1] + (x.shape[-1] - len(win) + 1, len(win))
+    strides = x.strides + (x.strides[-1],)
+    std = np.std(np.lib.stride_tricks.as_strided(x, shape=shape, strides=strides), axis=-1, ddof=1)
+    std = np.concatenate([np.full(len(win) - 1, std[0]), std])  # Padding
+
+    return mu + std * alpha if return_threshold else x > (mu + std * alpha)

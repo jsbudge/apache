@@ -8,7 +8,7 @@ from models import init_weights
 import optuna
 import sys
 
-from target_train import setupTrainer
+from transformer_train import setupTrainer
 
 print(f'Cuda is available? {torch.cuda.is_available()}')
 try:

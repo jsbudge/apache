@@ -33,16 +33,17 @@ if __name__ == '__main__':
 
     files = glob('./data/target_new/*.pic')
 
-    chirp = np.fft.fft(genChirp(1364, 2e9, 16e9, 600e6), 16384)
+
 
     for fi in files:
         plt.figure(f'{fi}')
         with open(fi, 'rb') as f:
             data = pickle.load(f)
-            cd = np.fft.ifft(data['clutter'][0, :, 0] + 1j * data['clutter'][0, :, 1]).T
+            chirp = np.fft.fft(genChirp(data['build']['nr'], data['build']['fs'], data['build']['fc'], data['build']['bandwidth']), 16384)
+            cd = np.fft.ifft((data['clutter'][0, :, 0] + 1j * data['clutter'][0, :, 1]) * chirp.conj()).T
             td_prof = data['target'][0, :, 0] + 1j * data['target'][0, :, 1]
-            td = np.fft.ifft(td_prof).T
-            bt = np.fft.ifft(data['both'][0, :, 0] + 1j * data['both'][0, :, 1]).T
+            td = np.fft.ifft(td_prof * chirp.conj()).T
+            bt = np.fft.ifft((data['both'][0, :, 0] + 1j * data['both'][0, :, 1]) * chirp.conj()).T
             plt.subplot(3, 1, 1)
             plt.title('sans')
             plt.imshow(np.log10(abs(np.fft.fft(cd, axis=1))))
@@ -61,11 +62,11 @@ if __name__ == '__main__':
             index_data.append(params['t_idx'])
             nsam.append(params['build']['nsam'])'''
 
-        target_time = np.fft.ifft(td_prof * chirp)
-        target_chirp = np.fft.fft(target_time[:, 6274-1378:6274], 16384)
+        target_time = np.fft.ifft(td_prof)
+        target_chirp = np.fft.fft(target_time[:, 8000-data['build']['nr']:8000], 16384)
 
-        target_lfm = np.fft.fft(np.fft.ifft(td_prof * chirp * chirp.conj()).T, axis=1)
-        target_mod = np.fft.fft(np.fft.ifft(td_prof * target_chirp * target_chirp.conj()).T, axis=1)
+        target_lfm = np.fft.fft(np.fft.ifft(td_prof * chirp.conj()).T, axis=1)
+        target_mod = np.fft.fft(np.fft.ifft(td_prof * target_chirp.conj()).T, axis=1)
 
         plt.figure('matched')
         plt.subplot(2, 1, 1)
