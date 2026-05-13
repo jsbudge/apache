@@ -125,21 +125,21 @@ class GeneratorModel(FlatModule):
         self.wave_info = nn.Sequential(
             FourierFeatureTrain(2, self.target_latent_size // (dec_fac * 2), .33),
             nn.Linear(self.target_latent_size // (dec_fac * 2) * 2, self.target_latent_size // dec_fac),
-            nn.Sigmoid(),
+            nlin,
         )
 
         # self.plength = PulseLength()
         self.plength = nn.Sequential(
-            nn.ConvTranspose1d(1, self.n_ants, 91, padding=0, dilation=15),
+            nn.ConvTranspose1d(1, self.n_ants, 1, 1, 0),
             nlin,
-            nn.Linear(self.target_latent_size, self.fft_len),
+            nn.Linear(self.target_latent_size // dec_fac, self.fft_len),
             nn.Sigmoid(),
         )
 
         self.bw_generate = nn.Sequential(
-            nn.ConvTranspose1d(1, self.n_ants, 91, padding=0, dilation=15),
+            nn.ConvTranspose1d(1, self.n_ants, 1, 1, 0),
             nlin,
-            nn.Linear(self.target_latent_size, self.fft_len),
+            nn.Linear(self.target_latent_size // dec_fac, self.fft_len),
             nn.Sigmoid(),
         )
         self.pl_window = PulseWindow(self.fft_len, self.n_ants)
@@ -269,7 +269,7 @@ class GeneratorModel(FlatModule):
             ortho_loss = torch.tensor(0., device=self.device)
 
         # total_loss = target_loss * (1 + min(.001 * self.current_epoch, 1.) * sidelobe_loss + ortho_loss)
-        total_loss = target_loss + sidelobe_loss + bandwidth_loss + pulse_length_loss  # torch.sqrt(sidelobe_loss * .25 + target_loss * .75 + ortho_loss)
+        total_loss = target_loss + sidelobe_loss + bandwidth_loss + pulse_length_loss + ortho_loss # torch.sqrt(sidelobe_loss * .25 + target_loss * .75 + ortho_loss)
 
         return {'target_loss': target_loss, 'loss': total_loss,
                 'sidelobe_loss': sidelobe_loss, 'ortho_loss': ortho_loss,
@@ -312,7 +312,7 @@ class GeneratorModel(FlatModule):
         opt = self.optimizers()
         opt.step()
         opt.zero_grad()
-        self.lr_schedulers().step()
+        # self.lr_schedulers().step()
         self.log_dict(train_loss, sync_dist=True,
                       prog_bar=True, rank_zero_only=True, on_epoch=True)
 
@@ -333,7 +333,7 @@ class GeneratorModel(FlatModule):
             sch.step()
         if self.trainer.is_global_zero and not self.config.is_tuning and self.config.loss_landscape:
             self.optim_path.append(self.get_flat_params().cpu().data.numpy())'''
-        # self.lr_schedulers().step()
+        self.lr_schedulers().step()
         self.log('lr', self.lr_schedulers().get_last_lr()[0], prog_bar=True, rank_zero_only=True)
 
     def configure_optimizers(self):
@@ -344,10 +344,10 @@ class GeneratorModel(FlatModule):
                                       eps=1e-7)
         if self.config.scheduler_gamma is None:
             return optimizer
-        # scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=self.config.scheduler_gamma)
+        scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=self.config.scheduler_gamma)
         # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, 25, eta_min=1e-9)
-        scheduler = CosineWarmupScheduler(optimizer, warmup=self.config.warmup // self.config.accumulation_steps,
-                                          max_iters=self.config.max_iters // self.config.accumulation_steps)
+        # scheduler = CosineWarmupScheduler(optimizer, warmup=self.config.warmup // self.config.accumulation_steps,
+        #                                   max_iters=self.config.max_iters // self.config.accumulation_steps)
 
         return {'optimizer': optimizer, 'lr_scheduler': scheduler}
 

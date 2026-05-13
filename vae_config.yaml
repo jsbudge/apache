@@ -57,15 +57,15 @@ wave_exp_params:
     lr: .0001
     weight_decay: 0.0
     scheduler_gamma: 0.999
-    warmup: 1000
-    max_iters: 9356800
+    warmup: 10000
+    max_iters: 93568
     swa_start: 1.
-    warm_start: True
+    warm_start: False
     betas: [.9, .99]
     log_epoch: 50
     accumulation_steps: 1
     is_tuning: False
-    save_model: True
+    save_model: False
     loss_landscape: False  # This should always be False; it is set to True inside of the relevant script
     gradient_flow: False  # This should always be False; it is set to True inside of the relevant script
     max_epochs: 233920
@@ -78,16 +78,16 @@ wave_exp_params:
     fc: 16000000000.
     encoder_start_channel_sz: 2
     n_skip_layers: 1
-    conv_kernel_size: 85
+    conv_kernel_size: 115
     mid_kernel_size: 55
-    small_kernel_size: 15
-    flowthrough_channels: 256
+    small_kernel_size: 5
+    flowthrough_channels: 64
     target_conv_channels: 64
     target_mid_channels: 64
-    target_small_channels: 64
+    target_small_channels: 256
     waveform_conv_channels: 64
     waveform_mid_channels: 64
-    waveform_small_channels: 64
+    waveform_small_channels: 256
     target_latent_size: 1800
     target_library_size: 25
     nonlinearity: silu
@@ -105,9 +105,9 @@ wave_exp_params:
     num_workers: 0
     pin_memory: False
     split: 1.
-    single_example: True
+    single_example: False
     # These values are taken from a sampling of data
-    std: [6118932., 40449.41]
+    std: [29376298.0, 40449.41]
     noise_level: 0.
     collate: True
 
@@ -115,14 +115,15 @@ wave_exp_params:
 transformer_exp_params:
   training_params:
     lr: .0001
-    weight_decay: 0.000000001
+    weight_decay: 0.0
+    scheduler_gamma: .99
     warmup: 10
     log_epoch: 1
     save_model: True
     transform_data: False
     warm_start: False
     loss_landscape: False
-    max_epochs: 500
+    max_epochs: 5000
     max_iters: 142857
     distributed: False
     patience: 50
@@ -141,14 +142,14 @@ transformer_exp_params:
     pin_memory: False
     split: .8
     single_example: False
-    std: [6118932., 40449.41]
+    std: [29376298.0, 40449.41]
   model_params:
     input_dim: 16384
     model_dim: 1800
     num_layers: 4
     fourier_features: 50
     fourier_std: 1.
-    nonlinearity: silu
+    nonlinearity: leaky
     temperature: 1.
 
 
@@ -186,7 +187,7 @@ embedding_exp_params:
   model_params:
     input_dim: 16384
     model_dim: 1800
-    embedding_size: 25
+    embedding_size: 100
     num_layers: 4
     fourier_features: 50
     fourier_std: 1.

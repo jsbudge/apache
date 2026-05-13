@@ -1,9 +1,9 @@
 from config import get_config
-from utils import upsample, fs, narrow_band, getMatchedFilter, cfar
+from utils import upsample, fs, narrow_band, getMatchedFilter, cfar, c0
 import numpy as np
 from simulib.simulation_functions import genPulse, db
 import matplotlib.pyplot as plt
-from scipy.signal import stft
+from scipy.signal import stft, convolve
 from scipy.signal.windows import taylor
 import torch
 from pytorch_lightning import Trainer, loggers, seed_everything
@@ -83,16 +83,18 @@ if __name__ == '__main__':
             target_profile = []
             just_targets = []
             target_index = []
+            roc_locs = []
             data_iter = iter(data.train_dataloader())
             scalings = data.train_dataloader().dataset.scaling
             nsam = data.train_dataloader().dataset.samples[0]
 
             for _ in range(min(len(data.train_dataloader()), 25)):
-                cct, sot, tct, tidx, _, _, _, _ = next(data_iter)
+                cct, sot, tct, tidx, _, _, _, roc = next(data_iter)
                 clutter_profile.append(cct)
                 target_profile.append(tct)
                 just_targets.append(sot)
                 target_index.append(tidx)
+                roc_locs.append(roc)
 
             tbandwidth = .35
 
@@ -123,10 +125,11 @@ if __name__ == '__main__':
             print('Loaded waveforms...')
 
             clutter = np.concatenate([cc.cpu().data.numpy() for cc in clutter_profile])
-            clutter = (clutter[0, 64, 0] + 1j * clutter[0, 64, 1]) * scalings[0]
+            clutter = (clutter[:, 64, 0] + 1j * clutter[:, 64, 1]) * scalings[0]
             targets = [ts.cpu().data.numpy() for ts in target_profile]
             targets = np.array([(t[0, 64, 0, :] + 1j * t[0, 64, 1, :]) * scalings[0] for t in targets])
             just_t = just_targets[0][0, 0, 0].data.cpu().numpy() + 1j * just_targets[0][0, 0, 1].data.cpu().numpy()
+            roc_truth = np.array([t[0, 64, :].data.cpu().numpy() for t in roc_locs])
 
             linear = np.fft.fft(genPulse(np.linspace(0, 1, 10),
                          np.linspace(0, 1, 10), nr, fs, config.fc,
@@ -137,8 +140,8 @@ if __name__ == '__main__':
 
             # Run some plots for an idea of what's going on
             freqs = np.fft.fftshift(np.fft.fftfreq(fft_len, 1 / fs))
-            clutter_spectra = np.fft.fftshift(targets[0] * linear.conj())
-            target_spectra = np.fft.fftshift(clutter * linear.conj())
+            clutter_spectra = np.fft.fftshift(clutter[0] * linear.conj())
+            target_spectra = np.fft.fftshift(targets[0] * linear.conj())
             plt.figure('Waveform PSD')
             plt.plot(freqs, db(clutter_spectra))
             plt.plot(freqs, db(target_spectra))
@@ -152,10 +155,7 @@ if __name__ == '__main__':
             plt.ylabel('Relative Power (dB)')
             plt.xlabel('Freq (Hz)')
 
-
-
             mfiltered_linear = linear * linear.conj() * taytay
-            linear_corr = np.fft.ifft(targets * linear.conj() * taytay, axis=1)[:nsam]
 
             '''plt.figure('Target-Clutter vs. Linear')
             for tnum in range(waves.shape[0]):
@@ -188,69 +188,97 @@ if __name__ == '__main__':
 
             plt.figure('Target_Clutter vs. Linear')
             tnum = 7
+            cv_sz = 25
+
+            linear_corr = np.convolve(db(np.fft.ifft(targets * linear.conj() * taytay, axis=1)[tnum, :nsam]), np.ones(cv_sz) / cv_sz, mode='same')
 
             if wave_mdl.n_ants > 1:
-                clutter_corr = np.fft.ifft(targets[0] * filts[tnum, 0] + targets[0] * filts[tnum, 1])[:nsam]
+                clutter_corr = np.convolve(db(np.fft.ifft(targets[0] * filts[tnum, 0] + targets[0] * filts[tnum, 1])), np.ones(cv_sz) / cv_sz, mode='same')
                 target0_corr = np.fft.ifft(targets[0] * filts[tnum, 0])[:nsam]
                 target1_corr = np.fft.ifft(targets[0] * filts[tnum, 1])[:nsam]
             else:
-                target0_corr = np.fft.ifft(targets * filts[tnum, 0], axis=1)[tnum, :nsam]
+                target0_corr = np.convolve(db(np.fft.ifft(targets * filts[tnum, 0], axis=1)[tnum, :nsam]), np.ones(cv_sz) / cv_sz, mode='same')
 
             zoom_area = np.arange(nsam)
             zoom_sz = len(zoom_area)
-            target_time = np.fft.ifft(targets * linear.conj() * taytay, axis=1)[tnum, :nsam]
+            # target_time = np.convolve(db(np.fft.ifft(targets * linear.conj() * taytay, axis=1)[tnum, zoom_area]), np.ones(15), mode='same')
             plt.title(f'Target {tnum}')
-            plt.scatter(zoom_area, (db(target_time)[zoom_area] - db(target_time)[zoom_area].max()), color='black')
+            # plt.scatter(zoom_area, (target_time[zoom_area] - target_time[zoom_area].max()), color='black')
 
-            plt.plot(zoom_area, (db(target0_corr)[zoom_area] - db(target0_corr)[zoom_area].max()))
+            plt.plot(zoom_area * c0 / (2 * fs), (target0_corr[zoom_area] - target0_corr[zoom_area].max()))
             if wave_mdl.n_ants > 1:
-                plt.plot(zoom_area, (db(clutter_corr)[zoom_area] - db(clutter_corr)[zoom_area].max()))
-                plt.plot(zoom_area, (db(target1_corr)[zoom_area] - db(target1_corr)[zoom_area].max()))
-            plt.plot(zoom_area, (db(linear_corr[tnum])[zoom_area] - db(linear_corr[tnum])[zoom_area].max()))
-            plt.vlines(target_index[tnum][0], -50, 10, color='black')
+                plt.plot(zoom_area * c0 / (2 * fs), (db(clutter_corr)[zoom_area] - db(clutter_corr)[zoom_area].max()))
+                plt.plot(zoom_area * c0 / (2 * fs), (db(target1_corr)[zoom_area] - db(target1_corr)[zoom_area].max()))
+            plt.plot(zoom_area * c0 / (2 * fs), (linear_corr[zoom_area] - linear_corr[zoom_area].max()))
+            plt.vlines(target_index[tnum][0] * c0 / (2 * fs), (linear_corr[zoom_area] - linear_corr[zoom_area].max()).min(), (linear_corr[zoom_area] - linear_corr[zoom_area].max()).max(), color='black')
 
-            plt.legend(['Range Profile'] + [f'NN_{n}' for n in range(wave_mdl.n_ants)] + ['Linear'])
-            plt.xlabel('Lag')
+            plt.legend([f'NN_{n}' for n in range(wave_mdl.n_ants)] + ['Linear'])
+            plt.xlabel('Distance from Near Range')
             plt.ylabel('Power (dB)')
 
 
             tnum = 7
             # wave0 = waves[tnum, 0]
 
-            correct = np.zeros(nsam)
-            correct[6387:6581] = 1.
-            nlevels = [0, 20, 40, 60]
-            nthresh = np.linspace(-1, 10, 100)
+            '''correct = roc_truth[tnum]
+            nlevels = [60]
+            nthresh = np.linspace(-1, 3, 50)
             plt.figure('ROC curves')
+            win = (np.arange(101) - 50.)**2
+            win /= sum(win)
 
             for idx, nlevel in enumerate(nlevels):
                 # plt.figure(f'Target_Clutter vs. Linear - {nlevel}')
-                tgets = targets + (np.random.randn(*targets.shape) + 1j * np.random.randn(*targets.shape))
-                t0_time = np.fft.ifft(tgets * filts[tnum, 0], axis=1)[tnum, :nsam]
-                t0_energy = abs(np.sqrt(sum(t0_time * t0_time.conj())))
-                l_time = np.fft.ifft(tgets * linear.conj() * taytay, axis=1)[tnum, :nsam]
-                l_energy = abs(np.sqrt(sum(l_time * l_time.conj())))
-                target0_corr = db(t0_time + (np.random.randn(*t0_time.shape) + 1j * np.random.randn(*t0_time.shape)) * t0_energy / 10**(nlevel / 20))
-                lc = db(l_time + (np.random.randn(*t0_time.shape) + 1j * np.random.randn(*t0_time.shape)) * l_energy / 10**(nlevel / 20))
-                target_cfars = [cfar(target0_corr, nt) for nt in nthresh]
-                linear_cfars = [cfar(lc, nt) for nt in nthresh]
-                target_true = [sum(np.logical_and(c == 1, correct == 1)) / (sum(np.logical_and(c == 1, correct == 1)) +
-                                                                            sum(np.logical_and(c == 0, correct == 1))) for c in target_cfars]
-                target_false = [sum(np.logical_and(c == 1, correct == 0)) / (sum(np.logical_and(c == 1, correct == 0)) +
-                                                                             sum(np.logical_and(c == 0, correct == 0))) for c in target_cfars]
-                linear_true = [sum(np.logical_and(c == 1, correct == 1)) / (sum(np.logical_and(c == 1, correct == 1)) +
-                                                                            sum(np.logical_and(c == 0, correct == 1)))
-                               for c in linear_cfars]
-                linear_false = [sum(np.logical_and(c == 1, correct == 0)) / (sum(np.logical_and(c == 1, correct == 0)) +
-                                                                             sum(np.logical_and(c == 0, correct == 0)))
-                                for c in linear_cfars]
+                target_true_positive = [0 for nt in nthresh]
+                target_false_positive = [0 for nt in nthresh]
+                target_true_negative = [0 for nt in nthresh]
+                target_false_negative = [0 for nt in nthresh]
+                linear_true_positive = [0 for nt in nthresh]
+                linear_false_positive = [0 for nt in nthresh]
+                linear_true_negative = [0 for nt in nthresh]
+                linear_false_negative = [0 for nt in nthresh]
+                for _ in range(50):
+                    t0_energy = abs(np.sqrt(sum(targets * targets.conj())))
+                    t0_noise = (np.random.randn(*targets.shape) + 1j * np.random.randn(*targets.shape)) * t0_energy / 10**(nlevel / 20)
+                    tgets = targets# + t0_noise
+                    sans = clutter# + t0_noise
+                    t0_nn = convolve(db(np.fft.ifft(tgets * filts[tnum, 0], axis=1)[:, :nsam]), np.ones((1, cv_sz)) / cv_sz, mode='same')
+                    t0_l = convolve(db(np.fft.ifft(tgets * linear.conj() * taytay, axis=1)[:, :nsam]), np.ones((1, cv_sz)) / cv_sz, mode='same')
+                    sans_nn = convolve(db(np.fft.ifft(sans * filts[tnum, 0], axis=1)[:, :nsam]), np.ones((1, cv_sz)) / cv_sz, mode='same')
+                    sans_l = convolve(db(np.fft.ifft(sans * linear.conj() * taytay, axis=1)[:, :nsam]), np.ones((1, cv_sz)) / cv_sz, mode='same')
+                    target_cfars = cfar(t0_nn, nthresh)
+                    linear_cfars = cfar(t0_l, nthresh)
+                    target_sans_cfars = cfar(sans_nn, nthresh)
+                    linear_sans_cfars = cfar(sans_l, nthresh)
+                    detections = ([np.sum(np.diff(tc + 0., axis=1) == 1) for tc in target_cfars],
+                                  [np.sum(np.diff(tc + 0., axis=1) == 1) for tc in linear_cfars])
+                    truth_detections = ([sum(np.any(np.logical_and(tc == 1, correct == 1), axis=1)) for tc in target_cfars],
+                                  [sum(np.any(np.logical_and(tc == 1, correct == 1), axis=1)) for tc in linear_cfars])
+                    sans_detections = ([np.sum(np.diff(tc + 0., axis=1) == 1) for tc in target_sans_cfars],
+                                  [np.sum(np.diff(tc + 0., axis=1) == 1) for tc in linear_sans_cfars])
+                    target_true_positive = [tp + td for tp, td in zip(target_true_positive, truth_detections[0])]
+                    target_false_positive = [fp + d - td + sd for fp, d, td, sd in
+                                             zip(target_false_positive, detections[0], truth_detections[0], sans_detections[0])]
+                    linear_true_positive = [tp + td for tp, td in zip(linear_true_positive, truth_detections[1])]
+                    linear_false_positive = [fp + d - td + sd for fp, d, td, sd in
+                                             zip(linear_false_positive, detections[1], truth_detections[1],
+                                                 sans_detections[1])]
+                    target_true_negative = [tn + 25 for tn, sd in zip(target_true_negative, sans_detections[0])]
+                    target_false_negative = [tn + (d == 0) + 0. for tn, d in zip(target_false_negative, detections[0])]
+                    linear_true_negative = [tn + 25 for tn, sd in zip(linear_true_negative, sans_detections[1])]
+                    linear_false_negative = [tn + (d == 0) + 0. for tn, d in zip(linear_false_negative, detections[1])]
 
-                plt.subplot(2, 2, idx + 1)
+                target_true = [tp / (tp + fn) for tp, fn in zip(target_true_positive, target_false_negative)]
+                target_false = [tfp / (tfp + tn) for tfp, tn in zip(target_false_positive, target_true_negative)]
+                linear_true = [tp / (tp + fn) for tp, fn in zip(linear_true_positive, linear_false_negative)]
+                linear_false = [tfp / (tfp + tn) for tfp, tn in zip(linear_false_positive, linear_true_negative)]
+
+                plt.subplot(1, 1, idx + 1)
                 plt.title(f'SNR {nlevel:.2f} dB')
                 plt.plot([1.] + target_false, [1.] + target_true)
                 plt.plot([1.] + linear_false, [1.] + linear_true)
                 plt.plot([0, 1], [0, 1], 'k--')
-            plt.legend(['NN', 'Linear', 'Chance'])
+            plt.legend(['NN', 'Linear', 'Chance'])'''
 
             # Save the model structure out to a PNG
             # plot_model(mdl, to_file='./mdl_plot.png', show_shapes=True)
@@ -259,9 +287,9 @@ if __name__ == '__main__':
             inp_wave = waves[tnum, 0] * filts[tnum, 0]
             autocorr1 = np.fft.fftshift(db(np.fft.ifft(upsample(inp_wave))))
             if wave_mdl.n_ants > 1:
-                inp_wave = mfiltered_wave1
+                inp_wave = waves[tnum, 1] * filts[tnum, 1]
                 autocorr2 = np.fft.fftshift(db(np.fft.ifft(upsample(inp_wave))))
-                inp_wave = waves[0, 0] * filts[0, 1].conj()
+                inp_wave = waves[tnum, 0] * filts[tnum, 1]
                 autocorrcr = np.fft.fftshift(db(np.fft.ifft(upsample(inp_wave))))
             perf_autocorr = np.fft.fftshift(db(np.fft.ifft(upsample(mfiltered_linear))))
             lags = np.arange(len(autocorr1)) - len(autocorr1) // 2
@@ -283,11 +311,13 @@ if __name__ == '__main__':
 
             plt.figure('Time Series')
             wave1 = waves.copy()
-            plot_t = np.arange(nr) / fs
-            plt.plot(plot_t, np.fft.ifft(wave1[0, 0]).real[:nr])
+            twave = np.fft.ifft(wave1[0, 0]).real[:nsam]
+            plot_t = np.arange(nsam) / fs
+            plt.plot(plot_t, twave)
             if wave_mdl.n_ants > 1:
-                plt.plot(plot_t, np.fft.ifft(wave1[0, 1]).real[:nr])
+                plt.plot(plot_t, np.fft.ifft(wave1[0, 1]).real[:nsam])
                 plt.legend(['Waveform 1', 'Waveform 2'])
+            plt.vlines([nr / fs], -abs(twave.max()), abs(twave.max()), color='black')
             plt.xlabel('Time')
 
             plt.figure('Waveform Differences')
@@ -305,35 +335,33 @@ if __name__ == '__main__':
 
             tprof = target_profile[tnum][0].cpu().data.numpy()
             tprof = (tprof[:, 0] + 1j * tprof[:, 1]) * scalings[0]
-            linear_block = db(np.fft.fft(np.fft.ifft(tprof * linear.conj() * taytay, axis=-1)[64:, :nsam], axis=0)).T
+            linear_block = db(np.fft.fft(np.fft.ifft(tprof * linear.conj() * taytay, axis=-1)[:, :nsam], axis=0)).T
 
             # Rerun wavemodel with each successive pulse
-            wave_block = db(np.fft.fft(np.fft.ifft(tprof * filts[tnum, 0], axis=-1)[64:, :nsam], axis=0)).T
+            wave_block = db(np.fft.fft(np.fft.ifft(tprof * filts[tnum, 0], axis=-1)[:, :nsam], axis=0)).T
 
             plt.figure('Doppler Profiles')
             plt.subplot(1, 2, 1)
             plt.title('Linear')
             plt.imshow(linear_block - linear_block.max())
             plt.hlines(target_index[tnum].cpu().data.numpy(), -.5, linear_block.shape[1] - .5, linestyle=':')
-            plt.clim([-40, 0])
+            plt.clim([-80, 0])
             plt.axis('tight')
             plt.subplot(1, 2, 2)
             plt.title('Wave')
             plt.imshow(wave_block - wave_block.max())
             plt.hlines(target_index[tnum].cpu().data.numpy(), -.5, linear_block.shape[1] - .5, linestyle=':')
-            plt.clim([-40, 0])
+            plt.clim([-80, 0])
             plt.axis('tight')
             plt.colorbar()
 
+            waf, tau, theta = narrow_band(np.fft.ifft(waves[0, 0])[:nsam], np.arange(512) - 256)
 
-
-        waf, tau, theta = narrow_band(np.fft.ifft(waves[0, 0])[:nsam], np.arange(512) - 256)
-
-        plt.figure('Ambiguity Function')
-        plt.imshow(db(waf))
-        # plt.clim([-100, -76])
-        plt.axis('tight')
-        plt.show()
+            plt.figure('Ambiguity Function')
+            plt.imshow(db(waf), extent=(tau[0], tau[-1], theta[0], theta[-1]))
+            # plt.clim([-100, -76])
+            plt.axis('tight')
+            plt.show()
 
 '''wave = np.fft.fft(np.fft.ifft(waves[0, 0]), 32768)
 rp_back = np.load('/home/jeff/repo/simulib/scripts/single_rp_back.npy')

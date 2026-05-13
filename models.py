@@ -171,14 +171,14 @@ class TargetEmbedding(LightningModule):
         )
 
         self.flatten = nn.Sequential(
-            nn.Linear(4096, 25),
+            nn.Linear(4096, self.hparams.embedding_size),
             nn.Tanh(),
         )
 
         self.classifier = nn.Sequential(
-            nn.Linear(25, 25),
+            nn.Linear(self.hparams.embedding_size, self.hparams.embedding_size),
             nlin,
-            nn.Linear(25, 9),
+            nn.Linear(self.hparams.embedding_size, 9),
             nn.Softmax(dim=1),
         )
 
@@ -257,7 +257,7 @@ class TargetEmbedding(LightningModule):
 class ClutterTransformer(LightningModule):
 
     def __init__(self, input_dim, model_dim, num_layers, lr, warmup, max_iters, dropout=0.0,
-        input_dropout=0.1, nonlinearity='silu', *args, **kwargs):
+        input_dropout=0.1, nonlinearity='silu', scheduler_gamma: float = .99, *args, **kwargs):
         super().__init__()
         self.automatic_optimization = False
         self.save_hyperparameters()
@@ -270,12 +270,16 @@ class ClutterTransformer(LightningModule):
             nn.Dropout(self.hparams.input_dropout),
             nn.Linear(self.hparams.input_dim, self.hparams.model_dim),
             nlin,
+            nn.Linear(self.hparams.model_dim, self.hparams.model_dim),
+            nlin,
             nn.LayerNorm(self.hparams.model_dim),
         )
 
         self.input_imag = nn.Sequential(
             nn.Dropout(self.hparams.input_dropout),
             nn.Linear(self.hparams.input_dim, self.hparams.model_dim),
+            nlin,
+            nn.Linear(self.hparams.model_dim, self.hparams.model_dim),
             nlin,
             nn.LayerNorm(self.hparams.model_dim),
         )
@@ -329,8 +333,8 @@ class ClutterTransformer(LightningModule):
         # Avoid exploding gradients from high learning rates
         self.clip_gradients(opt, gradient_clip_val=0.5, gradient_clip_algorithm="norm")
         opt.step()
-        sch = self.lr_schedulers()
-        sch.step()
+        # sch = self.lr_schedulers()
+        # sch.step()
 
     def validation_step(self, batch, batch_idx):
         self.train_val_get(batch, batch_idx, 'val')
@@ -339,16 +343,16 @@ class ClutterTransformer(LightningModule):
         self.log('lr', self.lr_schedulers().get_last_lr()[0], prog_bar=True, rank_zero_only=True)
 
     def on_train_epoch_end(self) -> None:
-        pass
-        # sch = self.lr_schedulers()
-        # sch.step()
+        sch = self.lr_schedulers()
+        sch.step()
 
     def configure_optimizers(self):
         optimizer = torch.optim.AdamW(self.parameters(),
                                       lr=self.hparams.lr,
                                       weight_decay=0.0,
                                       eps=1e-7)
-        scheduler = CosineWarmupScheduler(optimizer, warmup=self.hparams.warmup, max_iters=self.hparams.max_iters)
+        # scheduler = CosineWarmupScheduler(optimizer, warmup=self.hparams.warmup, max_iters=self.hparams.max_iters)
+        scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=self.hparams.scheduler_gamma)
         # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, 100, eta_min=self.config.eta_min)
         '''scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, cooldown=self.params['step_size'],
                                                          factor=self.params['scheduler_gamma'], threshold=1e-5)'''
@@ -358,7 +362,7 @@ class ClutterTransformer(LightningModule):
     def train_val_get(self, batch, batch_idx, kind='train'):
         clutter_sequence, target_sequence, _, _, _, _, _, _ = batch
         clut_noise = clutter_sequence + torch.randn_like(clutter_sequence) * .001
-        n = 5
+        n = 2
 
         clutter_rec = self.get_next_n(clut_noise[:, :-n], n)
 

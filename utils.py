@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 from typing import Union, List
 from matplotlib.lines import Line2D
 from scipy.signal.windows import taylor
+from scipy.signal import convolve
 import numpy as np
 import torch
 from torch import nn
@@ -302,17 +303,17 @@ def rbf_inverse_multiquadric(x):
     return 1 / (1 + x.pow(2)).sqrt()
 
 
-def cfar(x, alpha: float = 1.0, win: np.ndarray = None, return_threshold: bool = False) -> Union[np.ndarray, None]:
+def cfar(x, alpha: float | list = 1.0, win: np.ndarray = None, return_threshold: bool = False) -> Union[np.ndarray, list]:
     if win is None:
-        win = np.ones(115)
-        win[len(win) // 2 - 7:len(win) // 2 + 7] = 0.0
-        win = win / sum(win)
-    mu = np.convolve(x, win, 'same')
+        win = np.ones((1, 115))
+        win[:, len(win) // 2 - 7:len(win) // 2 + 7] = 0.0
+        win = win / np.sum(win)
+    mu = convolve(x, win, 'same')
 
     # Some stride tricks to get standard deviation of stack of windows
-    shape = x.shape[:-1] + (x.shape[-1] - len(win) + 1, len(win))
-    strides = x.strides + (x.strides[-1],)
-    std = np.std(np.lib.stride_tricks.as_strided(x, shape=shape, strides=strides), axis=-1, ddof=1)
-    std = np.concatenate([np.full(len(win) - 1, std[0]), std])  # Padding
+    std = np.std(np.lib.stride_tricks.sliding_window_view(x, win.shape[1], axis=1), axis=-1)
+    std = np.concatenate((std, np.ones((*std.shape[:-1], x.shape[-1] - std.shape[-1])) * std[..., -1][:, None]), axis=-1)
 
+    if isinstance(alpha, list) or isinstance(alpha, np.ndarray):
+        return [mu + std * a for a in alpha] if return_threshold else [x > (mu + std * a) for a in alpha]
     return mu + std * alpha if return_threshold else x > (mu + std * alpha)

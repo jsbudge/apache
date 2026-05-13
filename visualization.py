@@ -31,7 +31,7 @@ def factors(n):
 
 if __name__ == '__main__':
 
-    files = glob('./data/target_new/*.pic')
+    files = glob('./data/target_new/*-training.pic')
 
 
 
@@ -41,21 +41,21 @@ if __name__ == '__main__':
             data = pickle.load(f)
             chirp = np.fft.fft(genChirp(data['build']['nr'], data['build']['fs'], data['build']['fc'], data['build']['bandwidth']), 16384)
             cd = np.fft.ifft((data['clutter'][0, :, 0] + 1j * data['clutter'][0, :, 1]) * chirp.conj()).T
-            td_prof = data['target'][0, :, 0] + 1j * data['target'][0, :, 1]
+            td_prof = np.fft.fft(data['target'][0, :, 0] + 1j * data['target'][0, :, 1], 16384) * chirp
             td = np.fft.ifft(td_prof * chirp.conj()).T
             bt = np.fft.ifft((data['both'][0, :, 0] + 1j * data['both'][0, :, 1]) * chirp.conj()).T
             plt.subplot(3, 1, 1)
             plt.title('sans')
-            plt.imshow(np.log10(abs(np.fft.fft(cd, axis=1))))
+            plt.imshow(np.fft.fftshift(np.log10(abs(np.fft.fft(cd, axis=1))), axes=1))
             plt.axis('tight')
             plt.subplot(3, 1, 2)
             plt.title('with')
-            plt.imshow(np.log10(abs(np.fft.fft(bt, axis=1))))
+            plt.imshow(np.fft.fftshift(np.log10(abs(np.fft.fft(bt, axis=1))), axes=1))
             plt.hlines([data['t_idx'][0, 0]], -.5, cd.shape[1] - .5, linestyle=':')
             plt.axis('tight')
             plt.subplot(3, 1, 3)
             plt.title('just')
-            plt.imshow(np.log10(abs(np.fft.fft(td, axis=1))))
+            plt.imshow(np.fft.fftshift(np.log10(abs(np.fft.fft(td, axis=1))), axes=1))
             plt.axis('tight')
             '''clutter_data.append(params['clutter'])
             target_data.append(params['target'])
@@ -65,8 +65,8 @@ if __name__ == '__main__':
         target_time = np.fft.ifft(td_prof)
         target_chirp = np.fft.fft(target_time[:, 8000-data['build']['nr']:8000], 16384)
 
-        target_lfm = np.fft.fft(np.fft.ifft(td_prof * chirp.conj()).T, axis=1)
-        target_mod = np.fft.fft(np.fft.ifft(td_prof * target_chirp.conj()).T, axis=1)
+        target_lfm = np.fft.fftshift(np.fft.fft(np.fft.ifft(td_prof * chirp.conj()).T, axis=1), axes=1)
+        target_mod = np.fft.fftshift(np.fft.fft(np.fft.ifft(td_prof * target_chirp.conj()).T, axis=1), axes=1)
 
         plt.figure('matched')
         plt.subplot(2, 1, 1)

@@ -77,14 +77,14 @@ class WaveDataset(Dataset):
 
         clutter_spec_files = glob(f'{self.datapath}/*-training.pic')
         embeddings_file = f'{self.datapath}/embeddings.pic'
-        total_seq = 2000
-        n_per_file = int(np.round(total_seq / len(clutter_spec_files)))
         clutter_data = []
         target_data = []
         both_data = []
         index_data = []
         nsam = []
+        embed_num = []
 
+        # Run through file sets and get the relevant parameters for each target/clutter pair
         if single_example:
             for clut in clutter_spec_files[:1]:
                 with open(clut, 'rb') as f:
@@ -94,8 +94,9 @@ class WaveDataset(Dataset):
                     both_data.append(params['both'])
                     index_data.append(params['t_idx'])
                     nsam.append(params['build']['nsam'])
+                    embed_num.append(params['build']['target_number'] * np.ones(params['clutter'].shape[0]))
         else:
-            for clut in np.random.choice(clutter_spec_files, 10):
+            for clut in np.random.choice(clutter_spec_files, 10, replace=False):
                 with open(clut, 'rb') as f:
                     params = pickle.load(f)
                     clutter_data.append(params['clutter'])
@@ -103,17 +104,21 @@ class WaveDataset(Dataset):
                     both_data.append(params['both'])
                     index_data.append(params['t_idx'])
                     nsam.append(params['build']['nsam'])
+                    embed_num.append(params['build']['target_number'] * np.ones(params['clutter'].shape[0]))
 
         with open(embeddings_file, 'rb') as f:
             embeddings = pickle.load(f)
 
 
-        # Clutter data
+        # Concatenate everything into ndarrays for conversion to tensors
         clutter_data = np.concatenate(clutter_data, axis=0)
         target_data = np.concatenate(target_data, axis=0)
         both_data = np.concatenate(both_data, axis=0)
         index_data = np.concatenate(index_data).reshape((-1, 1))
+        enums = np.concatenate(embed_num)
         idxes = np.arange(clutter_data.shape[0])
+
+        # This gets random indexes and splits into train/test sets
         if split < 1:
             Xsidx, Xtidx, _, _ = train_test_split(idxes, idxes, test_size=split, random_state=seed)
         else:
@@ -121,7 +126,8 @@ class WaveDataset(Dataset):
             Xsidx = idxes
         ci = clutter_data[Xsidx if is_val else Xtidx] / std[0]
         tloc = target_data[Xsidx if is_val else Xtidx]
-        ti = np.stack([embeddings[7] for _ in ci])
+        enums = enums[Xsidx if is_val else Xtidx]
+        ti = np.stack([embeddings[e] for e in enums])
         # ti = np.zeros((ci.shape[0], 1, 25))
         # ti[..., 7] = 1.
         bi = both_data[Xsidx if is_val else Xtidx] / std[0]
@@ -132,6 +138,8 @@ class WaveDataset(Dataset):
         self.t_idx = torch.tensor(ii, dtype=torch.int)
 
         self.samples = np.array(nsam)
+
+        # Find the locations in the data with targets
         correct = np.logical_or(tloc[..., 0, :] > 0, tloc[..., 1, :] > 0)
         for c in correct:
             _, locs = np.where(c)
@@ -145,7 +153,7 @@ class WaveDataset(Dataset):
         self.is_single = single_example
 
     def __getitem__(self, idx):
-        # Clutter profile, target profile, target+clutter range profile, target range index, pulse length, bandwidth
+        # Clutter profile, target embedding, target+clutter range profile, target range index, pulse length, bandwidth, target truth location
         if self.is_single:
             return self.clutter[0], self.target[0], self.both[0], self.t_idx[0], 2669, .35, self.samples[0], self.truth[0]
         else:
@@ -194,7 +202,7 @@ class TargetDataset(Dataset):
         self.is_single = single_example
 
     def __getitem__(self, idx):
-        # Clutter profile, target profile, target+clutter range profile, target range index, pulse length, bandwidth
+        # Anchor data, positive sample (same target in different pose), negative sample (different target), target index
         if self.is_single:
             return self.anchor[0], self.positive[0], self.negative[0], self.t_idx[0]
         else:
@@ -301,7 +309,7 @@ class WaveDataModule(BaseModule):
             device: str = 'cpu',
             min_pulse_length: int = 1,
             max_pulse_length: int = 2,
-            std: float = 1.0,
+            std: tuple[float, float] = (1.0, 1.0),
             **kwargs,
     ):
         super().__init__(train_batch_size, val_batch_size, pin_memory, single_example, device)
